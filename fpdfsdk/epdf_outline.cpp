@@ -24,27 +24,208 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
 namespace {
-
-// ------- Common helpers --------------------------------------------------
-
-// Creates a new indirect array in |doc|.
-RetainPtr<CPDF_Array> NewIndirectArray(CPDF_Document* doc) {
-  return doc->NewIndirect<CPDF_Array>();
-}
-
-// Appends the page dictionary reference as the first element of |arr|.
-bool AppendPageDict(CPDF_Array* arr, CPDF_Page* page) {
-  if (!arr || !page)
+  // Creates a new indirect array in |doc|.
+  RetainPtr<CPDF_Array> NewIndirectArray(CPDF_Document* doc) {
+    return doc->NewIndirect<CPDF_Array>();
+  }
+  
+  // Appends the page dictionary reference as the first element of |arr|.
+  bool AppendPageDict(CPDF_Array* arr, CPDF_Page* page) {
+    if (!arr || !page)
+      return false;
+    CPDF_Document* doc = page->GetDocument();
+    if (!doc)
+      return false;
+    RetainPtr<const CPDF_Dictionary> dict = page->GetDict();
+    if (!dict)
+      return false;
+    arr->AppendNew<CPDF_Reference>(doc, dict->GetObjNum());
+    return true;
+  }
+  
+  // Returns the document root's /Outlines dict, creating one if needed.
+  RetainPtr<CPDF_Dictionary> GetOrCreateOutlines(CPDF_Document* doc) {
+    CPDF_Dictionary* root = doc->GetMutableRoot();
+    if (!root)
+      return nullptr;
+  
+    // We plan to write under /Outlines, so use the mutable getter.
+    RetainPtr<CPDF_Dictionary> outlines = root->GetMutableDictFor("Outlines");
+    if (outlines)
+      return outlines;
+  
+    outlines = doc->NewIndirect<CPDF_Dictionary>();
+    root->SetNewFor<CPDF_Reference>("Outlines", doc, outlines->GetObjNum());
+    return outlines;
+  }
+  
+  // Does |obj| belong to |doc| as an indirect object?
+  bool BelongsTo(const CPDF_Document* doc, const CPDF_Object* obj) {
+    if (!doc || !obj)
+      return false;
+    const uint32_t num = obj->GetObjNum();
+    return num != 0 && doc->GetIndirectObject(num) == obj;
+  }
+  
+  // Create a new indirect bookmark dictionary with a UTF-16 title.
+  RetainPtr<CPDF_Dictionary> CreateBookmarkDict(CPDF_Document* doc,
+                                                const WideString& title) {
+    RetainPtr<CPDF_Dictionary> node = doc->NewIndirect<CPDF_Dictionary>();
+    if (!title.IsEmpty())
+      node->SetNewFor<CPDF_String>("Title", title.AsStringView());
+    return node;
+  }
+  
+  // Return true if |candidate| is in the subtree rooted at |root|. (read-only)
+  bool IsDescendant(const CPDF_Dictionary* root,
+                    const CPDF_Dictionary* candidate) {
+    if (!root || !candidate)
+      return false;
+    if (root == candidate)
+      return true;
+    for (RetainPtr<const CPDF_Dictionary> cur = root->GetDictFor("First");
+         cur; cur = cur->GetDictFor("Next")) {
+      if (cur.Get() == candidate)
+        return true;
+      if (IsDescendant(cur.Get(), candidate))
+        return true;
+    }
     return false;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return false;
-  RetainPtr<const CPDF_Dictionary> dict = page->GetDict();
-  if (!dict)
-    return false;
-  arr->AppendNew<CPDF_Reference>(doc, dict->GetObjNum());
-  return true;
-}
+  }
+  
+  // Unlink |node| from its current parent/sibling list. Clears node's /Prev,/Next.
+  // Leaves /Parent in place (caller will overwrite on insert or may inspect it).
+  void UnlinkFromParent(CPDF_Document* doc, CPDF_Dictionary* node) {
+    if (!node)
+      return;
+  
+    RetainPtr<CPDF_Dictionary> parent = node->GetMutableDictFor("Parent");
+    RetainPtr<CPDF_Dictionary> prev   = node->GetMutableDictFor("Prev");
+    RetainPtr<CPDF_Dictionary> next   = node->GetMutableDictFor("Next");
+  
+    // Fix sibling pointers.
+    if (prev) {
+      if (next)
+        prev->SetNewFor<CPDF_Reference>("Next", doc, next->GetObjNum());
+      else
+        prev->RemoveFor("Next");
+    }
+    if (next) {
+      if (prev)
+        next->SetNewFor<CPDF_Reference>("Prev", doc, prev->GetObjNum());
+      else
+        next->RemoveFor("Prev");
+    }
+  
+    // Fix parent's /First and /Last.
+    if (parent) {
+      RetainPtr<CPDF_Dictionary> first = parent->GetMutableDictFor("First");
+      RetainPtr<CPDF_Dictionary> last  = parent->GetMutableDictFor("Last");
+      if (first && first.Get() == node) {
+        if (next)
+          parent->SetNewFor<CPDF_Reference>("First", doc, next->GetObjNum());
+        else
+          parent->RemoveFor("First");
+      }
+      if (last && last.Get() == node) {
+        if (prev)
+          parent->SetNewFor<CPDF_Reference>("Last", doc, prev->GetObjNum());
+        else
+          parent->RemoveFor("Last");
+      }
+    }
+  
+    node->RemoveFor("Prev");
+    node->RemoveFor("Next");
+  }
+  
+  // Insert |child| as the last child of |parent_like|.
+  void AppendChild(CPDF_Document* doc,
+                   CPDF_Dictionary* parent_like,
+                   CPDF_Dictionary* child) {
+    child->SetNewFor<CPDF_Reference>("Parent", doc, parent_like->GetObjNum());
+  
+    RetainPtr<CPDF_Dictionary> last = parent_like->GetMutableDictFor("Last");
+    if (!last) {
+      // First child.
+      parent_like->SetNewFor<CPDF_Reference>("First", doc, child->GetObjNum());
+      parent_like->SetNewFor<CPDF_Reference>("Last",  doc, child->GetObjNum());
+      child->RemoveFor("Prev");
+      child->RemoveFor("Next");
+      return;
+    }
+  
+    last->SetNewFor<CPDF_Reference>("Next", doc, child->GetObjNum());
+    child->SetNewFor<CPDF_Reference>("Prev", doc, last->GetObjNum());
+    child->RemoveFor("Next");
+    parent_like->SetNewFor<CPDF_Reference>("Last", doc, child->GetObjNum());
+  }
+  
+  // Insert |child| under |parent_like| right after |after_sibling|.
+  // If |after_sibling| is null, insert as the first child.
+  bool InsertAfter(CPDF_Document* doc,
+                   CPDF_Dictionary* parent_like,
+                   CPDF_Dictionary* after_sibling,  // may be null
+                   CPDF_Dictionary* child) {
+    child->SetNewFor<CPDF_Reference>("Parent", doc, parent_like->GetObjNum());
+  
+    if (!after_sibling) {
+      // Insert as first child.
+      RetainPtr<CPDF_Dictionary> first = parent_like->GetMutableDictFor("First");
+      if (first) {
+        first->SetNewFor<CPDF_Reference>("Prev", doc, child->GetObjNum());
+        child->SetNewFor<CPDF_Reference>("Next", doc, first->GetObjNum());
+      } else {
+        // No children previously.
+        parent_like->SetNewFor<CPDF_Reference>("Last", doc, child->GetObjNum());
+        child->RemoveFor("Next");
+      }
+      parent_like->SetNewFor<CPDF_Reference>("First", doc, child->GetObjNum());
+      child->RemoveFor("Prev");
+      return true;
+    }
+  
+    // Validate parent of after_sibling.
+    RetainPtr<const CPDF_Dictionary> sib_parent =
+        after_sibling->GetDictFor("Parent");
+    if (!sib_parent || sib_parent.Get() != parent_like)
+      return false;
+  
+    RetainPtr<CPDF_Dictionary> next = after_sibling->GetMutableDictFor("Next");
+  
+    after_sibling->SetNewFor<CPDF_Reference>("Next", doc, child->GetObjNum());
+    child->SetNewFor<CPDF_Reference>("Prev", doc, after_sibling->GetObjNum());
+  
+    if (next) {
+      next->SetNewFor<CPDF_Reference>("Prev", doc, child->GetObjNum());
+      child->SetNewFor<CPDF_Reference>("Next", doc, next->GetObjNum());
+    } else {
+      parent_like->SetNewFor<CPDF_Reference>("Last", doc, child->GetObjNum());
+      child->RemoveFor("Next");
+    }
+    return true;
+  }
+  
+  // Recursively delete the subtree rooted at |node|.
+  void DeleteSubtree(CPDF_Document* doc, CPDF_Dictionary* node) {
+    // Delete children (depth-first).
+    for (RetainPtr<CPDF_Dictionary> cur = node->GetMutableDictFor("First"); cur; ) {
+      RetainPtr<CPDF_Dictionary> next = cur->GetMutableDictFor("Next");
+      DeleteSubtree(doc, cur.Get());
+      cur = std::move(next);
+    }
+  
+    // Unlink self and delete indirect object.
+    UnlinkFromParent(doc, node);
+    node->RemoveFor("First");
+    node->RemoveFor("Last");
+    node->RemoveFor("Parent");
+  
+    const uint32_t num = node->GetObjNum();
+    if (num)
+      doc->DeleteIndirectObject(num);
+  }
+  
 }  // namespace
 
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
@@ -247,6 +428,159 @@ EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri) {
 
   return FPDFActionFromCPDFDictionary(action.Get());
 }
+
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_Create(FPDF_DOCUMENT doc, FPDF_WIDESTRING title) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  if (!pDoc)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> outlines = GetOrCreateOutlines(pDoc);
+  if (!outlines)
+    return nullptr;
+
+  WideString wtitle =
+      title ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(title)) : WideString();
+
+  RetainPtr<CPDF_Dictionary> node = CreateBookmarkDict(pDoc, wtitle);
+  AppendChild(pDoc, outlines.Get(), node.Get());
+  return FPDFBookmarkFromCPDFDictionary(node.Get());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Delete(FPDF_DOCUMENT doc, FPDF_BOOKMARK bookmark) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  RetainPtr<CPDF_Dictionary> bm(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!pDoc || !bm || !BelongsTo(pDoc, bm.Get()))
+    return false;
+
+  DeleteSubtree(pDoc, bm.Get());
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_AppendChild(FPDF_DOCUMENT doc,
+                         FPDF_BOOKMARK parent,
+                         FPDF_WIDESTRING title) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  if (!pDoc)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> parent_like =
+      parent ? pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(parent))
+             : GetOrCreateOutlines(pDoc);
+  if (!parent_like || !BelongsTo(pDoc, parent_like.Get()))
+    return nullptr;
+
+  WideString wtitle =
+      title ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(title)) : WideString();
+  RetainPtr<CPDF_Dictionary> child = CreateBookmarkDict(pDoc, wtitle);
+  AppendChild(pDoc, parent_like.Get(), child.Get());
+  return FPDFBookmarkFromCPDFDictionary(child.Get());
+}
+
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_InsertAfter(FPDF_DOCUMENT doc,
+                         FPDF_BOOKMARK parent,
+                         FPDF_BOOKMARK after_sibling,
+                         FPDF_WIDESTRING title) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  if (!pDoc)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> parent_like =
+      parent ? pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(parent))
+             : GetOrCreateOutlines(pDoc);
+  if (!parent_like || !BelongsTo(pDoc, parent_like.Get()))
+    return nullptr;
+
+  CPDF_Dictionary* after_dict =
+      after_sibling ? CPDFDictionaryFromFPDFBookmark(after_sibling) : nullptr;
+  if (after_dict && !BelongsTo(pDoc, after_dict))
+    return nullptr;
+
+  WideString wtitle =
+      title ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(title)) : WideString();
+  RetainPtr<CPDF_Dictionary> child = CreateBookmarkDict(pDoc, wtitle);
+
+  if (!InsertAfter(pDoc, parent_like.Get(), after_dict, child.Get()))
+    return nullptr;
+
+  return FPDFBookmarkFromCPDFDictionary(child.Get());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Move(FPDF_DOCUMENT doc,
+                  FPDF_BOOKMARK bookmark,
+                  FPDF_BOOKMARK new_parent,
+                  FPDF_BOOKMARK after_sibling) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  RetainPtr<CPDF_Dictionary> bm(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!pDoc || !bm || !BelongsTo(pDoc, bm.Get()))
+    return false;
+
+  RetainPtr<CPDF_Dictionary> parent_like =
+      new_parent ? pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(new_parent))
+                 : GetOrCreateOutlines(pDoc);
+  if (!parent_like || !BelongsTo(pDoc, parent_like.Get()))
+    return false;
+
+  CPDF_Dictionary* after_dict =
+      after_sibling ? CPDFDictionaryFromFPDFBookmark(after_sibling) : nullptr;
+  if (after_dict && !BelongsTo(pDoc, after_dict))
+    return false;
+
+  // Prevent cycles if parent_like is a bookmark node.
+  RetainPtr<CPDF_Dictionary> outlines = GetOrCreateOutlines(pDoc);
+  const bool parent_is_outlines = (parent_like.Get() == outlines.Get());
+  if (!parent_is_outlines && IsDescendant(bm.Get(), parent_like.Get()))
+    return false;
+
+  // Validate after_sibling belongs under parent_like if provided.
+  if (after_dict) {
+    RetainPtr<const CPDF_Dictionary> par = after_dict->GetDictFor("Parent");
+    if (!par || par.Get() != parent_like.Get())
+      return false;
+    if (after_dict == bm.Get())
+      return false;
+  }
+
+  UnlinkFromParent(pDoc, bm.Get());
+  return InsertAfter(pDoc, parent_like.Get(), after_dict, bm.Get());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Clear(FPDF_DOCUMENT fdoc) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc)
+    return false;
+
+  CPDF_Dictionary* root = doc->GetMutableRoot();
+  if (!root)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> outlines = root->GetMutableDictFor("Outlines");
+  if (!outlines)
+    return true;  // nothing to clear
+
+  // Delete all top-level nodes.
+  for (RetainPtr<CPDF_Dictionary> cur = outlines->GetMutableDictFor("First"); cur; ) {
+    RetainPtr<CPDF_Dictionary> next = cur->GetMutableDictFor("Next");
+    DeleteSubtree(doc, cur.Get());
+    cur = std::move(next);
+  }
+
+  // Remove /Outlines from root and delete the dict object.
+  root->RemoveFor("Outlines");
+  const uint32_t num = outlines->GetObjNum();
+  if (num)
+    doc->DeleteIndirectObject(num);
+
+  return true;
+}
+
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_SetTitle(FPDF_BOOKMARK bookmark, FPDF_WIDESTRING title) {

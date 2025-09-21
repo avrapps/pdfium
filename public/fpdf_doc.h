@@ -641,6 +641,99 @@ EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest);
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri);
 
+// Experimental EmbedPDF Outline API.
+// Create a new top-level bookmark appended to the end of the outline.
+//
+//   document - handle to the document.
+//   title    - UTF-16LE encoded title string; may be empty.
+//
+// Returns a handle to the created bookmark, or NULL on error.
+//
+// Notes:
+//  * Creates the document's /Outlines dictionary if it does not exist.
+//  * The new node is inserted as the last top-level item.
+//  * The bookmark is created without a destination or action; use
+//    EPDFBookmark_SetDest() or EPDFBookmark_SetAction() to set a target.
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_Create(FPDF_DOCUMENT document, FPDF_WIDESTRING title);
+
+// Experimental EmbedPDF Outline API.
+// Delete a bookmark subtree rooted at |bookmark|.
+//
+//   document - handle to the document.
+//   bookmark - handle to the root of the subtree to delete.
+//
+// Returns true on success.
+//
+// Notes:
+//  * Removes the node from its parent's list and deletes the entire subtree,
+//    fixing /First, /Last, /Prev, /Next as needed.
+//  * Fails if |bookmark| does not belong to |document|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Delete(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark);
+
+// Experimental EmbedPDF Outline API.
+// Create and append a new child bookmark under |parent|.
+//
+//   document - handle to the document.
+//   parent   - handle to the parent bookmark; NULL inserts at top level.
+//   title    - UTF-16LE encoded title string; may be empty.
+//
+// Returns a handle to the created bookmark, or NULL on error.
+//
+// Notes:
+//  * If |parent| is NULL, the node is appended as a top-level item.
+//  * The bookmark is created without a destination or action; set one
+//    with EPDFBookmark_SetDest() or EPDFBookmark_SetAction().
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_AppendChild(FPDF_DOCUMENT document,
+                         FPDF_BOOKMARK parent,
+                         FPDF_WIDESTRING title);
+
+// Experimental EmbedPDF Outline API.
+// Create and insert a new child under |parent| right after |after_sibling|.
+//
+//   document      - handle to the document.
+//   parent        - handle to the parent bookmark; NULL means top level.
+//   after_sibling - handle to the sibling to insert after; if NULL, inserts
+//                   as the first child under |parent|.
+//   title         - UTF-16LE encoded title string; may be empty.
+//
+// Returns a handle to the created bookmark, or NULL on error.
+//
+// Notes:
+//  * |after_sibling| (if non-NULL) must be a direct child of |parent|.
+//  * The bookmark is created without a destination or action; set one
+//    with EPDFBookmark_SetDest() or EPDFBookmark_SetAction().
+FPDF_EXPORT FPDF_BOOKMARK FPDF_CALLCONV
+EPDFBookmark_InsertAfter(FPDF_DOCUMENT document,
+                         FPDF_BOOKMARK parent,
+                         FPDF_BOOKMARK after_sibling,
+                         FPDF_WIDESTRING title);
+
+// Experimental EmbedPDF Outline API.
+// Move an existing bookmark subtree to a new parent/position.
+//
+//   document      - handle to the document.
+//   bookmark      - handle to the existing bookmark to move.
+//   new_parent    - handle to the destination parent; NULL means top level.
+//   after_sibling - insert position under |new_parent|; if NULL, insert as the
+//                   first child.
+//
+// Returns true on success.
+//
+// Notes:
+//  * Fails if any handle does not belong to |document|.
+//  * Fails if the move would make |bookmark| a descendant of itself (i.e. moving
+//    into its own subtree).
+//  * Updates /Parent and fixes /First, /Last, /Prev, /Next on both the old and
+//    new parent lists.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Move(FPDF_DOCUMENT document,
+                  FPDF_BOOKMARK bookmark,
+                  FPDF_BOOKMARK new_parent,
+                  FPDF_BOOKMARK after_sibling);
+
 // Experimental EmbedPDF Extension API.
 // Set a bookmark's UTF-16LE title.
 //
@@ -686,6 +779,15 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_SetAction(FPDF_DOCUMENT document,
                        FPDF_BOOKMARK bookmark,
                        FPDF_ACTION action);
+
+// Experimental EmbedPDF Outline API.
+// Clear all bookmarks from the document.
+//
+//   document - handle to the document.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_Clear(FPDF_DOCUMENT document);
 
 #ifdef __cplusplus
 }  // extern "C"
