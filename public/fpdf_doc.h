@@ -521,18 +521,19 @@ EPDF_GetMetaKeyName(FPDF_DOCUMENT document,
 // Create a new destination array of the form [page /XYZ left top zoom].
 //
 //   page     - handle to the destination page.
-//   has_left - whether |left| is specified; if false, |left| is ignored.
+//   has_left - whether |left| is specified; if false, |left| is encoded as null.
 //   left     - the left coordinate, in page coordinates.
-//   has_top  - whether |top| is specified; if false, |top| is ignored.
+//   has_top  - whether |top| is specified; if false, |top| is encoded as null.
 //   top      - the top coordinate, in page coordinates.
-//   has_zoom - whether |zoom| is specified; if false, |zoom| is ignored.
+//   has_zoom - whether |zoom| is specified; if false or |zoom|==0, encoded as null.
 //   zoom     - the zoom factor (must be non-zero to be considered specified).
 //
-// Returns a handle to the created destination, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
 //
-// Unspecified fields are encoded as PDF nulls. A zoom value of 0 is treated as
-// "unspecified". If this function returns a valid handle, it remains valid as
-// long as |page|'s document remains loaded.
+// Notes:
+//  * The returned object is an INDIRECT array suitable for use by
+//    EPDFBookmark_SetDest() or EPDFAction_CreateGoTo().
+//  * Unspecified fields are encoded as PDF nulls.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 EPDFDest_CreateXYZ(FPDF_PAGE page,
                    FPDF_BOOL has_left, FS_FLOAT left,
@@ -540,93 +541,178 @@ EPDFDest_CreateXYZ(FPDF_PAGE page,
                    FPDF_BOOL has_zoom, FS_FLOAT zoom);
 
 // Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /Fit].
+// Create a new destination array of the form [page /<View> params…].
 //
-//   page - handle to the destination page.
+//   page        - handle to the destination page.
+//   view        - one of the PDFDEST_VIEW_* constants EXCEPT PDFDEST_VIEW_XYZ.
+//                 Valid: PDFDEST_VIEW_FIT, FITH, FITV, FITR, FITB, FITBH, FITBV.
+//   params      - pointer to an array of float parameters (may be NULL).
+//   num_params  - number of entries in |params|.
 //
-// Returns a handle to the created destination, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+//
+// Notes:
+//  * The required parameter count depends on |view| and matches FPDFDest_GetView().
+//    Excess parameters are ignored; missing parameters default to 0.
+//  * Use EPDFDest_CreateXYZ() for /XYZ destinations.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFit(FPDF_PAGE page);
+EPDFDest_CreateView(FPDF_PAGE page,
+                    unsigned long view,
+                    const FS_FLOAT* params,
+                    unsigned long num_params);
 
 // Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /FitH top].
+// Create a new *remote* destination array of the form [pageIndex /<View> params…].
 //
-//   page - handle to the destination page.
-//   top  - the top coordinate, in page coordinates.
+//   document    - handle to the owning document.
+//   page_index  - 0-based page index in the *remote* file (must be >= 0).
+//   view        - one of the PDFDEST_VIEW_* constants EXCEPT PDFDEST_VIEW_XYZ.
+//   params      - pointer to float parameters (may be NULL).
+//   num_params  - number of parameters.
 //
-// Returns a handle to the created destination, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+//
+// Notes:
+//  * This is an explicit *remote* dest (first element is a number).
+//  * Use EPDFDest_CreateRemoteXYZ() for /XYZ.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitH(FPDF_PAGE page, FS_FLOAT top);
+EPDFDest_CreateRemoteView(FPDF_DOCUMENT document,
+                          int page_index,
+                          unsigned long view,
+                          const FS_FLOAT* params,
+                          unsigned long num_params);
 
 // Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /FitV left].
+// Create a new *remote* XYZ destination: [pageIndex /XYZ left? top? zoom?].
 //
-//   page - handle to the destination page.
-//   left - the left coordinate, in page coordinates.
+//   document    - handle to the owning document.
+//   page_index  - 0-based page index in the *remote* file (must be >= 0).
+//   has_left,left,has_top,top,has_zoom,zoom - as in EPDFDest_CreateXYZ().
 //
-// Returns a handle to the created destination, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+//
+// Notes:
+//  * The left/top/zoom fields are encoded as number-or-null as in local /XYZ.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitV(FPDF_PAGE page, FS_FLOAT left);
+EPDFDest_CreateRemoteXYZ(FPDF_DOCUMENT document,
+                         int page_index,
+                         FPDF_BOOL has_left, FS_FLOAT left,
+                         FPDF_BOOL has_top,  FS_FLOAT top,
+                         FPDF_BOOL has_zoom, FS_FLOAT zoom);
+
+// -----------------------------------------------------------------------------
+// Named destinations
+// -----------------------------------------------------------------------------
 
 // Experimental EmbedPDF Extension API.
-// Create a new destination array of the form
-//   [page /FitR left bottom right top].
+// Add or replace a named destination mapping to an existing INDIRECT |dest|.
 //
-//   page   - handle to the destination page.
-//   left   - the left coordinate, in page coordinates.
-//   bottom - the bottom coordinate, in page coordinates.
-//   right  - the right coordinate, in page coordinates.
-//   top    - the top coordinate, in page coordinates.
+//   document - handle to the document owning both the name tree and |dest|.
+//   name     - UTF-8 zero-terminated name key.
+//   dest     - handle to an INDIRECT destination array that belongs to |document|.
 //
-// Returns a handle to the created destination, or NULL on error.
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitR(FPDF_PAGE page,
-                    FS_FLOAT left, FS_FLOAT bottom, FS_FLOAT right, FS_FLOAT top);
+// Returns true on success.
+//
+// Notes:
+//  * Stores the value as an *indirect reference* to |dest| in /Names/Dests.
+//  * Fails if |dest| is not an indirect object of |document|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFNamedDest_SetDest(FPDF_DOCUMENT document,
+                      FPDF_BYTESTRING name,
+                      FPDF_DEST dest);
 
 // Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /FitB] (fit bounding box).
+// Remove a named destination mapping. No-op if absent.
 //
-//   page - handle to the destination page.
+//   document - handle to the document.
+//   name     - UTF-8 zero-terminated name key.
 //
-// Returns a handle to the created destination, or NULL on error.
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitB(FPDF_PAGE page);
+// Returns true on success (or if the name did not exist).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFNamedDest_Remove(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
 
-// Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /FitBH top] (fit bounding
-// box horizontally).
-//
-//   page - handle to the destination page.
-//   top  - the top coordinate, in page coordinates.
-//
-// Returns a handle to the created destination, or NULL on error.
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitBH(FPDF_PAGE page, FS_FLOAT top);
-
-// Experimental EmbedPDF Extension API.
-// Create a new destination array of the form [page /FitBV left] (fit bounding
-// box vertically).
-//
-//   page - handle to the destination page.
-//   left - the left coordinate, in page coordinates.
-//
-// Returns a handle to the created destination, or NULL on error.
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitBV(FPDF_PAGE page, FS_FLOAT left);
+// -----------------------------------------------------------------------------
+// Actions
+// -----------------------------------------------------------------------------
 
 // Experimental EmbedPDF Extension API.
 // Create an in-document "GoTo" action targeting |dest|.
 //
 //   document - handle to the document that will own the action.
-//   dest     - handle to an in-document destination (created via EPDFDest_*()).
+//   dest     - handle to an in-document *local* destination (INDIRECT).
 //
 // Returns a handle to the created action dictionary, or NULL on error.
 //
 // Notes:
-//  * The returned action has /S /GoTo and /D set to |dest|.
-//  * The |dest| must belong to |document|; if it does not, behavior is undefined.
+//  * The returned action has /S /GoTo and /D set to an indirect ref of |dest|.
+//  * |dest| must be an INDIRECT array whose first element resolves to a page
+//    dictionary in |document| (i.e. a local explicit destination).
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest);
+
+// Experimental EmbedPDF Extension API.
+// Create a "GoToR" (remote go-to) action targeting a *named* destination
+// in the remote file.
+//
+//   document   - handle to the document that will own the action.
+//   file_path  - UTF-16LE path to the remote file (FileSpec as string).
+//   named_dest - UTF-16LE named destination in the *remote* file.
+//
+// Returns a handle to the created action dictionary, or NULL on error.
+//
+// Notes:
+//  * The returned action has /S /GoToR, /F set to |file_path|, and /D to the
+//    remote *name* (text string).
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateRemoteGoToByName(FPDF_DOCUMENT document,
+                                  FPDF_WIDESTRING file_path,
+                                  FPDF_WIDESTRING named_dest);
+
+// Experimental EmbedPDF Extension API.
+// Create a "GoToR" (remote go-to) action targeting an explicit *remote* dest.
+//
+//   document  - handle to the document that will own the action.
+//   file_path - UTF-16LE path to the remote file (FileSpec as string).
+//   dest      - handle to an INDIRECT destination array of the form
+//               [pageIndex /XYZ|Fit* ...] belonging to |document|.
+//
+// Returns a handle to the created action dictionary, or NULL on error.
+//
+// Notes:
+//  * The returned action has /S /GoToR, /F set to |file_path|, and /D is an
+//    *indirect reference* to |dest|.
+//  * Fails if |dest| is not an INDIRECT object in |document| or if its first
+//    element is not a number (remote page index).
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateRemoteGoToDest(FPDF_DOCUMENT document,
+                                FPDF_WIDESTRING file_path,
+                                FPDF_DEST dest);
+
+// Experimental EmbedPDF Extension API.
+// Create a "GoTo" action targeting a *named* destination in the same document.
+//
+//   document - handle to the document that will own the action.
+//   name     - UTF-8 zero-terminated name.
+//
+// Returns a handle to the created action dictionary, or NULL on error.
+//
+// Notes:
+//  * The returned action has /S /GoTo and /D set to the name (text string).
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateGoToNamed(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
+
+// Experimental EmbedPDF Extension API.
+// Create a "Launch" action with a simple FileSpec-as-string.
+//
+//   document - handle to the document that will own the action.
+//   file_path - UTF-16LE path.
+//
+// Returns a handle to the created action dictionary, or NULL on error.
+//
+// Notes:
+//  * The returned action has /S /Launch and /F set to |file_path|.
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateLaunch(FPDF_DOCUMENT document, FPDF_WIDESTRING file_path);
 
 // Experimental EmbedPDF Extension API.
 // Create a "URI" action with the given UTF-8 |uri|.
@@ -640,6 +726,10 @@ EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest);
 //  * The returned action has /S /URI and /URI (byte string) set to |uri|.
 FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
 EPDFAction_CreateURI(FPDF_DOCUMENT document, FPDF_BYTESTRING uri);
+
+// -----------------------------------------------------------------------------
+// Outlines / bookmarks
+// -----------------------------------------------------------------------------
 
 // Experimental EmbedPDF Outline API.
 // Create a new top-level bookmark appended to the end of the outline.
@@ -711,29 +801,6 @@ EPDFBookmark_InsertAfter(FPDF_DOCUMENT document,
                          FPDF_BOOKMARK after_sibling,
                          FPDF_WIDESTRING title);
 
-// Experimental EmbedPDF Outline API.
-// Move an existing bookmark subtree to a new parent/position.
-//
-//   document      - handle to the document.
-//   bookmark      - handle to the existing bookmark to move.
-//   new_parent    - handle to the destination parent; NULL means top level.
-//   after_sibling - insert position under |new_parent|; if NULL, insert as the
-//                   first child.
-//
-// Returns true on success.
-//
-// Notes:
-//  * Fails if any handle does not belong to |document|.
-//  * Fails if the move would make |bookmark| a descendant of itself (i.e. moving
-//    into its own subtree).
-//  * Updates /Parent and fixes /First, /Last, /Prev, /Next on both the old and
-//    new parent lists.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_Move(FPDF_DOCUMENT document,
-                  FPDF_BOOKMARK bookmark,
-                  FPDF_BOOKMARK new_parent,
-                  FPDF_BOOKMARK after_sibling);
-
 // Experimental EmbedPDF Extension API.
 // Set a bookmark's UTF-16LE title.
 //
@@ -779,6 +846,15 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_SetAction(FPDF_DOCUMENT document,
                        FPDF_BOOKMARK bookmark,
                        FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
+// Clear any target from |bookmark| (removes both /Dest and /A).
+//
+//   bookmark - handle to the bookmark.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark);
 
 // Experimental EmbedPDF Outline API.
 // Clear all bookmarks from the document.

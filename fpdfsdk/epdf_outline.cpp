@@ -23,12 +23,7 @@
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
-namespace {
-  // Creates a new indirect array in |doc|.
-  RetainPtr<CPDF_Array> NewIndirectArray(CPDF_Document* doc) {
-    return doc->NewIndirect<CPDF_Array>();
-  }
-  
+namespace {  
   // Appends the page dictionary reference as the first element of |arr|.
   bool AppendPageDict(CPDF_Array* arr, CPDF_Page* page) {
     if (!arr || !page)
@@ -74,23 +69,6 @@ namespace {
     if (!title.IsEmpty())
       node->SetNewFor<CPDF_String>("Title", title.AsStringView());
     return node;
-  }
-  
-  // Return true if |candidate| is in the subtree rooted at |root|. (read-only)
-  bool IsDescendant(const CPDF_Dictionary* root,
-                    const CPDF_Dictionary* candidate) {
-    if (!root || !candidate)
-      return false;
-    if (root == candidate)
-      return true;
-    for (RetainPtr<const CPDF_Dictionary> cur = root->GetDictFor("First");
-         cur; cur = cur->GetDictFor("Next")) {
-      if (cur.Get() == candidate)
-        return true;
-      if (IsDescendant(cur.Get(), candidate))
-        return true;
-    }
-    return false;
   }
   
   // Unlink |node| from its current parent/sibling list. Clears node's /Prev,/Next.
@@ -226,7 +204,197 @@ namespace {
       doc->DeleteIndirectObject(num);
   }
   
+
+  constexpr const char* kViewNames[] = {
+    "Unknown", "XYZ", "Fit", "FitH", "FitV", "FitR", "FitB", "FitBH", "FitBV"};
+  constexpr uint8_t kViewMaxParams[] = {0, 3, 0, 1, 1, 4, 0, 1, 1};
+
+  // Non-XYZ: write N numeric params, padding with 0.0 up to |need|.
+  static inline void AppendNonXYZParams(CPDF_Array* arr,
+                                        const FS_FLOAT* params,
+                                        unsigned long num_params,
+                                        uint8_t need) {
+    const unsigned long use = std::min<unsigned long>(num_params, need);
+    for (unsigned long i = 0; i < need; ++i) {
+      const float v = (i < use && params) ? static_cast<float>(params[i]) : 0.0f;
+      arr->AppendNew<CPDF_Number>(v);
+    }
+  }
+
+  // XYZ: each of {left, top, zoom} may be null; zoom==0 means "unspecified".
+  static inline void AppendXYZParams(CPDF_Array* arr,
+                                    FPDF_BOOL has_left, FS_FLOAT left,
+                                    FPDF_BOOL has_top,  FS_FLOAT top,
+                                    FPDF_BOOL has_zoom, FS_FLOAT zoom) {
+    if (has_left) {
+      arr->AppendNew<CPDF_Number>(static_cast<float>(left));
+    } else {
+      arr->AppendNew<CPDF_Null>();
+    }
+
+    if (has_top) {
+      arr->AppendNew<CPDF_Number>(static_cast<float>(top));
+    } else {
+      arr->AppendNew<CPDF_Null>();
+    }
+
+    if (has_zoom && zoom != 0.0f) {
+      arr->AppendNew<CPDF_Number>(static_cast<float>(zoom));
+    } else {
+      arr->AppendNew<CPDF_Null>();
+    }
+  }
+
+  static RetainPtr<CPDF_Array> GetOrCreateDestsNamesArray(CPDF_Document* doc) {
+    CPDF_Dictionary* root = doc->GetMutableRoot();
+    if (!root)
+      return nullptr;
+  
+    RetainPtr<CPDF_Dictionary> names = root->GetMutableDictFor("Names");
+    if (!names) {
+      names = doc->NewIndirect<CPDF_Dictionary>();
+      root->SetNewFor<CPDF_Reference>("Names", doc, names->GetObjNum());
+    }
+  
+    RetainPtr<CPDF_Dictionary> dests = names->GetMutableDictFor("Dests");
+    if (!dests) {
+      dests = doc->NewIndirect<CPDF_Dictionary>();
+      names->SetNewFor<CPDF_Reference>("Dests", doc, dests->GetObjNum());
+    }
+  
+    RetainPtr<CPDF_Array> arr = dests->GetMutableArrayFor("Names");
+    if (!arr) {
+      arr = doc->NewIndirect<CPDF_Array>();
+      dests->SetNewFor<CPDF_Reference>("Names", doc, arr->GetObjNum());
+    }
+    return arr;
+  }
+  
+  // Insert/replace a (name, value) pair in the flat /Names array, keeping it sorted.
+  // `value` may be DIRECT (that’s what we want).
+  static bool SetNameTreePairSorted(CPDF_Document* doc,
+                                    CPDF_Array* names_arr,
+                                    const ByteString& key,
+                                    RetainPtr<CPDF_Object> value) {
+    if (!names_arr)
+      return false;
+
+    // Default insertion point is "append to end".
+    int insert_at = static_cast<int>(names_arr->size());
+
+    // Entries are (key, value) pairs at indices (0,1), (2,3), ...
+    for (size_t i = 0; i + 1 < names_arr->size(); i += 2) {
+      RetainPtr<const CPDF_Object> key_obj = names_arr->GetDirectObjectAt(i);
+      ByteString cur = key_obj ? key_obj->GetString() : ByteString();
+
+      const int cmp = key.Compare(cur.AsStringView());
+      if (cmp == 0) {
+        // Replace existing value at i+1.
+        names_arr->SetAt(i + 1, std::move(value));
+        return true;
+      }
+      if (cmp < 0) {
+        insert_at = static_cast<int>(i);
+        break;
+      }
+    }
+
+    // Insert new (key, value) pair at `insert_at`.
+    names_arr->InsertAt(insert_at, doc->New<CPDF_String>(key));
+    names_arr->InsertAt(insert_at + 1, std::move(value));
+    return true;
+  }
+
+  // Remove a (name, value) pair if present.
+  static bool RemoveNameTreePair(CPDF_Array* names_arr, const ByteString& key) {
+    if (!names_arr)
+      return false;
+
+    for (size_t i = 0; i + 1 < names_arr->size(); i += 2) {
+      RetainPtr<const CPDF_Object> key_obj = names_arr->GetDirectObjectAt(i);
+      ByteString cur = key_obj ? key_obj->GetString() : ByteString();
+      if (cur == key.AsStringView()) {
+        // Remove value then key.
+        names_arr->RemoveAt(i + 1);
+        names_arr->RemoveAt(i);
+        return true;
+      }
+    }
+    return false;
+  }
 }  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFNamedDest_SetDest(FPDF_DOCUMENT fdoc,
+                      FPDF_BYTESTRING name,
+                      FPDF_DEST fdest) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  CPDF_Array* dest = CPDFArrayFromFPDFDest(fdest);
+  if (!doc || !name || !dest)
+    return false;
+
+  // Must be indirect in this document.
+  const uint32_t objnum = dest->GetObjNum();
+  if (objnum == 0 || doc->GetIndirectObject(objnum) != dest)
+    return false;
+
+  RetainPtr<const CPDF_Object> first = dest->GetDirectObjectAt(0);
+  RetainPtr<const CPDF_Dictionary> page_dict = ToDictionary(first);
+  if (!page_dict)
+    return false;
+  if (!BelongsTo(doc, page_dict.Get()))
+    return false;
+
+  RetainPtr<CPDF_Array> names_arr = GetOrCreateDestsNamesArray(doc);
+  if (!names_arr)
+    return false;
+
+  // Value is a reference to the dest array object.
+  auto ref = pdfium::MakeRetain<CPDF_Reference>(doc, objnum);
+  return SetNameTreePairSorted(doc, names_arr.Get(), ByteString(name), std::move(ref));
+}
+
+// Remove a named destination mapping (no orphaning; the value was DIRECT).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFNamedDest_Remove(FPDF_DOCUMENT fdoc, FPDF_BYTESTRING name) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || !name)
+    return false;
+
+  RetainPtr<CPDF_Array> names_arr = GetOrCreateDestsNamesArray(doc);
+  if (!names_arr)
+    return false;
+
+  return RemoveNameTreePair(names_arr.Get(), ByteString(name));
+}
+
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDest_CreateView(FPDF_PAGE fpage,
+                    unsigned long view,
+                    const FS_FLOAT* params,
+                    unsigned long num_params) {
+  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
+  if (!page)
+    return nullptr;
+  CPDF_Document* doc = page->GetDocument();
+  if (!doc)
+    return nullptr;
+
+  // Validate view (must be a non-XYZ mode we know).
+  if (view == PDFDEST_VIEW_XYZ || view < PDFDEST_VIEW_FIT || view > PDFDEST_VIEW_FITBV)
+    return nullptr;
+
+  const uint8_t need = kViewMaxParams[view];
+
+  // INDIRECT array: [ pageRef /Fit* ... ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
+  if (!AppendPageDict(arr.Get(), page))
+    return nullptr;
+
+  arr->AppendNew<CPDF_Name>(kViewNames[view]);
+  AppendNonXYZParams(arr.Get(), params, num_params, need);
+  return FPDFDestFromCPDFArray(arr.Get());
+}
 
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 EPDFDest_CreateXYZ(FPDF_PAGE fpage,
@@ -240,156 +408,53 @@ EPDFDest_CreateXYZ(FPDF_PAGE fpage,
   if (!doc)
     return nullptr;
 
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
+  // INDIRECT array: [ pageRef /XYZ left? top? zoom? ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
   if (!AppendPageDict(arr.Get(), page))
     return nullptr;
 
   arr->AppendNew<CPDF_Name>("XYZ");
-
-  if (has_left)
-    arr->AppendNew<CPDF_Number>(static_cast<float>(left));
-  else
-    arr->AppendNew<CPDF_Null>();
-
-  if (has_top)
-    arr->AppendNew<CPDF_Number>(static_cast<float>(top));
-  else
-    arr->AppendNew<CPDF_Null>();
-
-  // Spec equivalence: zoom==0 means "unspecified"; emit null unless the caller set a non-zero zoom.
-  if (has_zoom && zoom != 0.0f)
-    arr->AppendNew<CPDF_Number>(static_cast<float>(zoom));
-  else
-    arr->AppendNew<CPDF_Null>();
-
+  AppendXYZParams(arr.Get(), has_left, left, has_top, top, has_zoom, zoom);
   return FPDFDestFromCPDFArray(arr.Get());
 }
 
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFit(FPDF_PAGE fpage) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
+EPDFDest_CreateRemoteView(FPDF_DOCUMENT fdoc,
+                          int page_index,
+                          unsigned long view,
+                          const FS_FLOAT* params,
+                          unsigned long num_params) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || page_index < 0)
     return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
+  if (view == PDFDEST_VIEW_XYZ || view < PDFDEST_VIEW_FIT || view > PDFDEST_VIEW_FITBV)
     return nullptr;
 
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
+  const uint8_t need = kViewMaxParams[view];
 
-  arr->AppendNew<CPDF_Name>("Fit");
+  // Create an INDIRECT array: [ pageIndex /Fit* ... ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
+  arr->AppendNew<CPDF_Number>(page_index);
+  arr->AppendNew<CPDF_Name>(kViewNames[view]);
+  AppendNonXYZParams(arr.Get(), params, num_params, need);
   return FPDFDestFromCPDFArray(arr.Get());
 }
 
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitH(FPDF_PAGE fpage, FS_FLOAT top) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
+EPDFDest_CreateRemoteXYZ(FPDF_DOCUMENT fdoc,
+                         int page_index,
+                         FPDF_BOOL has_left, FS_FLOAT left,
+                         FPDF_BOOL has_top,  FS_FLOAT top,
+                         FPDF_BOOL has_zoom, FS_FLOAT zoom) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || page_index < 0)
     return nullptr;
 
-  arr->AppendNew<CPDF_Name>("FitH");
-  arr->AppendNew<CPDF_Number>(static_cast<float>(top));
-  return FPDFDestFromCPDFArray(arr.Get());
-}
-
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitV(FPDF_PAGE fpage, FS_FLOAT left) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
-
-  arr->AppendNew<CPDF_Name>("FitV");
-  arr->AppendNew<CPDF_Number>(static_cast<float>(left));
-  return FPDFDestFromCPDFArray(arr.Get());
-}
-
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitR(FPDF_PAGE fpage,
-                    FS_FLOAT left, FS_FLOAT bottom, FS_FLOAT right, FS_FLOAT top) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
-
-  arr->AppendNew<CPDF_Name>("FitR");
-  arr->AppendNew<CPDF_Number>(static_cast<float>(left));
-  arr->AppendNew<CPDF_Number>(static_cast<float>(bottom));
-  arr->AppendNew<CPDF_Number>(static_cast<float>(right));
-  arr->AppendNew<CPDF_Number>(static_cast<float>(top));
-  return FPDFDestFromCPDFArray(arr.Get());
-}
-
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitB(FPDF_PAGE fpage) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
-
-  arr->AppendNew<CPDF_Name>("FitB");
-  return FPDFDestFromCPDFArray(arr.Get());
-}
-
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitBH(FPDF_PAGE fpage, FS_FLOAT top) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
-
-  arr->AppendNew<CPDF_Name>("FitBH");
-  arr->AppendNew<CPDF_Number>(static_cast<float>(top));
-  return FPDFDestFromCPDFArray(arr.Get());
-}
-
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateFitBV(FPDF_PAGE fpage, FS_FLOAT left) {
-  CPDF_Page* page = CPDFPageFromFPDFPage(fpage);
-  if (!page)
-    return nullptr;
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return nullptr;
-
-  RetainPtr<CPDF_Array> arr = NewIndirectArray(doc);
-  if (!AppendPageDict(arr.Get(), page))
-    return nullptr;
-
-  arr->AppendNew<CPDF_Name>("FitBV");
-  arr->AppendNew<CPDF_Number>(static_cast<float>(left));
+  // INDIRECT array: [ pageIndex /XYZ left? top? zoom? ]
+  auto arr = doc->NewIndirect<CPDF_Array>();
+  arr->AppendNew<CPDF_Number>(page_index);
+  arr->AppendNew<CPDF_Name>("XYZ");
+  AppendXYZParams(arr.Get(), has_left, left, has_top, top, has_zoom, zoom);
   return FPDFDestFromCPDFArray(arr.Get());
 }
 
@@ -408,10 +473,94 @@ EPDFAction_CreateGoTo(FPDF_DOCUMENT document, FPDF_DEST dest) {
   if (pDestArray->GetObjNum() == 0)
     return nullptr;
 
+  RetainPtr<const CPDF_Object> first = pDestArray->GetDirectObjectAt(0);
+  RetainPtr<const CPDF_Dictionary> page_dict = ToDictionary(first);
+  if (!page_dict)
+    return nullptr;
+  if (!BelongsTo(pDoc, page_dict.Get()))
+    return nullptr;
+
   RetainPtr<CPDF_Dictionary> action = pDoc->NewIndirect<CPDF_Dictionary>();
   action->SetNewFor<CPDF_Name>("S", "GoTo");
   action->SetNewFor<CPDF_Reference>("D", pDoc, pDestArray->GetObjNum());
 
+  return FPDFActionFromCPDFDictionary(action.Get());
+}
+
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateGoToNamed(FPDF_DOCUMENT fdoc, FPDF_BYTESTRING name) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || !name)
+    return nullptr;
+  RetainPtr<CPDF_Dictionary> action = doc->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_Name>("S", "GoTo");
+  action->SetNewFor<CPDF_String>("D", ByteString(name));  // name-as-string
+  return FPDFActionFromCPDFDictionary(action.Get());
+}
+
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateLaunch(FPDF_DOCUMENT document, FPDF_WIDESTRING file_path) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc || !file_path)
+    return nullptr;
+
+  WideString wpath = UNSAFE_BUFFERS(WideStringFromFPDFWideString(file_path));
+
+  RetainPtr<CPDF_Dictionary> action = pDoc->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_Name>("S", "Launch");
+  // Simple FileSpec-as-string. Callers can upgrade to a full FileSpec later.
+  action->SetNewFor<CPDF_String>("F", wpath.AsStringView());
+  return FPDFActionFromCPDFDictionary(action.Get());
+}
+
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateRemoteGoToByName(FPDF_DOCUMENT document,
+                                  FPDF_WIDESTRING file_path,
+                                  FPDF_WIDESTRING named_dest) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc || !file_path || !named_dest)
+    return nullptr;
+
+  WideString wpath = UNSAFE_BUFFERS(WideStringFromFPDFWideString(file_path));
+  WideString wname = UNSAFE_BUFFERS(WideStringFromFPDFWideString(named_dest));
+
+  RetainPtr<CPDF_Dictionary> action = pDoc->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_Name>("S", "GoToR");
+  action->SetNewFor<CPDF_String>("F", wpath.AsStringView());
+  // Named destination in the *target* doc, stored as a text string.
+  action->SetNewFor<CPDF_String>("D", wname.AsStringView());
+  return FPDFActionFromCPDFDictionary(action.Get());
+}
+
+FPDF_EXPORT FPDF_ACTION FPDF_CALLCONV
+EPDFAction_CreateRemoteGoToDest(FPDF_DOCUMENT fdoc,
+                                FPDF_WIDESTRING file_path,
+                                FPDF_DEST fdest) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
+  if (!doc || !file_path || !fdest)
+    return nullptr;
+
+  CPDF_Array* dest = CPDFArrayFromFPDFDest(fdest);
+  if (!dest)
+    return nullptr;
+
+  // The dest must be an INDIRECT object in this doc.
+  const uint32_t objnum = dest->GetObjNum();
+  if (objnum == 0 || doc->GetIndirectObject(objnum) != dest)
+    return nullptr;
+
+  // Basic shape check for remote explicit destinations:
+  // First element must be a page index (number).
+  RetainPtr<const CPDF_Object> first = dest->GetDirectObjectAt(0);
+  if (!first || !first->IsNumber())
+    return nullptr;
+
+  WideString wpath = UNSAFE_BUFFERS(WideStringFromFPDFWideString(file_path));
+
+  auto action = doc->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_Name>("S", "GoToR");
+  action->SetNewFor<CPDF_String>("F", wpath.AsStringView());
+  action->SetNewFor<CPDF_Reference>("D", doc, objnum);
   return FPDFActionFromCPDFDictionary(action.Get());
 }
 
@@ -511,47 +660,6 @@ EPDFBookmark_InsertAfter(FPDF_DOCUMENT doc,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_Move(FPDF_DOCUMENT doc,
-                  FPDF_BOOKMARK bookmark,
-                  FPDF_BOOKMARK new_parent,
-                  FPDF_BOOKMARK after_sibling) {
-  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
-  RetainPtr<CPDF_Dictionary> bm(
-      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
-  if (!pDoc || !bm || !BelongsTo(pDoc, bm.Get()))
-    return false;
-
-  RetainPtr<CPDF_Dictionary> parent_like =
-      new_parent ? pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(new_parent))
-                 : GetOrCreateOutlines(pDoc);
-  if (!parent_like || !BelongsTo(pDoc, parent_like.Get()))
-    return false;
-
-  CPDF_Dictionary* after_dict =
-      after_sibling ? CPDFDictionaryFromFPDFBookmark(after_sibling) : nullptr;
-  if (after_dict && !BelongsTo(pDoc, after_dict))
-    return false;
-
-  // Prevent cycles if parent_like is a bookmark node.
-  RetainPtr<CPDF_Dictionary> outlines = GetOrCreateOutlines(pDoc);
-  const bool parent_is_outlines = (parent_like.Get() == outlines.Get());
-  if (!parent_is_outlines && IsDescendant(bm.Get(), parent_like.Get()))
-    return false;
-
-  // Validate after_sibling belongs under parent_like if provided.
-  if (after_dict) {
-    RetainPtr<const CPDF_Dictionary> par = after_dict->GetDictFor("Parent");
-    if (!par || par.Get() != parent_like.Get())
-      return false;
-    if (after_dict == bm.Get())
-      return false;
-  }
-
-  UnlinkFromParent(pDoc, bm.Get());
-  return InsertAfter(pDoc, parent_like.Get(), after_dict, bm.Get());
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_Clear(FPDF_DOCUMENT fdoc) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(fdoc);
   if (!doc)
@@ -619,6 +727,13 @@ EPDFBookmark_SetDest(FPDF_DOCUMENT doc, FPDF_BOOKMARK bookmark, FPDF_DEST dest) 
   if (dest_arr->GetObjNum() == 0)
     return false;
 
+  RetainPtr<const CPDF_Object> first = dest_arr->GetDirectObjectAt(0);
+  RetainPtr<const CPDF_Dictionary> page_dict = ToDictionary(first);
+  if (!page_dict)
+    return false;
+  if (!BelongsTo(pDoc, page_dict.Get()))
+    return false;
+
   // Clear any action.
   bm_dict->RemoveFor("A");
 
@@ -653,5 +768,32 @@ EPDFBookmark_SetAction(FPDF_DOCUMENT document,
 
   // Set /A as an indirect reference to |action|.
   bm_dict->SetNewFor<CPDF_Reference>("A", pDoc, act_dict->GetObjNum());
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark) {
+  if (!bookmark)
+    return false;
+  RetainPtr<CPDF_Dictionary> bm_dict(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!bm_dict)
+    return false;
+
+  bm_dict->RemoveFor("Dest");
+  bm_dict->RemoveFor("A");
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetNamedDest(FPDF_BOOKMARK bookmark, FPDF_BYTESTRING name) {
+  if (!bookmark || !name)
+    return false;
+  RetainPtr<CPDF_Dictionary> bm(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!bm)
+    return false;
+  bm->RemoveFor("A");
+  bm->SetNewFor<CPDF_String>("Dest", ByteString(name));  // name-as-string
   return true;
 }
