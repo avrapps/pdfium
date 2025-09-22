@@ -50,6 +50,7 @@ namespace {
       return outlines;
   
     outlines = doc->NewIndirect<CPDF_Dictionary>();
+    outlines->SetNewFor<CPDF_Name>("Type", "Outlines");
     root->SetNewFor<CPDF_Reference>("Outlines", doc, outlines->GetObjNum());
     return outlines;
   }
