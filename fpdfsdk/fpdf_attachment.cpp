@@ -331,3 +331,96 @@ FPDFAttachment_GetSubtype(FPDF_ATTACHMENT attachment,
   return Utf16EncodeMaybeCopyAndReturnLength(
       PDF_DecodeText(subtype.unsigned_span()), buffer_span);
 }
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetSubtype(FPDF_ATTACHMENT attachment, FPDF_BYTESTRING subtype) {
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  if (!file)
+    return false;
+
+  CPDF_FileSpec spec(pdfium::WrapRetain(file));
+  RetainPtr<const CPDF_Stream> file_stream = spec.GetFileStream();
+  if (!file_stream)
+    return false;
+
+  CPDF_Stream* s = const_cast<CPDF_Stream*>(file_stream.Get());
+  CPDF_Dictionary* dict = s->GetMutableDict();
+  if (!dict)
+    return false;
+
+  // Ensure /Type is present (defensive).
+  if (dict->GetNameFor("Type").IsEmpty())
+    dict->SetNewFor<CPDF_Name>("Type", "EmbeddedFile");
+
+  // Convert to ByteString.
+  ByteString bs = subtype ? ByteString(subtype) : ByteString();
+  if (bs.IsEmpty()) {
+    dict->RemoveFor("Subtype");
+  } else {
+    dict->SetNewFor<CPDF_Name>("Subtype", bs); 
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING desc) {
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  if (!file || !file->IsDictionary())
+    return false;
+
+  // SAFETY: required from caller.
+  WideString ws = UNSAFE_BUFFERS(WideStringFromFPDFWideString(desc));
+  CPDF_Dictionary* filespec = file->AsMutableDictionary();
+
+  if (ws.IsEmpty()) {
+    filespec->RemoveFor("Desc");
+  } else {
+    filespec->SetNewFor<CPDF_String>("Desc", ws.AsStringView());
+  }
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAttachment_GetDescription(FPDF_ATTACHMENT attachment,
+                              FPDF_WCHAR* buffer,
+                              unsigned long buflen) {
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  if (!file || !file->IsDictionary())
+    return 0;
+
+  RetainPtr<const CPDF_Object> obj =
+      file->AsDictionary()->GetObjectFor("Desc");
+  if (!obj || !obj->IsString())
+    return Utf16EncodeMaybeCopyAndReturnLength(WideString(),
+           UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+
+  return Utf16EncodeMaybeCopyAndReturnLength(obj->GetUnicodeText(),
+         UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_GetIntegerValue(FPDF_ATTACHMENT attachment,
+                               FPDF_BYTESTRING key,
+                               int* out_value) {
+  if (!out_value)
+    return false;
+
+  CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
+  if (!file)
+    return false;
+
+  CPDF_FileSpec spec(pdfium::WrapRetain(file));
+  RetainPtr<const CPDF_Dictionary> params = spec.GetParamsDict();
+  if (!params)
+    return false;
+
+  ByteStringView k(key);
+  RetainPtr<const CPDF_Object> obj = params->GetObjectFor(k);
+  if (!obj || !obj->IsNumber())
+    return false;
+
+  const CPDF_Number* num = obj->AsNumber();
+  *out_value = num->IsInteger() ? num->GetInteger()
+                                : static_cast<int>(num->GetNumber());
+  return true;
+}

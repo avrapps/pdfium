@@ -189,6 +189,53 @@ FPDFAttachment_GetSubtype(FPDF_ATTACHMENT attachment,
                           FPDF_WCHAR* buffer,
                           unsigned long buflen);
 
+// Experimental EmbedPDF API.
+// Set the MIME type (Subtype) of the embedded file |attachment|.
+//
+//   attachment - handle to an attachment.
+//   subtype    - the MIME type to be set, encoded in UTF-8.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetSubtype(FPDF_ATTACHMENT attachment, FPDF_BYTESTRING subtype);
+
+// Experimental EmbedPDF API.
+// Set the description of the embedded file |attachment|.
+//
+//   attachment - handle to an attachment.
+//   desc       - the description to be set, encoded in UTF-16LE.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING desc);
+
+// Experimental EmbedPDF API.
+// Get the description of the embedded file |attachment|.
+//
+//   attachment - handle to an attachment.
+//   buffer     - buffer for holding the description, encoded in UTF-16LE.
+//   buflen     - length of the buffer in bytes.
+//
+// Returns the length of the description in bytes.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAttachment_GetDescription(FPDF_ATTACHMENT attachment,
+                              FPDF_WCHAR* buffer,
+                              unsigned long buflen);
+
+// Experimental EmbedPDF API.
+// Get the integer value corresponding to |key| in the params dictionary of the
+// embedded file |attachment|.
+
+//   attachment - handle to an attachment.
+//   key        - the key to the requested integer value, encoded in UTF-8.
+//   out_value  - pointer to the variable that will receive the integer value.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAttachment_GetIntegerValue(FPDF_ATTACHMENT attachment,
+                              FPDF_BYTESTRING key,
+                              int* out_value);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
