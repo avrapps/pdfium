@@ -2259,7 +2259,7 @@ EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
   RetainPtr<const CPDF_Array> pColor =
       dict->GetArrayFor((type == FPDFANNOT_COLORTYPE_InteriorColor) ? "IC" : "C");
   if (!pColor)
-    return false;                    // “no colour set”
+    return false;                    // "no colour set"
 
   CFX_Color color = fpdfdoc::CFXColorFromArray(*pColor);
   switch (color.nColorType) {
@@ -2468,7 +2468,7 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
   if (!dash_array || count == 0) {
     bs_dict->RemoveFor("D");
     // Optional: if style was dashed only because of the array, you can revert.
-    // Leaving it unchanged matches PDFium’s permissive style.
+    // Leaving it unchanged matches PDFium's permissive style.
     if (bs_dict->size() == 0)
       annot_dict->RemoveFor("BS");
     return true;
@@ -2664,7 +2664,7 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
   if (!dict)
     return 0;
 
-  // /RC may be a text string or a stream (PDF 2.0 §12.5.6.5).
+  // /RC may be a text string or a stream (PDF 2.0 §12.5.6.5).
   RetainPtr<const CPDF_Object> rc_obj = dict->GetObjectFor("RC");
   if (!rc_obj)
     return 0;
@@ -2675,7 +2675,7 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
   } else if (rc_obj->IsStream()) {
     ws = rc_obj->AsStream()->GetUnicodeText();
   } else {
-    return 0;                             // some exotic type we don’t handle
+    return 0;                             // some exotic type we don't handle
   }
 
   // SAFETY: same pattern as other getters.
@@ -2860,7 +2860,13 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
   }
 
   RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
-  if (!annot_dict || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
+  if (!annot_dict) {
+    return false;
+  }
+
+  // Allow both FREETEXT and WIDGET annotations
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET) {
     return false;
   }
 
@@ -2904,9 +2910,16 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
     return false;
   }
   RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
-  if (!annot_dict || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
+  if (!annot_dict) {
     return false;
   }
+
+  // Allow both FREETEXT and WIDGET annotations
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET) {
+    return false;
+  }
+
   CPDF_Document* doc = context->GetPage()->GetDocument();
   if (!doc) {
     return false;
