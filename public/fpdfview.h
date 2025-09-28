@@ -773,6 +773,19 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
                          int page_index,
                          FS_SIZEF* size);
 
+// Experimental EmbedPDF API.
+// Function: EPDF_GetPageRotationByIndex
+//          Get the rotation of the page at the given index without parsing
+//          the page contents.
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+// Return value:
+//          The rotation in degrees (must be one of 0, 90, 180, 270).
+//          Returns -1 on error (document or page not found).
+FPDF_EXPORT int FPDF_CALLCONV
+EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);                
+
 // Function: FPDF_GetPageSizeByIndex
 //          Get the size of the page at the given index.
 // Parameters:

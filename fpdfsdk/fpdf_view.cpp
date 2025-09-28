@@ -1205,6 +1205,23 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   return true;
 }
 
+FPDF_EXPORT int FPDF_CALLCONV
+EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc)
+    return -1;
+
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
+    return -1;
+
+  // Cheap: no ParseContent().
+  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
+  if (!dict)
+    return -1;
+  auto page = pdfium::MakeRetain<CPDF_Page>(pDoc, std::move(dict));
+  return page->GetPageRotation();
+}
+
 FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageSizeByIndex(FPDF_DOCUMENT document,
                                                       int page_index,
                                                       double* width,
