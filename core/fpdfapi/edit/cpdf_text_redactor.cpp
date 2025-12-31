@@ -21,6 +21,8 @@
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -29,6 +31,9 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fxcrt/fx_coordinates.h"
+#include "core/fxcodec/jpeg/jpegmodule.h"
+#include "core/fxcodec/scanlinedecoder.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/fx_dib.h"
 #include "core/fxcrt/check.h"
@@ -423,8 +428,57 @@ static void PageRectsToImageGrid(const CFX_Matrix& image_to_page,
   }
 }
 
-// Returns true if the image stream was overwritten.
-// Returns true if the image stream was overwritten.
+// Helper: Manually decode a JPEG stream for SMask.
+// Returns true on success and populates out_data.
+static bool DecodeJpegSMask(RetainPtr<const CPDF_Stream> stream,
+                            int width, int height,
+                            DataVector<uint8_t>& out_data) {
+  if (!stream)
+    return false;
+  
+  // Get raw stream data
+  pdfium::span<const uint8_t> raw_span;
+  DataVector<uint8_t> raw_data_storage;
+  if (stream->IsMemoryBased()) {
+    raw_span = stream->GetInMemoryRawData();
+  } else {
+    raw_data_storage = const_cast<CPDF_Stream*>(stream.Get())->ReadAllRawData();
+    raw_span = pdfium::span<const uint8_t>(raw_data_storage);
+  }
+  
+  if (raw_span.size() < 2)
+    return false;
+  
+  // Check for JPEG header
+  if (raw_span[0] != 0xFF || raw_span[1] != 0xD8)
+    return false;
+  
+  // Get SMask dimensions
+  RetainPtr<const CPDF_Dictionary> smask_dict = stream->GetDict();
+  int smask_w = smask_dict ? smask_dict->GetIntegerFor("Width") : width;
+  int smask_h = smask_dict ? smask_dict->GetIntegerFor("Height") : height;
+  
+  // Create JPEG decoder
+  auto jpeg_decoder = fxcodec::JpegModule::CreateDecoder(
+      raw_span, smask_w, smask_h, 1, false);
+  
+  if (!jpeg_decoder)
+    return false;
+  
+  out_data.resize(static_cast<size_t>(width) * height);
+  
+  // Decode scanlines
+  for (int row = 0; row < smask_h && row < height; ++row) {
+    pdfium::span<const uint8_t> scanline = jpeg_decoder->GetScanline(row);
+    if (!scanline.empty()) {
+      size_t copy_len = std::min<size_t>(scanline.size(), static_cast<size_t>(width));
+      memcpy(out_data.data() + row * width, scanline.data(), copy_len);
+    }
+  }
+  
+  return true;
+}
+
 // Returns true if the image stream was overwritten.
 static bool RedactImageObject(CPDF_Page* page,
                               CPDF_ImageObject* iobj,
@@ -461,7 +515,7 @@ static bool RedactImageObject(CPDF_Page* page,
   if (!touches)
     return false;
 
-  // Decode source.
+  // Try to load the image via standard DIB path
   RetainPtr<CFX_DIBBase> dib = image->LoadDIBBase();
   if (!dib)
     return false;
@@ -470,13 +524,13 @@ static bool RedactImageObject(CPDF_Page* page,
   const bool is_mask   = dib->IsMaskFormat();
   const bool has_alpha = dib->IsAlphaFormat();
 
-  const bool is_gray8  = (bpp == 8)  && !is_mask;   // may be true for real gray OR indexed
+  const bool is_gray8  = (bpp == 8)  && !is_mask;
   const bool is_rgb24  = (bpp == 24);
   const bool is_bgra32 = (bpp == 32) &&  has_alpha;
   const bool is_bgrx32 = (bpp == 32) && !has_alpha;
 
-  // Palette detection for indexed-8 images (PNG paletted path).
-  auto palette = dib->GetPaletteSpan();             // span<const uint32_t> ARGB (0xAARRGGBB)
+  // Palette detection for indexed-8 images.
+  auto palette = dib->GetPaletteSpan();
   const bool is_indexed8 = is_gray8 && !palette.empty();
 
   bool palette_has_alpha = false;
@@ -486,10 +540,8 @@ static bool RedactImageObject(CPDF_Page* page,
     }
   }
 
-  if (!(is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32)) {
-    // Unsupported source format.
+  if (!(is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32))
     return false;
-  }
 
   // If the image has an SMask, keep it so we preserve transparency.
   RetainPtr<const CPDF_Stream> orig_smask_stream;
@@ -527,7 +579,7 @@ static bool RedactImageObject(CPDF_Page* page,
 
   // Build new decoded buffers.
   DataVector<uint8_t> out_rgb(static_cast<size_t>(W) * static_cast<size_t>(H) * 3u);
-  DataVector<uint8_t> out_a;  // only used if we have/keep alpha
+  DataVector<uint8_t> out_a;
 
   // We need an alpha plane if: original was BGRA32, or there was an SMask, or
   // palette carries alpha (PNG paletted transparency).
@@ -536,18 +588,22 @@ static bool RedactImageObject(CPDF_Page* page,
   if (process_alpha) {
     out_a.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
     if (orig_smask_stream && !is_bgra32) {
-      auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(orig_smask_stream);
-      acc->LoadAllDataFiltered();
-      pdfium::span<const uint8_t> span = acc->GetSpan();
-      if (span.size() >= out_a.size())
-        memcpy(out_a.data(), span.data(), out_a.size());
-      else {
-        memcpy(out_a.data(), span.data(), span.size());
-        std::fill(out_a.begin() + static_cast<ptrdiff_t>(span.size()),
-                  out_a.end(), 0xFF);
+      // Try to decode SMask as JPEG (for file-based streams in WASM)
+      if (!DecodeJpegSMask(orig_smask_stream, W, H, out_a)) {
+        // Fall back to LoadAllDataFiltered
+        auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(orig_smask_stream);
+        acc->LoadAllDataFiltered();
+        pdfium::span<const uint8_t> span = acc->GetSpan();
+        if (span.size() >= out_a.size()) {
+          memcpy(out_a.data(), span.data(), out_a.size());
+        } else if (!span.empty()) {
+          memcpy(out_a.data(), span.data(), span.size());
+          std::fill(out_a.begin() + static_cast<ptrdiff_t>(span.size()), out_a.end(), 0xFF);
+        } else {
+          std::fill(out_a.begin(), out_a.end(), 0xFF);
+        }
       }
     } else {
-      // Default opaque; specific formats will overwrite per pixel below.
       std::fill(out_a.begin(), out_a.end(), 0xFF);
     }
   }
@@ -555,13 +611,12 @@ static bool RedactImageObject(CPDF_Page* page,
   size_t total_redacted_px = 0;
 
   for (int row_top = 0; row_top < H; ++row_top) {
-    const int y_img = H - 1 - row_top;  // convert to bottom-up index
+    const int y_img = H - 1 - row_top;
     const pdfium::span<const uint8_t> sline = dib->GetScanline(row_top);
     uint8_t* drow_rgb = out_rgb.data() + static_cast<size_t>(row_top) * static_cast<size_t>(W) * 3u;
     uint8_t* arow     = process_alpha ? (out_a.data() + static_cast<size_t>(row_top) * static_cast<size_t>(W)) : nullptr;
 
     if (sline.empty()) {
-      // Defensive: fill whole row as redacted.
       std::fill(drow_rgb, drow_rgb + static_cast<size_t>(W) * 3u, fill_val);
       if (process_alpha)
         std::fill(arow, arow + static_cast<size_t>(W), 0xFF);
@@ -579,18 +634,17 @@ static bool RedactImageObject(CPDF_Page* page,
         drow_rgb[3*x + 1] = fill_val;
         drow_rgb[3*x + 2] = fill_val;
         if (process_alpha)
-          arow[x] = 0xFF;  // paint on top => force opaque under the box
+          arow[x] = 0xFF;
         ++total_redacted_px;
         continue;
       }
 
       if (is_indexed8) {
-        // Expand palette index -> RGB (palette entries are ARGB 0xAARRGGBB).
         const uint8_t idx  = sline[x];
         const uint32_t argb = palette[idx];
-        drow_rgb[3*x + 0] = static_cast<uint8_t>((argb >> 16) & 0xFF);  // R
-        drow_rgb[3*x + 1] = static_cast<uint8_t>((argb >>  8) & 0xFF);  // G
-        drow_rgb[3*x + 2] = static_cast<uint8_t>( argb        & 0xFF);  // B
+        drow_rgb[3*x + 0] = static_cast<uint8_t>((argb >> 16) & 0xFF);
+        drow_rgb[3*x + 1] = static_cast<uint8_t>((argb >>  8) & 0xFF);
+        drow_rgb[3*x + 2] = static_cast<uint8_t>( argb        & 0xFF);
         if (process_alpha && !orig_smask_stream && !is_bgra32 && palette_has_alpha)
           arow[x] = static_cast<uint8_t>((argb >> 24) & 0xFF);
       } else if (is_gray8) {
@@ -598,12 +652,11 @@ static bool RedactImageObject(CPDF_Page* page,
         drow_rgb[3*x + 0] = v;
         drow_rgb[3*x + 1] = v;
         drow_rgb[3*x + 2] = v;
-        // alpha already handled via SMask if present
       } else if (is_rgb24) {
         drow_rgb[3*x + 0] = sline[3*x + 2];
         drow_rgb[3*x + 1] = sline[3*x + 1];
         drow_rgb[3*x + 2] = sline[3*x + 0];
-      } else {  // 32-bpp BGRA/BGRx
+      } else {
         drow_rgb[3*x + 0] = sline[4*x + 2];
         drow_rgb[3*x + 1] = sline[4*x + 1];
         drow_rgb[3*x + 2] = sline[4*x + 0];
