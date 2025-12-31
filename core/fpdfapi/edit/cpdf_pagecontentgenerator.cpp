@@ -863,9 +863,8 @@ void CPDF_PageContentGenerator::ProcessImage(fxcrt::ostringstream* buf,
   }
 
   RetainPtr<CPDF_Image> pImage = pImageObj->GetImage();
-  if (pImage->IsInline()) {
-    return;
-  }
+  // Note: Inline images (BI...ID...EI) are converted to XObject images below.
+  // Do NOT return early here - the conversion happens at ConvertStreamToIndirectObject().
 
   RetainPtr<const CPDF_Stream> pStream = pImage->GetStream();
   if (!pStream) {
