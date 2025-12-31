@@ -604,8 +604,10 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
     if (CPDF_PathObject* path = po->AsPath()) {
       // Get the path's bounding box and transform it to page coordinates.
-      CFX_Matrix total_transform = to_page * path->matrix();
-      CFX_FloatRect path_bbox_page = total_transform.TransformRect(path->path().GetBoundingBox());
+      // Order matters: apply path's internal matrix first, THEN the form placement.
+      CFX_FloatRect raw_bbox = path->path().GetBoundingBox();
+      CFX_Matrix total_transform = path->matrix() * to_page;
+      CFX_FloatRect path_bbox_page = total_transform.TransformRect(raw_bbox);
       path_bbox_page.Normalize();
 
       // Check if the path's bounding box is completely inside any redaction rect.
@@ -614,7 +616,6 @@ bool RedactHolder(CPDF_Page* page_for_cache,
             path_bbox_page.right <= redact_rect.right &&
             path_bbox_page.bottom >= redact_rect.bottom &&
             path_bbox_page.top <= redact_rect.top) {
-          
           to_remove.push_back(path);
           changed = true;
           break;
