@@ -524,6 +524,7 @@ static bool RedactImageObject(CPDF_Page* page,
   const bool is_mask   = dib->IsMaskFormat();
   const bool has_alpha = dib->IsAlphaFormat();
 
+  const bool is_1bit   = (bpp == 1);
   const bool is_gray8  = (bpp == 8)  && !is_mask;
   const bool is_rgb24  = (bpp == 24);
   const bool is_bgra32 = (bpp == 32) &&  has_alpha;
@@ -540,7 +541,7 @@ static bool RedactImageObject(CPDF_Page* page,
     }
   }
 
-  if (!(is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32))
+  if (!(is_1bit || is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32))
     return false;
 
   // If the image has an SMask, keep it so we preserve transparency.
@@ -639,7 +640,18 @@ static bool RedactImageObject(CPDF_Page* page,
         continue;
       }
 
-      if (is_indexed8) {
+      if (is_1bit) {
+        // 1-bit image: each byte contains 8 pixels, MSB first
+        // Bit value 0 = black (0x00), bit value 1 = white (0xFF)
+        const int byte_idx = x / 8;
+        const int bit_idx = 7 - (x % 8);  // MSB first
+        const uint8_t byte_val = sline[byte_idx];
+        const uint8_t bit_val = (byte_val >> bit_idx) & 1;
+        const uint8_t v = bit_val ? 0xFF : 0x00;
+        drow_rgb[3*x + 0] = v;
+        drow_rgb[3*x + 1] = v;
+        drow_rgb[3*x + 2] = v;
+      } else if (is_indexed8) {
         const uint8_t idx  = sline[x];
         const uint32_t argb = palette[idx];
         drow_rgb[3*x + 0] = static_cast<uint8_t>((argb >> 16) & 0xFF);
