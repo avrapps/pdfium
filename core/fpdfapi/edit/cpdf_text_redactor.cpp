@@ -444,7 +444,8 @@ static bool RedactImageObject(CPDF_Page* page,
     return false;
 
   // Object -> page for this placement.
-  const CFX_Matrix img_to_page = parent_to_page * iobj->matrix();
+  // Order matters: apply image's internal matrix first, THEN the form placement.
+  const CFX_Matrix img_to_page = iobj->matrix() * parent_to_page;
 
   // Quick reject using unit bbox in page space.
   const CFX_FloatRect img_bbox_page =
