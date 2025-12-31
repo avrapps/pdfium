@@ -399,7 +399,11 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   // only a subset can leave the concatenated effect inconsistent.
   if (!all_dirty_streams.empty()) {
     int32_t last_index = -1;
-    if (RetainPtr<const CPDF_Object> contents =
+    // For Form XObjects, the content is in the XObject stream itself (index 0),
+    // not in a separate "Contents" entry.
+    if (obj_holder_->GetMutableFormStream()) {
+      last_index = 0;
+    } else if (RetainPtr<const CPDF_Object> contents =
             obj_holder_->GetDict()->GetObjectFor(pdfium::page_object::kContents)) {
       if (const CPDF_Array* arr = contents->AsArray()) {
         last_index = static_cast<int32_t>(arr->size()) - 1;

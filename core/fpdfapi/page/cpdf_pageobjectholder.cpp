@@ -15,6 +15,7 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
@@ -54,6 +55,10 @@ CPDF_PageObjectHolder::~CPDF_PageObjectHolder() = default;
 
 bool CPDF_PageObjectHolder::IsPage() const {
   return false;
+}
+
+RetainPtr<CPDF_Stream> CPDF_PageObjectHolder::GetMutableFormStream() {
+  return nullptr;
 }
 
 void CPDF_PageObjectHolder::StartParse(
