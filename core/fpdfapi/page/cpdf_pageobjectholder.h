@@ -30,6 +30,7 @@
 class CPDF_ContentParser;
 class CPDF_Document;
 class CPDF_PageObject;
+class CPDF_Stream;
 class PauseIndicatorIface;
 
 // These structs are used to keep track of resources that have already been
@@ -77,6 +78,10 @@ class CPDF_PageObjectHolder {
   virtual ~CPDF_PageObjectHolder();
 
   virtual bool IsPage() const;
+
+  // Returns the mutable Form XObject stream for CPDF_Form, or nullptr for Pages.
+  // Used by CPDF_PageContentManager to update Form XObject content directly.
+  virtual RetainPtr<CPDF_Stream> GetMutableFormStream();
 
   void StartParse(std::unique_ptr<CPDF_ContentParser> pParser);
   void ContinueParse(PauseIndicatorIface* pPause);

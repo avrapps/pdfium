@@ -32,6 +32,16 @@ CPDF_PageContentManager::CPDF_PageContentManager(
     : page_obj_holder_(page_obj_holder),
       document_(document),
       objects_with_multi_refs_(GetObjectsWithMultipleReferences(document_)) {
+  // For Form XObjects, the content is the XObject stream itself, not a
+  // separate "Contents" entry. Use GetMutableFormStream() to detect this.
+  RetainPtr<CPDF_Stream> form_stream = page_obj_holder_->GetMutableFormStream();
+  if (form_stream) {
+    is_form_xobject_ = true;
+    contents_ = std::move(form_stream);
+    return;
+  }
+
+  // For Pages, content is in the "Contents" entry.
   RetainPtr<CPDF_Dictionary> page_dict = page_obj_holder_->GetMutableDict();
   RetainPtr<CPDF_Object> contents_obj =
       page_dict->GetMutableObjectFor("Contents");
@@ -72,6 +82,10 @@ CPDF_PageContentManager::~CPDF_PageContentManager() {
 }
 
 bool CPDF_PageContentManager::HasStreamAtIndex(size_t stream_index) {
+  // For Form XObjects, stream 0 is always the Form XObject stream itself.
+  if (is_form_xobject_ && stream_index == 0) {
+    return true;
+  }
   return !!GetStreamByIndex(stream_index);
 }
 
@@ -97,6 +111,16 @@ RetainPtr<CPDF_Stream> CPDF_PageContentManager::GetStreamByIndex(
 }
 
 size_t CPDF_PageContentManager::AddStream(fxcrt::ostringstream* buf) {
+  // For Form XObjects, there's only one content stream (the XObject itself).
+  // We cannot add additional streams; instead, update the existing one.
+  if (is_form_xobject_) {
+    RetainPtr<CPDF_Stream> form_stream = GetContentsStream();
+    if (form_stream) {
+      form_stream->SetDataFromStringstreamAndRemoveFilter(buf);
+    }
+    return 0;
+  }
+
   auto new_stream = document_->NewIndirect<CPDF_Stream>(buf);
 
   // If there is one Content stream (not in an array), now there will be two, so
@@ -136,13 +160,32 @@ size_t CPDF_PageContentManager::AddStream(fxcrt::ostringstream* buf) {
 void CPDF_PageContentManager::UpdateStream(size_t stream_index,
                                            fxcrt::ostringstream* buf) {
   // If `buf` is now empty, remove the stream instead of setting the data.
+  // For Form XObjects, we can't remove the stream, just clear its content.
   if (buf->tellp() <= 0) {
+    if (is_form_xobject_) {
+      RetainPtr<CPDF_Stream> form_stream = GetContentsStream();
+      if (form_stream) {
+        fxcrt::ostringstream empty_buf;
+        form_stream->SetDataFromStringstreamAndRemoveFilter(&empty_buf);
+      }
+      return;
+    }
     ScheduleRemoveStreamByIndex(stream_index);
+    return;
+  }
+
+  // For Form XObjects, always update the form stream directly.
+  if (is_form_xobject_) {
+    RetainPtr<CPDF_Stream> form_stream = GetContentsStream();
+    if (form_stream) {
+      form_stream->SetDataFromStringstreamAndRemoveFilter(buf);
+    }
     return;
   }
 
   RetainPtr<CPDF_Stream> existing_stream = GetStreamByIndex(stream_index);
   CHECK(existing_stream);
+
   if (!pdfium::Contains(objects_with_multi_refs_,
                         existing_stream->GetObjNum())) {
     existing_stream->SetDataFromStringstreamAndRemoveFilter(buf);
@@ -188,6 +231,12 @@ void CPDF_PageContentManager::ExecuteScheduledRemovals() {
   DCHECK(!page_obj_holder_->HasDirtyStreams());
 
   if (streams_to_remove_.empty()) {
+    return;
+  }
+
+  // For Form XObjects, we cannot remove the stream (it IS the XObject).
+  // The stream content has already been cleared in UpdateStream().
+  if (is_form_xobject_) {
     return;
   }
 

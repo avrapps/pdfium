@@ -52,6 +52,9 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   std::optional<std::pair<RetainPtr<CFX_DIBitmap>, CFX_Matrix>>
   GetBitmapAndMatrixFromSoleImageOfForm() const override;
 
+  // CPDF_PageObjectHolder:
+  RetainPtr<CPDF_Stream> GetMutableFormStream() override;
+
   void ParseContent();
   void ParseContent(const CPDF_AllStates* pGraphicStates,
                     const CFX_Matrix* pParentMatrix,

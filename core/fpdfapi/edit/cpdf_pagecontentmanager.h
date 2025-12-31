@@ -55,6 +55,9 @@ class CPDF_PageContentManager {
   UnownedPtr<CPDF_PageObjectHolder> const page_obj_holder_;
   UnownedPtr<CPDF_Document> const document_;
   const std::set<uint32_t> objects_with_multi_refs_;
+  // True if this is a Form XObject (content is in the XObject stream itself).
+  // False for Pages (content is in "Contents" entry).
+  bool is_form_xobject_ = false;
   // When holding a CPDF_Stream, the pointer may be null.
   std::variant<RetainPtr<CPDF_Stream>, RetainPtr<CPDF_Array>> contents_;
   std::set<size_t> streams_to_remove_;

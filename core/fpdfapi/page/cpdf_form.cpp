@@ -117,6 +117,10 @@ CFX_FloatRect CPDF_Form::CalcBoundingBox() const {
   return CFX_FloatRect(left, bottom, right, top);
 }
 
+RetainPtr<CPDF_Stream> CPDF_Form::GetMutableFormStream() {
+  return form_stream_;
+}
+
 RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {
   return form_stream_;
 }

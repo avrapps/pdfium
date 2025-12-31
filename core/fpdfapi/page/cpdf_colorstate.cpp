@@ -149,7 +149,11 @@ CPDF_ColorState::ColorData::ColorData(const ColorData& src)
     : fill_color_ref_(src.fill_color_ref_),
       stroke_color_ref_(src.stroke_color_ref_),
       fill_color_(src.fill_color_),
-      stroke_color_(src.stroke_color_) {}
+      stroke_color_(src.stroke_color_),
+      fill_colorspace_res_name_(src.fill_colorspace_res_name_),
+      stroke_colorspace_res_name_(src.stroke_colorspace_res_name_),
+      fill_pattern_res_name_(src.fill_pattern_res_name_),
+      stroke_pattern_res_name_(src.stroke_pattern_res_name_) {}
 
 CPDF_ColorState::ColorData::~ColorData() = default;
 
@@ -181,4 +185,20 @@ void CPDF_ColorState::SetFillColorSpaceResName(ByteString name) {
 
 void CPDF_ColorState::SetStrokeColorSpaceResName(ByteString name) {
   ref_.GetPrivateCopy()->stroke_colorspace_res_name_ = std::move(name);
+}
+
+const ByteString& CPDF_ColorState::GetFillPatternResName() const {
+  return ref_.GetObject()->fill_pattern_res_name_;
+}
+
+const ByteString& CPDF_ColorState::GetStrokePatternResName() const {
+  return ref_.GetObject()->stroke_pattern_res_name_;
+}
+
+void CPDF_ColorState::SetFillPatternResName(ByteString name) {
+  ref_.GetPrivateCopy()->fill_pattern_res_name_ = std::move(name);
+}
+
+void CPDF_ColorState::SetStrokePatternResName(ByteString name) {
+  ref_.GetPrivateCopy()->stroke_pattern_res_name_ = std::move(name);
 }

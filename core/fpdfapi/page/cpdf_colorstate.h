@@ -57,6 +57,11 @@ class CPDF_ColorState {
   void SetFillColorSpaceResName(ByteString name);
   void SetStrokeColorSpaceResName(ByteString name);
 
+  const ByteString& GetFillPatternResName() const;
+  const ByteString& GetStrokePatternResName() const;
+  void SetFillPatternResName(ByteString name);
+  void SetStrokePatternResName(ByteString name);
+
   bool HasRef() const { return ref_.GetObject() != nullptr; }
 
  private:
@@ -75,6 +80,8 @@ class CPDF_ColorState {
 
     ByteString fill_colorspace_res_name_;
     ByteString stroke_colorspace_res_name_;
+    ByteString fill_pattern_res_name_;
+    ByteString stroke_pattern_res_name_;
 
    private:
     ColorData();

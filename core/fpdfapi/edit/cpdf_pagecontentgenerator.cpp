@@ -29,6 +29,7 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_pattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_color.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
@@ -53,10 +54,8 @@
 namespace {
 
 // TODO(thestig): Remove/restore other unused resource types:
-// - ColorSpace
-// - Pattern
 // - Shading
-constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace"};
+constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace", "Pattern"};
 
 // Key: The resource type.
 // Value: The resource names of a given type.
@@ -140,6 +139,10 @@ void RecordPageObjectResourceUsage(const CPDF_PageObject* page_object,
     seen_resources["ColorSpace"].insert(cs.GetFillColorSpaceResName());
   if (!cs.GetStrokeColorSpaceResName().IsEmpty())
     seen_resources["ColorSpace"].insert(cs.GetStrokeColorSpaceResName());
+  if (!cs.GetFillPatternResName().IsEmpty())
+    seen_resources["Pattern"].insert(cs.GetFillPatternResName());
+  if (!cs.GetStrokePatternResName().IsEmpty())
+    seen_resources["Pattern"].insert(cs.GetStrokePatternResName());
 }
 
 CPDF_PageObjectHolder::RemovedResourceMap RemoveUnusedResources(
@@ -399,7 +402,11 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   // only a subset can leave the concatenated effect inconsistent.
   if (!all_dirty_streams.empty()) {
     int32_t last_index = -1;
-    if (RetainPtr<const CPDF_Object> contents =
+    // For Form XObjects, the content is in the XObject stream itself (index 0),
+    // not in a separate "Contents" entry.
+    if (obj_holder_->GetMutableFormStream()) {
+      last_index = 0;
+    } else if (RetainPtr<const CPDF_Object> contents =
             obj_holder_->GetDict()->GetObjectFor(pdfium::page_object::kContents)) {
       if (const CPDF_Array* arr = contents->AsArray()) {
         last_index = static_cast<int32_t>(arr->size()) - 1;
@@ -612,6 +619,35 @@ bool CPDF_PageContentGenerator::EmitColor(fxcrt::ostringstream& buf,
                                           bool is_stroke,
                                           CPDF_PageObject* owner) {
   if (!color) return false;
+
+  // Handle pattern colors: emit "/Pattern cs /PatternName scn"
+  if (color->IsPattern()) {
+    RetainPtr<CPDF_Pattern> pattern = color->GetPattern();
+    if (!pattern)
+      return false;
+    
+    // Get the pattern's underlying PDF object (stream or dict)
+    RetainPtr<CPDF_Object> pattern_obj = pattern->pattern_obj();
+    if (!pattern_obj)
+      return false;
+    
+    // Realize the pattern as a resource in the Pattern dictionary
+    ByteString pattern_name = RealizeResource(pattern_obj.Get(), "Pattern");
+    if (pattern_name.IsEmpty())
+      return false;
+    
+    // Store the pattern resource name for resource tracking
+    if (is_stroke) {
+      owner->mutable_color_state().SetStrokePatternResName(pattern_name);
+    } else {
+      owner->mutable_color_state().SetFillPatternResName(pattern_name);
+    }
+    
+    // Emit: /Pattern cs /PatternName scn  (or CS/SCN for stroke)
+    buf << "/Pattern" << (is_stroke ? " CS " : " cs ");
+    buf << "/" << PDF_NameEncode(pattern_name) << (is_stroke ? " SCN " : " scn ");
+    return true;
+  }
 
   if (color->IsColorSpaceGray()) {
     auto comps = color->GetRawNonPatternComps();
@@ -827,9 +863,8 @@ void CPDF_PageContentGenerator::ProcessImage(fxcrt::ostringstream* buf,
   }
 
   RetainPtr<CPDF_Image> pImage = pImageObj->GetImage();
-  if (pImage->IsInline()) {
-    return;
-  }
+  // Note: Inline images (BI...ID...EI) are converted to XObject images below.
+  // Do NOT return early here - the conversion happens at ConvertStreamToIndirectObject().
 
   RetainPtr<const CPDF_Stream> pStream = pImage->GetStream();
   if (!pStream) {

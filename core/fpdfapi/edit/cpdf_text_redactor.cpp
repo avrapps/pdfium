@@ -21,6 +21,8 @@
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -29,12 +31,111 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fxcrt/fx_coordinates.h"
+#include "core/fxcodec/jpeg/jpegmodule.h"
+#include "core/fxcodec/scanlinedecoder.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/fx_dib.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/span.h"
 
 namespace {
+
+// Represents a single subpath within a complex path (e.g., one letter in a vector logo).
+struct Subpath {
+  std::vector<CFX_Path::Point> points;
+  CFX_FloatRect bounding_box;
+};
+
+// Calculate bounding box for a set of path points.
+CFX_FloatRect CalculateSubpathBoundingBox(const std::vector<CFX_Path::Point>& points) {
+  if (points.empty())
+    return CFX_FloatRect();
+  
+  float min_x = points[0].point_.x;
+  float max_x = points[0].point_.x;
+  float min_y = points[0].point_.y;
+  float max_y = points[0].point_.y;
+  
+  for (const auto& pt : points) {
+    min_x = std::min(min_x, pt.point_.x);
+    max_x = std::max(max_x, pt.point_.x);
+    min_y = std::min(min_y, pt.point_.y);
+    max_y = std::max(max_y, pt.point_.y);
+  }
+  
+  return CFX_FloatRect(min_x, min_y, max_x, max_y);
+}
+
+// Extract individual subpaths from a complex path.
+// Each subpath starts with a kMove point and ends at the next kMove or end of path.
+std::vector<Subpath> ExtractSubpaths(const CFX_Path& path) {
+  std::vector<Subpath> subpaths;
+  const std::vector<CFX_Path::Point>& points = path.GetPoints();
+  
+  if (points.empty())
+    return subpaths;
+  
+  Subpath current;
+  for (size_t i = 0; i < points.size(); ++i) {
+    const auto& pt = points[i];
+    
+    // A kMove point starts a new subpath (unless it's the first point or current is empty)
+    if (pt.type_ == CFX_Path::Point::Type::kMove && !current.points.empty()) {
+      // Finish current subpath
+      current.bounding_box = CalculateSubpathBoundingBox(current.points);
+      subpaths.push_back(std::move(current));
+      current = Subpath();
+    }
+    
+    current.points.push_back(pt);
+  }
+  
+  // Don't forget the last subpath
+  if (!current.points.empty()) {
+    current.bounding_box = CalculateSubpathBoundingBox(current.points);
+    subpaths.push_back(std::move(current));
+  }
+  
+  return subpaths;
+}
+
+// Rebuild a CFX_Path from a vector of subpaths.
+void RebuildPath(CPDF_Path& path, const std::vector<Subpath>& subpaths) {
+  // Create a new path and copy points from remaining subpaths
+  CPDF_Path new_path;
+  new_path.Emplace();
+  
+  for (const auto& subpath : subpaths) {
+    for (const auto& pt : subpath.points) {
+      if (pt.close_figure_) {
+        new_path.AppendPointAndClose(pt.point_, pt.type_);
+      } else {
+        new_path.AppendPoint(pt.point_, pt.type_);
+      }
+    }
+  }
+  
+  path = new_path;
+}
+
+// Check if a subpath's bounding box (transformed to page space) is inside any redaction rect.
+bool IsSubpathInsideAnyRedactRect(const CFX_FloatRect& subpath_bbox,
+                                   const CFX_Matrix& total_transform,
+                                   pdfium::span<const CFX_FloatRect> page_rects) {
+  CFX_FloatRect bbox_page = total_transform.TransformRect(subpath_bbox);
+  bbox_page.Normalize();
+  
+  for (const auto& redact_rect : page_rects) {
+    if (bbox_page.left >= redact_rect.left &&
+        bbox_page.right <= redact_rect.right &&
+        bbox_page.bottom >= redact_rect.bottom &&
+        bbox_page.top <= redact_rect.top) {
+      return true;
+    }
+  }
+  return false;
+}
 
 static void AddBlackOverlayPaths(CPDF_Page* page,
                                  pdfium::span<const CFX_FloatRect> rects_page_space) {
@@ -327,8 +428,57 @@ static void PageRectsToImageGrid(const CFX_Matrix& image_to_page,
   }
 }
 
-// Returns true if the image stream was overwritten.
-// Returns true if the image stream was overwritten.
+// Helper: Manually decode a JPEG stream for SMask.
+// Returns true on success and populates out_data.
+static bool DecodeJpegSMask(RetainPtr<const CPDF_Stream> stream,
+                            int width, int height,
+                            DataVector<uint8_t>& out_data) {
+  if (!stream)
+    return false;
+  
+  // Get raw stream data
+  pdfium::span<const uint8_t> raw_span;
+  DataVector<uint8_t> raw_data_storage;
+  if (stream->IsMemoryBased()) {
+    raw_span = stream->GetInMemoryRawData();
+  } else {
+    raw_data_storage = const_cast<CPDF_Stream*>(stream.Get())->ReadAllRawData();
+    raw_span = pdfium::span<const uint8_t>(raw_data_storage);
+  }
+  
+  if (raw_span.size() < 2)
+    return false;
+  
+  // Check for JPEG header
+  if (raw_span[0] != 0xFF || raw_span[1] != 0xD8)
+    return false;
+  
+  // Get SMask dimensions
+  RetainPtr<const CPDF_Dictionary> smask_dict = stream->GetDict();
+  int smask_w = smask_dict ? smask_dict->GetIntegerFor("Width") : width;
+  int smask_h = smask_dict ? smask_dict->GetIntegerFor("Height") : height;
+  
+  // Create JPEG decoder
+  auto jpeg_decoder = fxcodec::JpegModule::CreateDecoder(
+      raw_span, smask_w, smask_h, 1, false);
+  
+  if (!jpeg_decoder)
+    return false;
+  
+  out_data.resize(static_cast<size_t>(width) * height);
+  
+  // Decode scanlines
+  for (int row = 0; row < smask_h && row < height; ++row) {
+    pdfium::span<const uint8_t> scanline = jpeg_decoder->GetScanline(row);
+    if (!scanline.empty()) {
+      size_t copy_len = std::min<size_t>(scanline.size(), static_cast<size_t>(width));
+      memcpy(out_data.data() + row * width, scanline.data(), copy_len);
+    }
+  }
+  
+  return true;
+}
+
 // Returns true if the image stream was overwritten.
 static bool RedactImageObject(CPDF_Page* page,
                               CPDF_ImageObject* iobj,
@@ -348,7 +498,8 @@ static bool RedactImageObject(CPDF_Page* page,
     return false;
 
   // Object -> page for this placement.
-  const CFX_Matrix img_to_page = parent_to_page * iobj->matrix();
+  // Order matters: apply image's internal matrix first, THEN the form placement.
+  const CFX_Matrix img_to_page = iobj->matrix() * parent_to_page;
 
   // Quick reject using unit bbox in page space.
   const CFX_FloatRect img_bbox_page =
@@ -364,7 +515,7 @@ static bool RedactImageObject(CPDF_Page* page,
   if (!touches)
     return false;
 
-  // Decode source.
+  // Try to load the image via standard DIB path
   RetainPtr<CFX_DIBBase> dib = image->LoadDIBBase();
   if (!dib)
     return false;
@@ -373,13 +524,26 @@ static bool RedactImageObject(CPDF_Page* page,
   const bool is_mask   = dib->IsMaskFormat();
   const bool has_alpha = dib->IsAlphaFormat();
 
-  const bool is_gray8  = (bpp == 8)  && !is_mask;   // may be true for real gray OR indexed
+  const bool is_1bit   = (bpp == 1);
+  const bool is_gray8  = (bpp == 8)  && !is_mask;
   const bool is_rgb24  = (bpp == 24);
   const bool is_bgra32 = (bpp == 32) &&  has_alpha;
   const bool is_bgrx32 = (bpp == 32) && !has_alpha;
 
-  // Palette detection for indexed-8 images (PNG paletted path).
-  auto palette = dib->GetPaletteSpan();             // span<const uint32_t> ARGB (0xAARRGGBB)
+  // Check if this is an ImageMask - these use the fill color from graphics state
+  const bool is_image_mask = image->IsMask();
+  uint8_t mask_fill_r = 0, mask_fill_g = 0, mask_fill_b = 0;
+  if (is_image_mask) {
+    // Get fill color from the image object's color state
+    // FX_COLORREF is BGR: 0x00BBGGRR
+    FX_COLORREF fill_color = iobj->color_state().GetFillColorRef();
+    mask_fill_r = static_cast<uint8_t>(fill_color & 0xFF);
+    mask_fill_g = static_cast<uint8_t>((fill_color >> 8) & 0xFF);
+    mask_fill_b = static_cast<uint8_t>((fill_color >> 16) & 0xFF);
+  }
+
+  // Palette detection for indexed-8 images.
+  auto palette = dib->GetPaletteSpan();
   const bool is_indexed8 = is_gray8 && !palette.empty();
 
   bool palette_has_alpha = false;
@@ -389,10 +553,8 @@ static bool RedactImageObject(CPDF_Page* page,
     }
   }
 
-  if (!(is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32)) {
-    // Unsupported source format.
+  if (!(is_1bit || is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32))
     return false;
-  }
 
   // If the image has an SMask, keep it so we preserve transparency.
   RetainPtr<const CPDF_Stream> orig_smask_stream;
@@ -430,27 +592,31 @@ static bool RedactImageObject(CPDF_Page* page,
 
   // Build new decoded buffers.
   DataVector<uint8_t> out_rgb(static_cast<size_t>(W) * static_cast<size_t>(H) * 3u);
-  DataVector<uint8_t> out_a;  // only used if we have/keep alpha
+  DataVector<uint8_t> out_a;
 
   // We need an alpha plane if: original was BGRA32, or there was an SMask, or
-  // palette carries alpha (PNG paletted transparency).
-  bool process_alpha = is_bgra32 || !!orig_smask_stream || (is_indexed8 && palette_has_alpha);
+  // palette carries alpha (PNG paletted transparency), or it's an ImageMask.
+  bool process_alpha = is_bgra32 || !!orig_smask_stream || (is_indexed8 && palette_has_alpha) || is_image_mask;
 
   if (process_alpha) {
     out_a.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
     if (orig_smask_stream && !is_bgra32) {
-      auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(orig_smask_stream);
-      acc->LoadAllDataFiltered();
-      pdfium::span<const uint8_t> span = acc->GetSpan();
-      if (span.size() >= out_a.size())
-        memcpy(out_a.data(), span.data(), out_a.size());
-      else {
-        memcpy(out_a.data(), span.data(), span.size());
-        std::fill(out_a.begin() + static_cast<ptrdiff_t>(span.size()),
-                  out_a.end(), 0xFF);
+      // Try to decode SMask as JPEG (for file-based streams in WASM)
+      if (!DecodeJpegSMask(orig_smask_stream, W, H, out_a)) {
+        // Fall back to LoadAllDataFiltered
+        auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(orig_smask_stream);
+        acc->LoadAllDataFiltered();
+        pdfium::span<const uint8_t> span = acc->GetSpan();
+        if (span.size() >= out_a.size()) {
+          memcpy(out_a.data(), span.data(), out_a.size());
+        } else if (!span.empty()) {
+          memcpy(out_a.data(), span.data(), span.size());
+          std::fill(out_a.begin() + static_cast<ptrdiff_t>(span.size()), out_a.end(), 0xFF);
+        } else {
+          std::fill(out_a.begin(), out_a.end(), 0xFF);
+        }
       }
     } else {
-      // Default opaque; specific formats will overwrite per pixel below.
       std::fill(out_a.begin(), out_a.end(), 0xFF);
     }
   }
@@ -458,13 +624,12 @@ static bool RedactImageObject(CPDF_Page* page,
   size_t total_redacted_px = 0;
 
   for (int row_top = 0; row_top < H; ++row_top) {
-    const int y_img = H - 1 - row_top;  // convert to bottom-up index
+    const int y_img = H - 1 - row_top;
     const pdfium::span<const uint8_t> sline = dib->GetScanline(row_top);
     uint8_t* drow_rgb = out_rgb.data() + static_cast<size_t>(row_top) * static_cast<size_t>(W) * 3u;
     uint8_t* arow     = process_alpha ? (out_a.data() + static_cast<size_t>(row_top) * static_cast<size_t>(W)) : nullptr;
 
     if (sline.empty()) {
-      // Defensive: fill whole row as redacted.
       std::fill(drow_rgb, drow_rgb + static_cast<size_t>(W) * 3u, fill_val);
       if (process_alpha)
         std::fill(arow, arow + static_cast<size_t>(W), 0xFF);
@@ -482,18 +647,56 @@ static bool RedactImageObject(CPDF_Page* page,
         drow_rgb[3*x + 1] = fill_val;
         drow_rgb[3*x + 2] = fill_val;
         if (process_alpha)
-          arow[x] = 0xFF;  // paint on top => force opaque under the box
+          arow[x] = 0xFF;
         ++total_redacted_px;
         continue;
       }
 
-      if (is_indexed8) {
-        // Expand palette index -> RGB (palette entries are ARGB 0xAARRGGBB).
+      if (is_1bit) {
+        // 1-bit image: each byte contains 8 pixels, MSB first
+        const int byte_idx = x / 8;
+        const int bit_idx = 7 - (x % 8);  // MSB first
+        const uint8_t byte_val = sline[byte_idx];
+        const uint8_t bit_val = (byte_val >> bit_idx) & 1;
+        
+        uint8_t r, g, b;
+        if (is_image_mask) {
+          // ImageMask: use fill color for painted pixels, transparent for others
+          // PDFium's DIB loader applies the Decode array during decoding, so
+          // the decoded bit values are already transformed.
+          // After decoding: bit 1 = painted, bit 0 = transparent
+          const bool is_paint = (bit_val == 1);
+          if (is_paint) {
+            r = mask_fill_r;
+            g = mask_fill_g;
+            b = mask_fill_b;
+            if (process_alpha)
+              arow[x] = 0xFF;  // opaque
+          } else {
+            r = g = b = 0xFF;  // background (will be transparent)
+            if (process_alpha)
+              arow[x] = 0x00;  // transparent
+          }
+        } else if (!palette.empty()) {
+          // Use palette - it already reflects correct color mapping (BlackIs1, Decode, etc.)
+          const uint32_t argb = palette[bit_val];
+          r = static_cast<uint8_t>((argb >> 16) & 0xFF);
+          g = static_cast<uint8_t>((argb >> 8) & 0xFF);
+          b = static_cast<uint8_t>(argb & 0xFF);
+        } else {
+          // No palette: default is bit 0 = black, bit 1 = white
+          const uint8_t v = bit_val ? 0xFF : 0x00;
+          r = g = b = v;
+        }
+        drow_rgb[3*x + 0] = r;
+        drow_rgb[3*x + 1] = g;
+        drow_rgb[3*x + 2] = b;
+      } else if (is_indexed8) {
         const uint8_t idx  = sline[x];
         const uint32_t argb = palette[idx];
-        drow_rgb[3*x + 0] = static_cast<uint8_t>((argb >> 16) & 0xFF);  // R
-        drow_rgb[3*x + 1] = static_cast<uint8_t>((argb >>  8) & 0xFF);  // G
-        drow_rgb[3*x + 2] = static_cast<uint8_t>( argb        & 0xFF);  // B
+        drow_rgb[3*x + 0] = static_cast<uint8_t>((argb >> 16) & 0xFF);
+        drow_rgb[3*x + 1] = static_cast<uint8_t>((argb >>  8) & 0xFF);
+        drow_rgb[3*x + 2] = static_cast<uint8_t>( argb        & 0xFF);
         if (process_alpha && !orig_smask_stream && !is_bgra32 && palette_has_alpha)
           arow[x] = static_cast<uint8_t>((argb >> 24) & 0xFF);
       } else if (is_gray8) {
@@ -501,12 +704,11 @@ static bool RedactImageObject(CPDF_Page* page,
         drow_rgb[3*x + 0] = v;
         drow_rgb[3*x + 1] = v;
         drow_rgb[3*x + 2] = v;
-        // alpha already handled via SMask if present
       } else if (is_rgb24) {
         drow_rgb[3*x + 0] = sline[3*x + 2];
         drow_rgb[3*x + 1] = sline[3*x + 1];
         drow_rgb[3*x + 2] = sline[3*x + 0];
-      } else {  // 32-bpp BGRA/BGRx
+      } else {
         drow_rgb[3*x + 0] = sline[4*x + 2];
         drow_rgb[3*x + 1] = sline[4*x + 1];
         drow_rgb[3*x + 2] = sline[4*x + 0];
@@ -603,22 +805,46 @@ bool RedactHolder(CPDF_Page* page_for_cache,
     }
 
     if (CPDF_PathObject* path = po->AsPath()) {
-      // Get the path's bounding box and transform it to page coordinates.
-      CFX_Matrix total_transform = to_page * path->matrix();
-      CFX_FloatRect path_bbox_page = total_transform.TransformRect(path->path().GetBoundingBox());
-      path_bbox_page.Normalize();
-
-      // Check if the path's bounding box is completely inside any redaction rect.
-      for (const auto& redact_rect : page_rects) {
-        if (path_bbox_page.left >= redact_rect.left &&
-            path_bbox_page.right <= redact_rect.right &&
-            path_bbox_page.bottom >= redact_rect.bottom &&
-            path_bbox_page.top <= redact_rect.top) {
-          
-          to_remove.push_back(path);
-          changed = true;
-          break;
+      // Order matters: apply path's internal matrix first, THEN the form placement.
+      CFX_Matrix total_transform = path->matrix() * to_page;
+      
+      // Extract subpaths from the path (e.g., individual letters in a vector logo)
+      const CFX_Path* cfx_path = path->path().GetObject();
+      if (!cfx_path) {
+        continue;
+      }
+      
+      std::vector<Subpath> subpaths = ExtractSubpaths(*cfx_path);
+      
+      if (subpaths.empty()) {
+        continue;
+      }
+      
+      // Check each subpath individually against redaction rects
+      std::vector<Subpath> remaining_subpaths;
+      bool any_removed = false;
+      
+      for (const auto& subpath : subpaths) {
+        if (IsSubpathInsideAnyRedactRect(subpath.bounding_box, total_transform, page_rects)) {
+          // This subpath should be redacted
+          any_removed = true;
+        } else {
+          // Keep this subpath
+          remaining_subpaths.push_back(subpath);
         }
+      }
+      
+      if (any_removed) {
+        if (remaining_subpaths.empty()) {
+          // All subpaths were redacted - remove the entire path object
+          to_remove.push_back(path);
+        } else {
+          // Some subpaths remain - rebuild the path with only the remaining subpaths
+          RebuildPath(path->path(), remaining_subpaths);
+          path->CalcBoundingBox();
+          path->SetDirty(true);
+        }
+        changed = true;
       }
       continue;
     }
