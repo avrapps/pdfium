@@ -530,6 +530,18 @@ static bool RedactImageObject(CPDF_Page* page,
   const bool is_bgra32 = (bpp == 32) &&  has_alpha;
   const bool is_bgrx32 = (bpp == 32) && !has_alpha;
 
+  // Check if this is an ImageMask - these use the fill color from graphics state
+  const bool is_image_mask = image->IsMask();
+  uint8_t mask_fill_r = 0, mask_fill_g = 0, mask_fill_b = 0;
+  if (is_image_mask) {
+    // Get fill color from the image object's color state
+    // FX_COLORREF is BGR: 0x00BBGGRR
+    FX_COLORREF fill_color = iobj->color_state().GetFillColorRef();
+    mask_fill_r = static_cast<uint8_t>(fill_color & 0xFF);
+    mask_fill_g = static_cast<uint8_t>((fill_color >> 8) & 0xFF);
+    mask_fill_b = static_cast<uint8_t>((fill_color >> 16) & 0xFF);
+  }
+
   // Palette detection for indexed-8 images.
   auto palette = dib->GetPaletteSpan();
   const bool is_indexed8 = is_gray8 && !palette.empty();
@@ -583,8 +595,8 @@ static bool RedactImageObject(CPDF_Page* page,
   DataVector<uint8_t> out_a;
 
   // We need an alpha plane if: original was BGRA32, or there was an SMask, or
-  // palette carries alpha (PNG paletted transparency).
-  bool process_alpha = is_bgra32 || !!orig_smask_stream || (is_indexed8 && palette_has_alpha);
+  // palette carries alpha (PNG paletted transparency), or it's an ImageMask.
+  bool process_alpha = is_bgra32 || !!orig_smask_stream || (is_indexed8 && palette_has_alpha) || is_image_mask;
 
   if (process_alpha) {
     out_a.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
@@ -642,15 +654,43 @@ static bool RedactImageObject(CPDF_Page* page,
 
       if (is_1bit) {
         // 1-bit image: each byte contains 8 pixels, MSB first
-        // Bit value 0 = black (0x00), bit value 1 = white (0xFF)
         const int byte_idx = x / 8;
         const int bit_idx = 7 - (x % 8);  // MSB first
         const uint8_t byte_val = sline[byte_idx];
         const uint8_t bit_val = (byte_val >> bit_idx) & 1;
-        const uint8_t v = bit_val ? 0xFF : 0x00;
-        drow_rgb[3*x + 0] = v;
-        drow_rgb[3*x + 1] = v;
-        drow_rgb[3*x + 2] = v;
+        
+        uint8_t r, g, b;
+        if (is_image_mask) {
+          // ImageMask: use fill color for painted pixels, transparent for others
+          // PDFium's DIB loader applies the Decode array during decoding, so
+          // the decoded bit values are already transformed.
+          // After decoding: bit 1 = painted, bit 0 = transparent
+          const bool is_paint = (bit_val == 1);
+          if (is_paint) {
+            r = mask_fill_r;
+            g = mask_fill_g;
+            b = mask_fill_b;
+            if (process_alpha)
+              arow[x] = 0xFF;  // opaque
+          } else {
+            r = g = b = 0xFF;  // background (will be transparent)
+            if (process_alpha)
+              arow[x] = 0x00;  // transparent
+          }
+        } else if (!palette.empty()) {
+          // Use palette - it already reflects correct color mapping (BlackIs1, Decode, etc.)
+          const uint32_t argb = palette[bit_val];
+          r = static_cast<uint8_t>((argb >> 16) & 0xFF);
+          g = static_cast<uint8_t>((argb >> 8) & 0xFF);
+          b = static_cast<uint8_t>(argb & 0xFF);
+        } else {
+          // No palette: default is bit 0 = black, bit 1 = white
+          const uint8_t v = bit_val ? 0xFF : 0x00;
+          r = g = b = v;
+        }
+        drow_rgb[3*x + 0] = r;
+        drow_rgb[3*x + 1] = g;
+        drow_rgb[3*x + 2] = b;
       } else if (is_indexed8) {
         const uint8_t idx  = sline[x];
         const uint32_t argb = palette[idx];
