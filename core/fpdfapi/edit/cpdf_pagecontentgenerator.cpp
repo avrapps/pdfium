@@ -29,6 +29,7 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_pattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_color.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
@@ -53,10 +54,8 @@
 namespace {
 
 // TODO(thestig): Remove/restore other unused resource types:
-// - ColorSpace
-// - Pattern
 // - Shading
-constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace"};
+constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace", "Pattern"};
 
 // Key: The resource type.
 // Value: The resource names of a given type.
@@ -140,6 +139,10 @@ void RecordPageObjectResourceUsage(const CPDF_PageObject* page_object,
     seen_resources["ColorSpace"].insert(cs.GetFillColorSpaceResName());
   if (!cs.GetStrokeColorSpaceResName().IsEmpty())
     seen_resources["ColorSpace"].insert(cs.GetStrokeColorSpaceResName());
+  if (!cs.GetFillPatternResName().IsEmpty())
+    seen_resources["Pattern"].insert(cs.GetFillPatternResName());
+  if (!cs.GetStrokePatternResName().IsEmpty())
+    seen_resources["Pattern"].insert(cs.GetStrokePatternResName());
 }
 
 CPDF_PageObjectHolder::RemovedResourceMap RemoveUnusedResources(
@@ -616,6 +619,35 @@ bool CPDF_PageContentGenerator::EmitColor(fxcrt::ostringstream& buf,
                                           bool is_stroke,
                                           CPDF_PageObject* owner) {
   if (!color) return false;
+
+  // Handle pattern colors: emit "/Pattern cs /PatternName scn"
+  if (color->IsPattern()) {
+    RetainPtr<CPDF_Pattern> pattern = color->GetPattern();
+    if (!pattern)
+      return false;
+    
+    // Get the pattern's underlying PDF object (stream or dict)
+    RetainPtr<CPDF_Object> pattern_obj = pattern->pattern_obj();
+    if (!pattern_obj)
+      return false;
+    
+    // Realize the pattern as a resource in the Pattern dictionary
+    ByteString pattern_name = RealizeResource(pattern_obj.Get(), "Pattern");
+    if (pattern_name.IsEmpty())
+      return false;
+    
+    // Store the pattern resource name for resource tracking
+    if (is_stroke) {
+      owner->mutable_color_state().SetStrokePatternResName(pattern_name);
+    } else {
+      owner->mutable_color_state().SetFillPatternResName(pattern_name);
+    }
+    
+    // Emit: /Pattern cs /PatternName scn  (or CS/SCN for stroke)
+    buf << "/Pattern" << (is_stroke ? " CS " : " cs ");
+    buf << "/" << PDF_NameEncode(pattern_name) << (is_stroke ? " SCN " : " scn ");
+    return true;
+  }
 
   if (color->IsColorSpaceGray()) {
     auto comps = color->GetRawNonPatternComps();
