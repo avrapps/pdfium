@@ -36,6 +36,102 @@
 
 namespace {
 
+// Represents a single subpath within a complex path (e.g., one letter in a vector logo).
+struct Subpath {
+  std::vector<CFX_Path::Point> points;
+  CFX_FloatRect bounding_box;
+};
+
+// Calculate bounding box for a set of path points.
+CFX_FloatRect CalculateSubpathBoundingBox(const std::vector<CFX_Path::Point>& points) {
+  if (points.empty())
+    return CFX_FloatRect();
+  
+  float min_x = points[0].point_.x;
+  float max_x = points[0].point_.x;
+  float min_y = points[0].point_.y;
+  float max_y = points[0].point_.y;
+  
+  for (const auto& pt : points) {
+    min_x = std::min(min_x, pt.point_.x);
+    max_x = std::max(max_x, pt.point_.x);
+    min_y = std::min(min_y, pt.point_.y);
+    max_y = std::max(max_y, pt.point_.y);
+  }
+  
+  return CFX_FloatRect(min_x, min_y, max_x, max_y);
+}
+
+// Extract individual subpaths from a complex path.
+// Each subpath starts with a kMove point and ends at the next kMove or end of path.
+std::vector<Subpath> ExtractSubpaths(const CFX_Path& path) {
+  std::vector<Subpath> subpaths;
+  const std::vector<CFX_Path::Point>& points = path.GetPoints();
+  
+  if (points.empty())
+    return subpaths;
+  
+  Subpath current;
+  for (size_t i = 0; i < points.size(); ++i) {
+    const auto& pt = points[i];
+    
+    // A kMove point starts a new subpath (unless it's the first point or current is empty)
+    if (pt.type_ == CFX_Path::Point::Type::kMove && !current.points.empty()) {
+      // Finish current subpath
+      current.bounding_box = CalculateSubpathBoundingBox(current.points);
+      subpaths.push_back(std::move(current));
+      current = Subpath();
+    }
+    
+    current.points.push_back(pt);
+  }
+  
+  // Don't forget the last subpath
+  if (!current.points.empty()) {
+    current.bounding_box = CalculateSubpathBoundingBox(current.points);
+    subpaths.push_back(std::move(current));
+  }
+  
+  return subpaths;
+}
+
+// Rebuild a CFX_Path from a vector of subpaths.
+void RebuildPath(CPDF_Path& path, const std::vector<Subpath>& subpaths) {
+  // Create a new path and copy points from remaining subpaths
+  CPDF_Path new_path;
+  new_path.Emplace();
+  
+  for (const auto& subpath : subpaths) {
+    for (const auto& pt : subpath.points) {
+      if (pt.close_figure_) {
+        new_path.AppendPointAndClose(pt.point_, pt.type_);
+      } else {
+        new_path.AppendPoint(pt.point_, pt.type_);
+      }
+    }
+  }
+  
+  path = new_path;
+}
+
+// Check if a subpath's bounding box (transformed to page space) is inside any redaction rect.
+bool IsSubpathInsideAnyRedactRect(const CFX_FloatRect& subpath_bbox,
+                                   const CFX_Matrix& total_transform,
+                                   pdfium::span<const CFX_FloatRect> page_rects) {
+  CFX_FloatRect bbox_page = total_transform.TransformRect(subpath_bbox);
+  bbox_page.Normalize();
+  
+  for (const auto& redact_rect : page_rects) {
+    if (bbox_page.left >= redact_rect.left &&
+        bbox_page.right <= redact_rect.right &&
+        bbox_page.bottom >= redact_rect.bottom &&
+        bbox_page.top <= redact_rect.top) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void AddBlackOverlayPaths(CPDF_Page* page,
                                  pdfium::span<const CFX_FloatRect> rects_page_space) {
   if (!page || rects_page_space.empty())
@@ -603,23 +699,46 @@ bool RedactHolder(CPDF_Page* page_for_cache,
     }
 
     if (CPDF_PathObject* path = po->AsPath()) {
-      // Get the path's bounding box and transform it to page coordinates.
       // Order matters: apply path's internal matrix first, THEN the form placement.
-      CFX_FloatRect raw_bbox = path->path().GetBoundingBox();
       CFX_Matrix total_transform = path->matrix() * to_page;
-      CFX_FloatRect path_bbox_page = total_transform.TransformRect(raw_bbox);
-      path_bbox_page.Normalize();
-
-      // Check if the path's bounding box is completely inside any redaction rect.
-      for (const auto& redact_rect : page_rects) {
-        if (path_bbox_page.left >= redact_rect.left &&
-            path_bbox_page.right <= redact_rect.right &&
-            path_bbox_page.bottom >= redact_rect.bottom &&
-            path_bbox_page.top <= redact_rect.top) {
-          to_remove.push_back(path);
-          changed = true;
-          break;
+      
+      // Extract subpaths from the path (e.g., individual letters in a vector logo)
+      const CFX_Path* cfx_path = path->path().GetObject();
+      if (!cfx_path) {
+        continue;
+      }
+      
+      std::vector<Subpath> subpaths = ExtractSubpaths(*cfx_path);
+      
+      if (subpaths.empty()) {
+        continue;
+      }
+      
+      // Check each subpath individually against redaction rects
+      std::vector<Subpath> remaining_subpaths;
+      bool any_removed = false;
+      
+      for (const auto& subpath : subpaths) {
+        if (IsSubpathInsideAnyRedactRect(subpath.bounding_box, total_transform, page_rects)) {
+          // This subpath should be redacted
+          any_removed = true;
+        } else {
+          // Keep this subpath
+          remaining_subpaths.push_back(subpath);
         }
+      }
+      
+      if (any_removed) {
+        if (remaining_subpaths.empty()) {
+          // All subpaths were redacted - remove the entire path object
+          to_remove.push_back(path);
+        } else {
+          // Some subpaths remain - rebuild the path with only the remaining subpaths
+          RebuildPath(path->path(), remaining_subpaths);
+          path->CalcBoundingBox();
+          path->SetDirty(true);
+        }
+        changed = true;
       }
       continue;
     }
