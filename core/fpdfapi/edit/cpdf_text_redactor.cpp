@@ -21,6 +21,7 @@
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_shadingobject.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
 #include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fpdfapi/page/cpdf_image.h"
@@ -845,6 +846,28 @@ bool RedactHolder(CPDF_Page* page_for_cache,
           path->SetDirty(true);
         }
         changed = true;
+      }
+      continue;
+    }
+
+    if (CPDF_ShadingObject* shading = po->AsShading()) {
+      // Shading objects have a bounding box - check if it's fully inside any redaction rect
+      CFX_FloatRect shading_bbox = shading->GetRect();
+      
+      // Transform to page space
+      CFX_FloatRect bbox_page = to_page.TransformRect(shading_bbox);
+      bbox_page.Normalize();
+      
+      // Check if the shading bbox is fully inside any redaction rect
+      for (const auto& redact_rect : page_rects) {
+        if (bbox_page.left >= redact_rect.left &&
+            bbox_page.right <= redact_rect.right &&
+            bbox_page.bottom >= redact_rect.bottom &&
+            bbox_page.top <= redact_rect.top) {
+          to_remove.push_back(shading);
+          changed = true;
+          break;
+        }
       }
       continue;
     }

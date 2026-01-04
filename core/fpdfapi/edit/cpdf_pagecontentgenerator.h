@@ -25,6 +25,7 @@ class CPDF_PageObject;
 class CPDF_PageObjectHolder;
 class CPDF_Path;
 class CPDF_PathObject;
+class CPDF_ShadingObject;
 class CPDF_TextObject;
 class CPDF_Color; 
 class CPDF_ColorSpace;
@@ -46,6 +47,7 @@ class CPDF_PageContentGenerator {
   void ProcessPath(fxcrt::ostringstream* buf, CPDF_PathObject* pPathObj);
   void ProcessForm(fxcrt::ostringstream* buf, CPDF_FormObject* pFormObj);
   void ProcessImage(fxcrt::ostringstream* buf, CPDF_ImageObject* pImageObj);
+  void ProcessShading(fxcrt::ostringstream* buf, CPDF_ShadingObject* pShadingObj);
   void ProcessGraphics(fxcrt::ostringstream* buf, CPDF_PageObject* pPageObj);
   void ProcessDefaultGraphics(fxcrt::ostringstream* buf);
   void ProcessText(fxcrt::ostringstream* buf, CPDF_TextObject* pTextObj);
