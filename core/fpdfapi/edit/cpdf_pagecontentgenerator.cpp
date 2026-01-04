@@ -30,6 +30,8 @@
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/page/cpdf_pattern.h"
+#include "core/fpdfapi/page/cpdf_shadingobject.h"
+#include "core/fpdfapi/page/cpdf_shadingpattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_color.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
@@ -53,9 +55,7 @@
 
 namespace {
 
-// TODO(thestig): Remove/restore other unused resource types:
-// - Shading
-constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace", "Pattern"};
+constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject", "ColorSpace", "Pattern", "Shading"};
 
 // Key: The resource type.
 // Value: The resource names of a given type.
@@ -127,6 +127,7 @@ void RecordPageObjectResourceUsage(const CPDF_PageObject* page_object,
       case CPDF_PageObject::Type::kPath:
         break;
       case CPDF_PageObject::Type::kShading:
+        seen_resources["Shading"].insert(resource_name);
         break;
     }
   }
@@ -851,6 +852,8 @@ void CPDF_PageContentGenerator::ProcessPageObject(fxcrt::ostringstream* buf,
     ProcessPath(buf, pPathObj);
   } else if (CPDF_TextObject* pTextObj = pPageObj->AsText()) {
     ProcessText(buf, pTextObj);
+  } else if (CPDF_ShadingObject* pShadingObj = pPageObj->AsShading()) {
+    ProcessShading(buf, pShadingObj);
   }
   pPageObj->SetDirty(false);
 }
@@ -924,6 +927,34 @@ void CPDF_PageContentGenerator::ProcessForm(fxcrt::ostringstream* buf,
   }
 
   *buf << "/" << PDF_NameEncode(name) << " Do";
+  EndProcessGraphics(*buf);
+}
+
+void CPDF_PageContentGenerator::ProcessShading(fxcrt::ostringstream* buf,
+                                               CPDF_ShadingObject* pShadingObj) {
+  const CPDF_ShadingPattern* pattern = pShadingObj->pattern();
+  if (!pattern)
+    return;
+
+  // Get the underlying shading object (dictionary or stream)
+  RetainPtr<const CPDF_Object> shading_obj = pattern->GetShadingObject();
+  if (!shading_obj)
+    return;
+
+  ProcessGraphics(buf, pShadingObj);
+
+  // Apply the shading object's transformation matrix
+  const CFX_Matrix& matrix = pShadingObj->matrix();
+  if (!matrix.IsIdentity()) {
+    WriteMatrix(*buf, matrix) << " cm ";
+  }
+
+  // Realize the shading as a resource
+  ByteString name = RealizeResource(shading_obj.Get(), "Shading");
+  pShadingObj->SetResourceName(name);
+
+  // Emit the shading operator with BX/EX compatibility markers
+  *buf << "BX /" << PDF_NameEncode(name) << " sh EX";
   EndProcessGraphics(*buf);
 }
 
@@ -1066,6 +1097,19 @@ void CPDF_PageContentGenerator::ProcessGraphics(fxcrt::ostringstream* buf,
     }
   }
 
+  // Emit any existing graphics state resources first (these may contain
+  // properties beyond alpha/blend like soft masks, overprint modes, etc.)
+  pdfium::span<const ByteString> existing_gs_names =
+      pPageObj->GetGraphicsResourceNames();
+  if (!existing_gs_names.empty()) {
+    // Emit all existing ExtGState resources with their original names
+    for (const ByteString& gs_name : existing_gs_names) {
+      *buf << "/" << PDF_NameEncode(gs_name) << " gs ";
+    }
+    return;
+  }
+
+  // No existing graphics state - check if we need to create one for alpha/blend
   GraphicsData graphD;
   graphD.fillAlpha = pPageObj->general_state().GetFillAlpha();
   graphD.strokeAlpha = pPageObj->general_state().GetStrokeAlpha();
