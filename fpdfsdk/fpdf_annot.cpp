@@ -3432,3 +3432,31 @@ EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   auto ctx = std::make_unique<CPDF_AnnotContext>(dict, IPDFPageFromFPDFPage(page));
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
 }
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation) {
+  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  if (rotation == 0.0f) {
+    // 0 is the default, so remove the key to keep the PDF clean.
+    dict->RemoveFor("Rotate");
+  } else {
+    dict->SetNewFor<CPDF_Number>("Rotate", rotation);
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetRotate(FPDF_ANNOTATION annot, float* rotation) {
+  if (!rotation)
+    return false;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  *rotation = dict->GetFloatFor("Rotate");
+  return true;
+}

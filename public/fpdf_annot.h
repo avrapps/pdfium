@@ -1593,6 +1593,26 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV 
 EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype);
 
+// Experimental EmbedPDF Extension API.
+// Set the rotation of an annotation in degrees.
+//
+//   annot    - handle to an annotation.
+//   rotation - the rotation in degrees (any value, e.g. 0, 45.5, 90, 180, etc.).
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation);
+
+// Experimental EmbedPDF Extension API.
+// Get the rotation of an annotation in degrees.
+//
+//   annot    - handle to an annotation.
+//   rotation - receives the rotation value in degrees.
+//
+// Returns true on success, false if annot is invalid or rotation is NULL.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetRotate(FPDF_ANNOTATION annot, float* rotation);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
