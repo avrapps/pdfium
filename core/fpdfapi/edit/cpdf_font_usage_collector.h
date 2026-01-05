@@ -39,6 +39,11 @@ struct FontUsageInfo {
   // Glyph IDs used (for TrueType/CID fonts - mapped from char codes).
   std::set<uint16_t> used_gids;
   
+  // SECURITY: Mapping from char_code to GID for cmap rebuild.
+  // This is the source of truth for building the new cmap table.
+  // Only these exact mappings will exist in the output font.
+  std::map<uint32_t, uint16_t> char_code_to_gid;
+  
   // Whether this font has a ToUnicode CMap.
   bool has_tounicode = false;
   

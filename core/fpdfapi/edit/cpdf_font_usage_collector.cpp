@@ -14,7 +14,10 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fxcrt/fx_coordinates.h"
 
 FontUsageInfo::FontUsageInfo() = default;
@@ -31,18 +34,18 @@ CPDF_FontUsageCollector::~CPDF_FontUsageCollector() = default;
 
 void CPDF_FontUsageCollector::CollectFromAllPages() {
   if (!document_) {
-    fprintf(stderr, "[FontUsageCollector] Error: No document\n");
+    printf( "[FontUsageCollector] Error: No document\n");
     return;
   }
 
   const int page_count = document_->GetPageCount();
-  fprintf(stderr, "[FontUsageCollector] Processing %d pages\n", page_count);
+  printf( "[FontUsageCollector] Processing %d pages\n", page_count);
   
   for (int i = 0; i < page_count; ++i) {
     RetainPtr<CPDF_Dictionary> page_dict =
         document_->GetMutablePageDictionary(i);
     if (!page_dict) {
-      fprintf(stderr, "[FontUsageCollector] Page %d: No page dict\n", i);
+      printf( "[FontUsageCollector] Page %d: No page dict\n", i);
       continue;
     }
 
@@ -54,16 +57,19 @@ void CPDF_FontUsageCollector::CollectFromAllPages() {
     for (auto it = page->begin(); it != page->end(); ++it) {
       obj_count++;
     }
-    fprintf(stderr, "[FontUsageCollector] Page %d: %zu objects\n", i, obj_count);
+    printf( "[FontUsageCollector] Page %d: %zu objects\n", i, obj_count);
     
     CollectFromPage(page.Get());
   }
   
-  fprintf(stderr, "[FontUsageCollector] Total fonts found: %zu\n", usage_map_.size());
+  printf("[FontUsageCollector] Total fonts found: %zu\n", usage_map_.size());
   for (const auto& entry : usage_map_) {
     const FontUsageInfo& info = entry.second;
-    fprintf(stderr, "[FontUsageCollector] Font obj#%u: is_type3=%d, %zu char codes used\n",
-            info.font_obj_num, info.is_type3, info.used_char_codes.size());
+    printf("[FontUsageCollector] Font obj#%u: is_type3=%d, is_cid=%d, "
+           "%zu char codes, %zu GIDs, %zu mappings\n",
+           info.font_obj_num, info.is_type3, info.is_cid,
+           info.used_char_codes.size(), info.used_gids.size(),
+           info.char_code_to_gid.size());
   }
 }
 
@@ -140,6 +146,38 @@ void CPDF_FontUsageCollector::RecordGlyphUsage(CPDF_Font* font,
     RetainPtr<const CPDF_Dictionary> font_dict = font->GetFontDict();
     if (font_dict) {
       info.has_tounicode = font_dict->KeyExist("ToUnicode");
+      
+      // Debug: Log font info on first encounter
+      ByteString subtype = font_dict->GetByteStringFor("Subtype");
+      ByteString base_font = font_dict->GetByteStringFor("BaseFont");
+      printf( "[FontUsageCollector] New font obj#%u: Subtype=%s BaseFont=%s is_cid=%d\n",
+              font_obj_num, subtype.c_str(), base_font.c_str(), info.is_cid);
+      
+      // Check for CIDToGIDMap (important for TrueType CID fonts)
+      if (font_dict->KeyExist("DescendantFonts")) {
+        RetainPtr<const CPDF_Array> descendants = font_dict->GetArrayFor("DescendantFonts");
+        if (descendants && !descendants->IsEmpty()) {
+          RetainPtr<const CPDF_Dictionary> cid_font_dict = descendants->GetDictAt(0);
+          if (cid_font_dict) {
+            ByteString cid_subtype = cid_font_dict->GetByteStringFor("Subtype");
+            printf( "[FontUsageCollector]   CIDFont Subtype=%s\n", cid_subtype.c_str());
+            
+            if (cid_font_dict->KeyExist("CIDToGIDMap")) {
+              RetainPtr<const CPDF_Object> cid_to_gid = cid_font_dict->GetObjectFor("CIDToGIDMap");
+              if (cid_to_gid) {
+                if (cid_to_gid->IsName()) {
+                  printf( "[FontUsageCollector]   CIDToGIDMap=/%s\n",
+                          cid_to_gid->GetString().c_str());
+                } else if (cid_to_gid->IsStream()) {
+                  printf( "[FontUsageCollector]   CIDToGIDMap=<stream>\n");
+                }
+              }
+            } else {
+              printf( "[FontUsageCollector]   WARNING: No CIDToGIDMap!\n");
+            }
+          }
+        }
+      }
     }
     
     it = usage_map_.emplace(font_obj_num, std::move(info)).first;
@@ -148,21 +186,30 @@ void CPDF_FontUsageCollector::RecordGlyphUsage(CPDF_Font* font,
   FontUsageInfo& info = it->second;
   info.used_char_codes.insert(char_code);
 
-  // For CID fonts, also collect the GID for subsetting.
-  if (const CPDF_CIDFont* cid_font = font->AsCIDFont()) {
-    // Map char_code -> CID -> GID
-    const uint16_t cid = cid_font->CIDFromCharCode(char_code);
-    // For CIDFontType2 (TrueType), the GID comes from CIDToGIDMap.
-    // If CIDToGIDMap is "Identity", GID == CID.
-    // The actual mapping is done during subsetting, but we track the CID here.
-    info.used_gids.insert(cid);
-  } else if (!font->IsType3Font()) {
-    // For simple TrueType fonts, char_code is usually the glyph selector.
-    // The actual GID mapping depends on encoding, handled during subsetting.
+  // For ALL font types (except Type3), use GlyphFromCharCode to get the actual GID.
+  // This correctly handles:
+  // - Simple fonts with various encodings
+  // - CIDFontType2 with Identity CIDToGIDMap (CID == GID)
+  // - CIDFontType2 with CIDToGIDMap stream (CID != GID, stream lookup done internally)
+  if (!font->IsType3Font()) {
     bool vert_glyph = false;
     int gid = font->GlyphFromCharCode(char_code, &vert_glyph);
-    if (gid > 0 && gid <= 0xFFFF) {
-      info.used_gids.insert(static_cast<uint16_t>(gid));
+    
+    if (gid >= 0 && gid <= 0xFFFF) {
+      uint16_t gid16 = static_cast<uint16_t>(gid);
+      info.used_gids.insert(gid16);
+      
+      // SECURITY: Build the char_code -> GID mapping for cmap rebuild.
+      // This is the ONLY mapping that will exist in the output font.
+      info.char_code_to_gid[char_code] = gid16;
+    }
+    
+    // Debug: Log GID mapping with font type info
+    static int gid_log_count = 0;
+    if (gid_log_count++ < 30 || gid < 0) {
+      printf("[FontUsageCollector] Font obj#%u (CID=%d): char_code=%u -> GID=%d%s\n",
+              font_obj_num, info.is_cid, char_code, gid,
+              gid < 0 ? " (INVALID - GID lookup failed!)" : "");
     }
   }
 }

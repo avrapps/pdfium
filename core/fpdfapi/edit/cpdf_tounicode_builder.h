@@ -41,14 +41,6 @@ class CPDF_ToUnicodeBuilder {
       const std::map<uint32_t, WideString>& char_to_unicode);
 
  private:
-  // Extracts existing mappings from a font's ToUnicode.
-  std::map<uint32_t, WideString> ExtractExistingMappings(CPDF_Font* font);
-
-  // Filters mappings to only include used character codes.
-  std::map<uint32_t, WideString> FilterMappings(
-      const std::map<uint32_t, WideString>& all_mappings,
-      const std::set<uint32_t>& used_char_codes);
-
   // Replaces the ToUnicode stream in the font dictionary.
   bool ReplaceToUnicodeStream(CPDF_Document* doc,
                               CPDF_Font* font,

@@ -12,7 +12,12 @@ config("harfbuzz_config") {
   defines = [
     "HAVE_OT",
     "HB_NO_MT",  # Disable multi-threading for simpler WASM builds
-    "HB_TINY",   # Reduce code size
+    # Note: We don't use HB_TINY because we need hb_face_collect_unicodes
+    # for secure cmap subsetting. Instead, we use targeted size optimizations:
+    "HB_OPTIMIZE_SIZE",
+    "HB_NO_ATEXIT",
+    "HB_NO_GETENV",
+    "HB_NO_ERRNO",
   ]
 }
 

@@ -62,19 +62,23 @@ bool CPDF_ToUnicodeBuilder::RebuildToUnicode(
   if (!doc || !font)
     return false;
 
-  // Extract existing mappings.
-  std::map<uint32_t, WideString> all_mappings = ExtractExistingMappings(font);
-  if (all_mappings.empty()) {
-    // No ToUnicode to rebuild - might want to generate one from the font.
+  // SECURITY: Only extract mappings for used character codes.
+  // This is simpler, faster, and more secure - we never even look at unused codes.
+  std::map<uint32_t, WideString> mappings;
+  for (uint32_t code : used_char_codes) {
+    WideString unicode = font->UnicodeFromCharCode(code);
+    if (!unicode.IsEmpty()) {
+      mappings[code] = unicode;
+    }
+  }
+
+  if (mappings.empty()) {
+    // No mappings to write - font might not have ToUnicode originally.
     return true;
   }
 
-  // Filter to only used character codes.
-  std::map<uint32_t, WideString> filtered = FilterMappings(all_mappings,
-                                                            used_char_codes);
-
-  // Generate new CMap content.
-  ByteString cmap_content = GenerateCMapContent(filtered);
+  // Generate new CMap content with only the used mappings.
+  ByteString cmap_content = GenerateCMapContent(mappings);
 
   // Replace the stream.
   return ReplaceToUnicodeStream(doc, font, cmap_content);
@@ -136,52 +140,6 @@ ByteString CPDF_ToUnicodeBuilder::GenerateCMapContent(
   oss << "end\n";
 
   return ByteString(oss.str().c_str());
-}
-
-std::map<uint32_t, WideString> CPDF_ToUnicodeBuilder::ExtractExistingMappings(
-    CPDF_Font* font) {
-  std::map<uint32_t, WideString> mappings;
-  if (!font)
-    return mappings;
-
-  // Use the font's UnicodeFromCharCode to extract mappings.
-  // We need to probe all possible character codes.
-  // For efficiency, we use the font's encoding information.
-  
-  // For simple fonts (8-bit), probe 0-255.
-  // For CID fonts (16-bit), this is more complex.
-  const bool is_cid = font->IsCIDFont();
-  const uint32_t max_code = is_cid ? 0xFFFF : 0xFF;
-
-  for (uint32_t code = 0; code <= max_code; ++code) {
-    WideString unicode = font->UnicodeFromCharCode(code);
-    if (!unicode.IsEmpty()) {
-      mappings[code] = unicode;
-    }
-    
-    // For simple fonts, we've covered all codes at 255.
-    if (!is_cid && code == 255)
-      break;
-      
-    // For CID fonts, skip large gaps to avoid iterating 65536 codes.
-    // This is a heuristic - in practice, the usage collector tells us
-    // exactly which codes are used.
-  }
-
-  return mappings;
-}
-
-std::map<uint32_t, WideString> CPDF_ToUnicodeBuilder::FilterMappings(
-    const std::map<uint32_t, WideString>& all_mappings,
-    const std::set<uint32_t>& used_char_codes) {
-  std::map<uint32_t, WideString> filtered;
-  for (uint32_t code : used_char_codes) {
-    auto it = all_mappings.find(code);
-    if (it != all_mappings.end()) {
-      filtered[code] = it->second;
-    }
-  }
-  return filtered;
 }
 
 bool CPDF_ToUnicodeBuilder::ReplaceToUnicodeStream(
