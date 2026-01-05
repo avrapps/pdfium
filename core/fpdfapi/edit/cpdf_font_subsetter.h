@@ -43,21 +43,32 @@ class CPDF_FontSubsetter {
   // |char_code_to_gid| - SECURITY: The exact char_code -> GID mappings for cmap rebuild.
   //                      Only these mappings will exist in the output font's cmap.
   //                      This prevents information leakage about redacted characters.
+  // |is_cid_font| - If true, skip cmap rebuild (CID fonts use CIDToGIDMap, not cmap).
   // Returns a SubsetResult with the subsetted font data on success.
   SubsetResult SubsetByGlyphIds(pdfium::span<const uint8_t> font_data,
                                 const std::set<uint16_t>& gids_to_keep,
-                                const std::map<uint32_t, uint16_t>& char_code_to_gid);
+                                const std::map<uint32_t, uint16_t>& char_code_to_gid,
+                                bool is_cid_font);
 
   // Subsets a font and replaces the FontFile stream in the document.
   // |doc| - The PDF document.
   // |font| - The font to subset.
   // |gids_to_keep| - Set of glyph IDs that should be retained.
   // |char_code_to_gid| - SECURITY: The exact char_code -> GID mappings for cmap.
+  // |is_cid_font| - If true, skip cmap rebuild (CID fonts use CIDToGIDMap, not cmap).
   // Returns true if the font was successfully subsetted and replaced.
   bool SubsetAndReplaceFont(CPDF_Document* doc,
                             CPDF_Font* font,
                             const std::set<uint16_t>& gids_to_keep,
-                            const std::map<uint32_t, uint16_t>& char_code_to_gid);
+                            const std::map<uint32_t, uint16_t>& char_code_to_gid,
+                            bool is_cid_font);
+  
+  // SECURITY: Sanitizes the CIDToGIDMap stream for CIDFontType2 fonts.
+  // Zeros out entries for unused CIDs to prevent information leakage.
+  // |font| - The font to sanitize.
+  // |used_cids| - Set of CIDs that are still in use.
+  // Returns true if the CIDToGIDMap was modified.
+  bool SanitizeCIDToGIDMap(CPDF_Font* font, const std::set<uint32_t>& used_cids);
 
  private:
   // Gets the font file stream from a font's descriptor.

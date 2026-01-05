@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "core/fpdfapi/font/cpdf_cidfont.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/font/cpdf_type1font.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -127,7 +128,8 @@ CPDF_FontSubsetter::~CPDF_FontSubsetter() = default;
 SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
     pdfium::span<const uint8_t> font_data,
     const std::set<uint16_t>& gids_to_keep,
-    const std::map<uint32_t, uint16_t>& char_code_to_gid) {
+    const std::map<uint32_t, uint16_t>& char_code_to_gid,
+    bool is_cid_font) {
   SubsetResult result;
 
   if (font_data.empty()) {
@@ -284,11 +286,15 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
     printf( "[FontSubsetter] This suggests RETAIN_NUM_GLYPHS may not be working.\n");
     
     // If glyph count is less than max_gid + 1, the font will be broken!
+    // HARD FAIL: Don't produce a broken font that will render incorrectly.
     if (subset_glyph_count < max_gid + 1) {
       printf( "[FontSubsetter] CRITICAL: subset has %u glyphs but max_gid is %u!\n",
               subset_glyph_count, max_gid);
-      printf( "[FontSubsetter] GIDs above %u will be MISSING - font will render incorrectly!\n",
+      printf( "[FontSubsetter] HARD FAIL: GIDs above %u would be missing.\n",
               subset_glyph_count - 1);
+      hb_face_destroy(subset_face);
+      result.error_message = "Subset glyph count less than max GID - font would be broken";
+      return result;
     }
   } else {
     printf( "[FontSubsetter] OK: Glyph count preserved at %u (RETAIN_NUM_GLYPHS working)\n",
@@ -322,17 +328,28 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   
   // SECURITY: Replace the entire cmap table with a minimal one containing
   // only the exact char_code -> GID mappings we specify.
-  // This is the key to preventing information leakage about redacted characters.
-  printf("[FontSubsetter] Rebuilding cmap table for security...\n");
-  if (ReplaceEntireCmapTable(result.font_data, char_code_to_gid)) {
-    printf("[FontSubsetter] cmap rebuild: SUCCESS\n");
-    
-    // After replacing cmap, recalculate font checksums for validity
-    if (RecalcFontChecksums(pdfium::span<uint8_t>(result.font_data))) {
-      printf("[FontSubsetter] Checksums: RECALCULATED\n");
-    }
+  // 
+  // EXCEPTION: For CID fonts, skip cmap rebuild. CID fonts use CIDToGIDMap
+  // (not the font's internal cmap) for rendering. We already sanitize
+  // CIDToGIDMap + ToUnicode + /W array for CID fonts, which covers all
+  // PDF-visible data. Rebuilding cmap for CID fonts is problematic because:
+  // - UnicodeFromCharCode() may be lossy (multiple CIDs -> same Unicode)
+  // - /ToUnicode may be missing or incomplete
+  // - Ligatures get truncated to first codepoint
+  if (is_cid_font) {
+    printf("[FontSubsetter] CID font: skipping cmap rebuild (CIDToGIDMap is used instead)\n");
   } else {
-    printf("[FontSubsetter] cmap rebuild: FAILED\n");
+    printf("[FontSubsetter] Rebuilding cmap table for security...\n");
+    if (ReplaceEntireCmapTable(result.font_data, char_code_to_gid)) {
+      printf("[FontSubsetter] cmap rebuild: SUCCESS\n");
+      
+      // After replacing cmap, recalculate font checksums for validity
+      if (RecalcFontChecksums(pdfium::span<uint8_t>(result.font_data))) {
+        printf("[FontSubsetter] Checksums: RECALCULATED\n");
+      }
+    } else {
+      printf("[FontSubsetter] cmap rebuild: FAILED\n");
+    }
   }
   
   result.success = true;
@@ -356,7 +373,8 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
     CPDF_Document* doc,
     CPDF_Font* font,
     const std::set<uint16_t>& gids_to_keep,
-    const std::map<uint32_t, uint16_t>& char_code_to_gid) {
+    const std::map<uint32_t, uint16_t>& char_code_to_gid,
+    bool is_cid_font) {
   if (!doc || !font || gids_to_keep.empty())
     return false;
 
@@ -364,8 +382,8 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
   RetainPtr<const CPDF_Dictionary> font_dict = font->GetFontDict();
   ByteString base_font = font_dict ? font_dict->GetByteStringFor("BaseFont") : "";
   uint32_t font_obj_num = font->GetFontDictObjNum();
-  printf("[FontSubsetter] SubsetAndReplaceFont: obj#%u BaseFont=%s\n",
-          font_obj_num, base_font.c_str());
+  printf("[FontSubsetter] SubsetAndReplaceFont: obj#%u BaseFont=%s is_cid=%d\n",
+          font_obj_num, base_font.c_str(), is_cid_font);
 
   // Get the font file stream.
   RetainPtr<CPDF_Stream> font_stream = GetFontFileStream(font);
@@ -390,7 +408,8 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
   printf("[FontSubsetter] Original font stream size: %zu bytes\n", font_data.size());
 
   // Perform subsetting with GIDs and the exact char_code -> GID mapping for cmap rebuild.
-  SubsetResult result = SubsetByGlyphIds(font_data, gids_to_keep, char_code_to_gid);
+  // For CID fonts, cmap rebuild will be skipped (they use CIDToGIDMap instead).
+  SubsetResult result = SubsetByGlyphIds(font_data, gids_to_keep, char_code_to_gid, is_cid_font);
   if (!result.success) {
     printf( "[FontSubsetter] Subsetting FAILED for obj#%u: %s\n",
             font_obj_num, result.error_message ? result.error_message : "unknown error");
@@ -412,12 +431,124 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
   printf( "[FontSubsetter] Replaced font stream: %zu -> %zu bytes\n",
           font_data.size(), result.font_data.size());
 
-  // Update the stream length in the dictionary.
-  RetainPtr<CPDF_Dictionary> stream_dict = font_stream->GetMutableDict();
-  if (stream_dict) {
-    stream_dict->SetNewFor<CPDF_Number>(
-        "Length1", static_cast<int>(result.font_data.size()));
+  // Update Length1 in the stream dictionary ONLY for FontFile2 (TrueType).
+  // Length1 has specific semantics for different font types:
+  // - FontFile (Type1): Length1/2/3 are for encrypted portions
+  // - FontFile2 (TrueType): Length1 is the font program length
+  // - FontFile3 (CFF/OpenType): Length1/2/3 have different meanings
+  // PDFium automatically manages /Length via SetDataAndRemoveFilter().
+  if (font_file_key && strcmp(font_file_key, "FontFile2") == 0) {
+    RetainPtr<CPDF_Dictionary> stream_dict = font_stream->GetMutableDict();
+    if (stream_dict) {
+      stream_dict->SetNewFor<CPDF_Number>(
+          "Length1", static_cast<int>(result.font_data.size()));
+    }
   }
+
+  return true;
+}
+
+bool CPDF_FontSubsetter::SanitizeCIDToGIDMap(CPDF_Font* font,
+                                              const std::set<uint32_t>& used_cids) {
+  if (!font)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> font_dict = font->GetMutableFontDict();
+  if (!font_dict)
+    return false;
+
+  // For Type0 fonts, CIDToGIDMap is in the DescendantFonts[0] (CIDFont dict)
+  ByteString subtype = font_dict->GetByteStringFor("Subtype");
+  RetainPtr<CPDF_Dictionary> cid_font_dict;
+  
+  if (subtype == "Type0") {
+    RetainPtr<CPDF_Array> descendants = font_dict->GetMutableArrayFor("DescendantFonts");
+    if (descendants && !descendants->IsEmpty()) {
+      cid_font_dict = descendants->GetMutableDictAt(0);
+    }
+  } else {
+    // Not a Type0 font, no CIDToGIDMap to sanitize
+    return false;
+  }
+  
+  if (!cid_font_dict)
+    return false;
+
+  // Check CIDFont subtype - CIDToGIDMap only applies to CIDFontType2 (TrueType-based)
+  ByteString cid_subtype = cid_font_dict->GetByteStringFor("Subtype");
+  if (cid_subtype != "CIDFontType2") {
+    printf("[FontSubsetter] CIDToGIDMap: Not CIDFontType2 (is %s), skipping\n",
+           cid_subtype.c_str());
+    return false;
+  }
+
+  // Get CIDToGIDMap
+  RetainPtr<CPDF_Object> cid_to_gid_obj = cid_font_dict->GetMutableObjectFor("CIDToGIDMap");
+  if (!cid_to_gid_obj) {
+    printf("[FontSubsetter] CIDToGIDMap: Not present, skipping\n");
+    return false;
+  }
+
+  // If it's a name (e.g., /Identity), we can't sanitize it
+  if (cid_to_gid_obj->IsName()) {
+    ByteString name = cid_to_gid_obj->GetString();
+    printf("[FontSubsetter] CIDToGIDMap: Is name '/%s', skipping\n", name.c_str());
+    return false;
+  }
+
+  // Must be a stream
+  CPDF_Stream* cid_to_gid_stream = cid_to_gid_obj->AsMutableStream();
+  if (!cid_to_gid_stream) {
+    printf("[FontSubsetter] CIDToGIDMap: Not a stream, skipping\n");
+    return false;
+  }
+
+  // Load the stream data
+  auto stream_acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(cid_to_gid_stream));
+  stream_acc->LoadAllDataFiltered();
+  pdfium::span<const uint8_t> data = stream_acc->GetSpan();
+  
+  if (data.empty()) {
+    printf("[FontSubsetter] CIDToGIDMap: Empty stream, skipping\n");
+    return false;
+  }
+
+  // The stream is a sequence of 2-byte big-endian GID values.
+  // CID n maps to bytes [2n, 2n+1].
+  size_t max_cid = data.size() / 2;
+  printf("[FontSubsetter] CIDToGIDMap: %zu bytes, max CID %zu\n", 
+         data.size(), max_cid);
+
+  // Create a modifiable copy
+  DataVector<uint8_t> new_data(data.begin(), data.end());
+  
+  bool modified = false;
+  size_t zeroed_count = 0;
+  
+  // Zero out entries for unused CIDs
+  for (size_t cid = 0; cid < max_cid; cid++) {
+    if (used_cids.count(static_cast<uint32_t>(cid)) == 0) {
+      // This CID is not used - zero out its GID mapping
+      size_t offset = cid * 2;
+      if (new_data[offset] != 0 || new_data[offset + 1] != 0) {
+        new_data[offset] = 0;
+        new_data[offset + 1] = 0;
+        modified = true;
+        zeroed_count++;
+      }
+    }
+  }
+
+  if (!modified) {
+    printf("[FontSubsetter] CIDToGIDMap: No changes needed\n");
+    return false;
+  }
+
+  // Replace the stream data
+  cid_to_gid_stream->SetDataAndRemoveFilter(new_data);
+  
+  printf("[FontSubsetter] CIDToGIDMap: Zeroed %zu unused CID entries\n", 
+         zeroed_count);
 
   return true;
 }
@@ -430,17 +561,37 @@ RetainPtr<CPDF_Stream> CPDF_FontSubsetter::GetFontFileStream(CPDF_Font* font) {
   if (!font_dict)
     return nullptr;
 
-  RetainPtr<CPDF_Dictionary> font_desc =
-      font_dict->GetMutableDictFor("FontDescriptor");
+  RetainPtr<CPDF_Dictionary> font_desc;
+  
+  // Check if this is a Type0 (composite) font
+  ByteString subtype = font_dict->GetByteStringFor("Subtype");
+  if (subtype == "Type0") {
+    // Type0 fonts have FontDescriptor in DescendantFonts[0]
+    RetainPtr<CPDF_Array> descendants = font_dict->GetMutableArrayFor("DescendantFonts");
+    if (descendants && !descendants->IsEmpty()) {
+      RetainPtr<CPDF_Dictionary> cid_font = descendants->GetMutableDictAt(0);
+      if (cid_font) {
+        font_desc = cid_font->GetMutableDictFor("FontDescriptor");
+        printf("[FontSubsetter] Type0 font: found FontDescriptor in DescendantFonts[0]\n");
+      }
+    }
+  } else {
+    // Simple fonts have FontDescriptor directly
+    font_desc = font_dict->GetMutableDictFor("FontDescriptor");
+  }
+  
   if (!font_desc)
     return nullptr;
 
   // Try FontFile2 (TrueType), FontFile3 (CFF/OpenType), FontFile (Type1).
-  const char* key = GetFontFileKeyName(font);
-  if (!key)
-    return nullptr;
+  if (font_desc->KeyExist("FontFile2"))
+    return font_desc->GetMutableStreamFor("FontFile2");
+  if (font_desc->KeyExist("FontFile3"))
+    return font_desc->GetMutableStreamFor("FontFile3");
+  if (font_desc->KeyExist("FontFile"))
+    return font_desc->GetMutableStreamFor("FontFile");
 
-  return font_desc->GetMutableStreamFor(key);
+  return nullptr;
 }
 
 const char* CPDF_FontSubsetter::GetFontFileKeyName(CPDF_Font* font) {
@@ -451,8 +602,24 @@ const char* CPDF_FontSubsetter::GetFontFileKeyName(CPDF_Font* font) {
   if (!font_dict)
     return nullptr;
 
-  RetainPtr<const CPDF_Dictionary> font_desc =
-      font_dict->GetDictFor("FontDescriptor");
+  RetainPtr<const CPDF_Dictionary> font_desc;
+  
+  // Check if this is a Type0 (composite) font
+  ByteString subtype = font_dict->GetByteStringFor("Subtype");
+  if (subtype == "Type0") {
+    // Type0 fonts have FontDescriptor in DescendantFonts[0]
+    RetainPtr<const CPDF_Array> descendants = font_dict->GetArrayFor("DescendantFonts");
+    if (descendants && !descendants->IsEmpty()) {
+      RetainPtr<const CPDF_Dictionary> cid_font = descendants->GetDictAt(0);
+      if (cid_font) {
+        font_desc = cid_font->GetDictFor("FontDescriptor");
+      }
+    }
+  } else {
+    // Simple fonts have FontDescriptor directly
+    font_desc = font_dict->GetDictFor("FontDescriptor");
+  }
+  
   if (!font_desc)
     return nullptr;
 
@@ -931,8 +1098,8 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
   }
   
   if ((old_offset & 3) != 0) {
-    printf("[CmapRebuild] WARNING: old cmap offset not 4-byte aligned (unusual)\n");
-    // Continue anyway - not strictly required, but unusual
+    printf("[CmapRebuild] ERROR: old cmap offset 0x%08X not 4-byte aligned\n", old_offset);
+    return false;  // Hard fail: misaligned offset indicates corrupt font
   }
   
   // Bounds check: validate old cmap doesn't exceed font data

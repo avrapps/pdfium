@@ -66,10 +66,10 @@ void CPDF_FontUsageCollector::CollectFromAllPages() {
   for (const auto& entry : usage_map_) {
     const FontUsageInfo& info = entry.second;
     printf("[FontUsageCollector] Font obj#%u: is_type3=%d, is_cid=%d, "
-           "%zu char codes, %zu GIDs, %zu mappings\n",
+           "%zu char codes, %zu GIDs, %zu char_code mappings, %zu unicode mappings\n",
            info.font_obj_num, info.is_type3, info.is_cid,
            info.used_char_codes.size(), info.used_gids.size(),
-           info.char_code_to_gid.size());
+           info.char_code_to_gid.size(), info.unicode_to_gid.size());
   }
 }
 
@@ -202,6 +202,26 @@ void CPDF_FontUsageCollector::RecordGlyphUsage(CPDF_Font* font,
       // SECURITY: Build the char_code -> GID mapping for cmap rebuild.
       // This is the ONLY mapping that will exist in the output font.
       info.char_code_to_gid[char_code] = gid16;
+      
+      // For CID fonts, also build the Unicode -> GID mapping.
+      // For CID fonts, char_code is CID (not Unicode), so we need to use
+      // UnicodeFromCharCode to get the actual Unicode codepoint for the cmap.
+      if (info.is_cid) {
+        WideString unicode_str = font->UnicodeFromCharCode(char_code);
+        if (!unicode_str.IsEmpty()) {
+          // Use the first Unicode codepoint from the mapping.
+          // Most characters map to a single codepoint; ligatures may map to
+          // multiple but we use only the first for cmap purposes.
+          uint32_t unicode_cp = static_cast<uint32_t>(unicode_str[0]);
+          info.unicode_to_gid[unicode_cp] = gid16;
+          
+          static int unicode_log_count = 0;
+          if (unicode_log_count++ < 20) {
+            printf("[FontUsageCollector] CID font obj#%u: CID=%u -> Unicode=0x%04X -> GID=%u\n",
+                   font_obj_num, char_code, unicode_cp, gid16);
+          }
+        }
+      }
     }
     
     // Debug: Log GID mapping with font type info
