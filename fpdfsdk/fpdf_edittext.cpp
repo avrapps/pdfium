@@ -13,6 +13,9 @@
 #include "core/fpdfapi/font/cpdf_cidfont.h"
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/edit/cpdf_text_redactor.h"
+#if defined(PDF_ENABLE_FONT_SANITIZER)
+#include "core/fpdfapi/edit/cpdf_font_sanitizer.h"
+#endif
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/page/cpdf_textstate.h"
@@ -1142,4 +1145,35 @@ EPDFText_RedactInQuads(FPDF_PAGE page,
     rects.push_back(BBoxOfQuad(quads[i]));
 
   return RedactTextInRects(p, pdfium::span(rects), !!recurse, !!draw_black_boxes);
+}
+  
+FPDF_EXPORT int FPDF_CALLCONV EPDF_SanitizeFonts(FPDF_DOCUMENT document) {
+#if defined(PDF_ENABLE_FONT_SANITIZER)
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    fprintf(stderr, "[FontSanitizer] Error: No document\n");
+    return -1;
+  }
+
+  fprintf(stderr, "[FontSanitizer] Starting sanitization, page count: %d\n", 
+          doc->GetPageCount());
+
+  CPDF_FontSanitizer sanitizer(doc);
+  FontSanitizerResult result = sanitizer.Sanitize();
+  
+  fprintf(stderr, "[FontSanitizer] Result: success=%d, fonts_processed=%d, fonts_modified=%d\n",
+          result.success, result.fonts_processed, result.fonts_modified);
+  if (result.error_message) {
+    fprintf(stderr, "[FontSanitizer] Error: %s\n", result.error_message);
+  }
+  
+  if (!result.success)
+    return -1;
+    
+  return result.fonts_modified;
+#else
+  // Font sanitizer not enabled - return 0 (no fonts modified).
+  fprintf(stderr, "[FontSanitizer] Feature not enabled (PDF_ENABLE_FONT_SANITIZER not defined)\n");
+  return 0;
+#endif 
 }

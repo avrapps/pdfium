@@ -24,6 +24,22 @@ source_set("edit") {
     "cpdf_text_redactor.cpp",
     "cpdf_text_redactor.h",
   ]
+
+  if (pdf_enable_font_sanitizer) {
+    sources += [
+      "cpdf_font_sanitizer.cpp",
+      "cpdf_font_sanitizer.h",
+      "cpdf_font_subsetter.cpp",
+      "cpdf_font_subsetter.h",
+      "cpdf_font_usage_collector.cpp",
+      "cpdf_font_usage_collector.h",
+      "cpdf_tounicode_builder.cpp",
+      "cpdf_tounicode_builder.h",
+      "cpdf_type3_pruner.cpp",
+      "cpdf_type3_pruner.h",
+    ]
+  }
+
   configs += [
     "../../../:pdfium_strict_config",
     "../../../:pdfium_noshorten_config",
@@ -36,6 +52,12 @@ source_set("edit") {
     "../page",
     "../parser",
   ]
+
+  if (pdf_enable_font_sanitizer) {
+    deps += [ "//third_party:harfbuzz" ]
+    defines = [ "PDF_ENABLE_FONT_SANITIZER" ]
+  }
+
   visibility = [ "../../../*" ]
 }
 
@@ -56,6 +78,9 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_npagetooneexporter_unittest.cpp",
     "cpdf_pagecontentgenerator_unittest.cpp",
   ]
+  if (pdf_enable_font_sanitizer) {
+    sources += [ "cpdf_font_sanitizer_unittest.cpp" ]
+  }
   deps = [
     ":edit",
     "../../fxge",

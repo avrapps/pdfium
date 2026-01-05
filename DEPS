@@ -124,6 +124,10 @@ vars = {
   # and whatever else without interference from each other.
   'freetype_revision': '39d85f1692409240896548c468c64988fbe72b51',
   # Three lines of non-changing comments so that
+  # the commit queue can handle CLs rolling harfbuzz-ng
+  # and whatever else without interference from each other.
+  'harfbuzz_ng_revision': '31695252eb6ed25096893aec7f848889dad874bc',
+  # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling GN CIPD package version
   # and whatever else without interference from each other.
   'gn_version': 'git_revision:97b68a0bb62b7528bc3491c7949d6804223c2b82',
@@ -375,6 +379,10 @@ deps = {
   'third_party/freetype/src':
     Var('chromium_git') + '/chromium/src/third_party/freetype2.git@' +
         Var('freetype_revision'),
+
+  'third_party/harfbuzz-ng/src':
+    Var('chromium_git') + '/external/github.com/harfbuzz/harfbuzz.git@' +
+        Var('harfbuzz_ng_revision'),
 
   'third_party/googletest/src':
     Var('chromium_git') + '/external/github.com/google/googletest.git@' +

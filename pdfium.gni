@@ -79,6 +79,14 @@ declare_args() {
 
   # Don't build against bundled zlib.
   use_system_zlib = false
+
+  # Enable font sanitization with HarfBuzz subsetting.
+  # This allows removing unused glyphs from fonts for security
+  # (redaction) and file size optimization (free text annotations).
+  pdf_enable_font_sanitizer = true
+
+  # Use system HarfBuzz instead of bundled version.
+  use_system_harfbuzz = false
 }
 
 assert(!pdf_is_complete_lib || !is_component_build,

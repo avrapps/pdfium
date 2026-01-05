@@ -1,0 +1,60 @@
+# Copyright 2025 The PDFium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("../../pdfium.gni")
+
+config("harfbuzz_public_includes_config") {
+  include_dirs = [ "src/src" ]
+}
+
+config("harfbuzz_config") {
+  defines = [
+    "HAVE_OT",
+    "HB_NO_MT",  # Disable multi-threading for simpler WASM builds
+    "HB_TINY",   # Reduce code size
+  ]
+}
+
+config("harfbuzz_warnings") {
+  if (is_clang) {
+    cflags = [
+      "-Wno-unused-function",
+      "-Wno-unused-variable",
+      "-Wno-missing-field-initializers",
+      "-Wno-deprecated-declarations",
+    ]
+  } else {
+    # For non-clang compilers (emscripten)
+    cflags = [
+      "-Wno-unused-function",
+      "-Wno-unused-variable",
+    ]
+  }
+}
+
+# Main HarfBuzz library with subsetting support
+# Uses the amalgamated build for simplicity
+source_set("fx_harfbuzz") {
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [
+    "//build/config/compiler:no_chromium_code",
+    ":harfbuzz_config",
+    ":harfbuzz_warnings",
+    "//third_party:pdfium_third_party_config",
+  ]
+
+  public_configs = [ ":harfbuzz_public_includes_config" ]
+
+  # Use the amalgamated file which includes everything including subset support
+  sources = [ "src/src/harfbuzz-subset.cc" ]
+}
+
+# System HarfBuzz option for Linux builds
+if (is_linux || is_chromeos) {
+  import("//build/config/linux/pkg_config.gni")
+
+  pkg_config("harfbuzz_from_pkgconfig") {
+    packages = [ "harfbuzz-subset" ]
+  }
+}

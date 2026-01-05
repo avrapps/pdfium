@@ -1681,6 +1681,32 @@ EPDFText_RedactInQuads(FPDF_PAGE page,
                        FPDF_BOOL recurse_forms,
                        FPDF_BOOL draw_black_boxes);
 
+// Experimental API.
+//
+// Sanitize fonts in a document by removing unused glyphs and mappings.
+//
+// This function should be called before saving a document, especially after
+// redaction operations. It performs three key operations:
+//
+// 1. Font Subsetting: Removes unused glyphs from embedded font programs,
+//    reducing file size and eliminating potential data leakage.
+//
+// 2. ToUnicode Sanitization: Rebuilds ToUnicode CMaps to only include
+//    mappings for characters that remain in the document. This prevents
+//    attackers from recovering redacted text by inspecting font metadata.
+//
+// 3. Type3 CharProcs Pruning: Removes unused character procedures from
+//    Type3 fonts, which can contain arbitrary content streams.
+//
+//   document      - handle to the document.
+//
+// Returns the number of fonts that were modified, or -1 on error.
+//
+// Note: This operation modifies font objects in place and cannot be undone.
+// It should typically be the last operation before saving.
+//
+FPDF_EXPORT int FPDF_CALLCONV EPDF_SanitizeFonts(FPDF_DOCUMENT document);
+ 
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

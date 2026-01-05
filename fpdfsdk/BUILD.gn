@@ -69,6 +69,11 @@ source_set("fpdfsdk") {
     "../:pdfium_strict_config",
     "../:pdfium_noshorten_config",
   ]
+  
+  if (pdf_enable_font_sanitizer) {
+    defines = [ "PDF_ENABLE_FONT_SANITIZER" ]
+  }
+  
   deps = [
     "//third_party/libwebp:webp_enc",
     "//third_party/libpng",

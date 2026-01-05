@@ -1,0 +1,25 @@
+# HarfBuzz-NG for PDFium
+
+Name: HarfBuzz
+URL: https://github.com/harfbuzz/harfbuzz
+Version: See harfbuzz_revision in DEPS
+Revision: See harfbuzz_revision in DEPS
+License: MIT
+
+## Purpose
+HarfBuzz is used in PDFium for:
+1. Font subsetting during document sanitization (removing unused glyphs)
+2. Creating minimal font subsets when embedding new text (free text annotations)
+
+## Subsetting API
+We only use the hb-subset.h API which provides:
+- hb_subset_input_create_or_fail()
+- hb_subset_input_glyph_set()
+- hb_subset_or_fail()
+
+## Build Configuration
+The library is built with subsetting support enabled. We do not use HarfBuzz's
+shaping functionality (which would require additional dependencies).
+
+## Local Modifications
+None - we use the upstream source directly.

@@ -530,3 +530,16 @@ if (pdf_use_partition_alloc) {
     deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
   }
 }
+
+# HarfBuzz for font subsetting
+if (pdf_enable_font_sanitizer) {
+  if (use_system_harfbuzz && (is_linux || is_chromeos)) {
+    group("harfbuzz") {
+      public_configs = [ "harfbuzz-ng:harfbuzz_from_pkgconfig" ]
+    }
+  } else {
+    group("harfbuzz") {
+      public_deps = [ "harfbuzz-ng:fx_harfbuzz" ]
+    }
+  }
+}
