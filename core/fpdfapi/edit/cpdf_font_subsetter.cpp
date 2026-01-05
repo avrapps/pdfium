@@ -113,8 +113,6 @@ bool RecalcFontChecksums(pdfium::span<uint8_t> font_data) {
                                                  static_cast<uint32_t>(font_data.size()));
     uint32_t checksum_adjustment = 0xB1B0AFBA - whole_font_sum;
     WriteU32BE(font_data.data() + head_offset + 8, checksum_adjustment);
-    printf("[FontSubsetter] Recalculated font checksums (adjustment=0x%08X)\n", 
-           checksum_adjustment);
   }
   
   return true;
@@ -142,22 +140,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
     return result;
   }
 
-  printf("[FontSubsetter] SubsetByGlyphIds: input_size=%zu, gids_count=%zu, mappings_count=%zu\n",
-          font_data.size(), gids_to_keep.size(), char_code_to_gid.size());
-  
-  // Debug: Log the GIDs we're keeping
-  printf( "[FontSubsetter] GIDs to keep: ");
-  int logged = 0;
-  for (uint16_t gid : gids_to_keep) {
-    if (logged++ < 20) {
-      printf( "%u ", gid);
-    }
-  }
-  if (gids_to_keep.size() > 20) {
-    printf( "... (+%zu more)", gids_to_keep.size() - 20);
-  }
-  printf( "\n");
-
 #if defined(PDF_ENABLE_FONT_SANITIZER)
   // Create HarfBuzz blob from font data.
   hb_blob_t* blob = hb_blob_create(
@@ -168,7 +150,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
       nullptr);
   if (!blob) {
     result.error_message = "Failed to create HarfBuzz blob";
-    printf( "[FontSubsetter] ERROR: %s\n", result.error_message);
     return result;
   }
 
@@ -177,31 +158,20 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   hb_blob_destroy(blob);
   if (!face) {
     result.error_message = "Failed to create HarfBuzz face";
-    printf( "[FontSubsetter] ERROR: %s\n", result.error_message);
     return result;
   }
 
-  // Debug: Log original font info
   unsigned int orig_glyph_count = hb_face_get_glyph_count(face);
-  unsigned int orig_upem = hb_face_get_upem(face);
-  printf( "[FontSubsetter] Original font: glyph_count=%u, upem=%u\n",
-          orig_glyph_count, orig_upem);
   
   // CRITICAL CHECK: If the font has fewer glyphs than the max GID we're requesting,
   // something is wrong with the GID collection!
   uint16_t max_gid = gids_to_keep.empty() ? 0 : *gids_to_keep.rbegin();
-  if (max_gid >= orig_glyph_count) {
-    printf( "[FontSubsetter] WARNING: max_gid=%u >= glyph_count=%u! "
-            "GIDs may be invalid for this already-subsetted font!\n",
-            max_gid, orig_glyph_count);
-  }
 
   // Create subset input.
   hb_subset_input_t* input = hb_subset_input_create_or_fail();
   if (!input) {
     hb_face_destroy(face);
     result.error_message = "Failed to create subset input";
-    printf( "[FontSubsetter] ERROR: %s\n", result.error_message);
     return result;
   }
 
@@ -223,10 +193,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
       kRetainNumGlyphs |                      // Don't reduce glyph count (0x2000)
       HB_SUBSET_FLAGS_PASSTHROUGH_UNRECOGNIZED |  // Keep unknown tables (0x20)
       HB_SUBSET_FLAGS_NOTDEF_OUTLINE);        // Keep .notdef outline (0x40)
-  
-  printf( "[FontSubsetter] Flags set: RETAIN_GIDS | RETAIN_NUM_GLYPHS | PASSTHROUGH | NOTDEF_OUTLINE = 0x%x\n",
-          HB_SUBSET_FLAGS_RETAIN_GIDS | kRetainNumGlyphs | 
-          HB_SUBSET_FLAGS_PASSTHROUGH_UNRECOGNIZED | HB_SUBSET_FLAGS_NOTDEF_OUTLINE);
 
   // CMAP HANDLING STRATEGY:
   // For PDF fonts (especially already-subsetted ones), the font's internal cmap
@@ -242,7 +208,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   // Preserve cmap table during HarfBuzz - we'll clean it up afterwards
   hb_set_t* no_subset_tables = hb_subset_input_set(input, HB_SUBSET_SETS_NO_SUBSET_TABLE_TAG);
   hb_set_add(no_subset_tables, HB_TAG('c','m','a','p'));
-  printf("[FontSubsetter] Preserving cmap during HarfBuzz (will clean up after)\n");
   
   // Get the glyph set and add our glyphs.
   hb_set_t* glyph_set = hb_subset_input_glyph_set(input);
@@ -251,14 +216,11 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   hb_set_add(glyph_set, 0);
   
   // Add all the glyphs we want to keep.
-  unsigned int valid_gids_added = 0;
   for (uint16_t gid : gids_to_keep) {
     if (gid < orig_glyph_count) {
       hb_set_add(glyph_set, gid);
-      valid_gids_added++;
     }
   }
-  printf("[FontSubsetter] Added %u GIDs to subset (+ GID 0)\n", valid_gids_added);
 
   // Perform the subset operation.
   hb_face_t* subset_face = hb_subset_or_fail(face, input);
@@ -267,38 +229,21 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
 
   if (!subset_face) {
     result.error_message = "HarfBuzz subset operation failed";
-    printf( "[FontSubsetter] ERROR: %s - this may indicate corrupt font data\n",
-            result.error_message);
     return result;
   }
 
-  // Debug: Log subsetted font info and validate GID retention
-  unsigned int subset_glyph_count = hb_face_get_glyph_count(subset_face);
-  printf( "[FontSubsetter] Subsetted font: glyph_count=%u (was %u)\n",
-          subset_glyph_count, orig_glyph_count);
-  
   // CRITICAL VALIDATION: With RETAIN_GIDS + RETAIN_NUM_GLYPHS, the output
   // font should have at least (max_gid + 1) glyphs to preserve positions.
   // If the original font had 228 glyphs, the subset should still have 228.
+  unsigned int subset_glyph_count = hb_face_get_glyph_count(subset_face);
   if (subset_glyph_count != orig_glyph_count) {
-    printf( "[FontSubsetter] WARNING: Glyph count changed from %u to %u!\n",
-            orig_glyph_count, subset_glyph_count);
-    printf( "[FontSubsetter] This suggests RETAIN_NUM_GLYPHS may not be working.\n");
-    
     // If glyph count is less than max_gid + 1, the font will be broken!
     // HARD FAIL: Don't produce a broken font that will render incorrectly.
     if (subset_glyph_count < max_gid + 1) {
-      printf( "[FontSubsetter] CRITICAL: subset has %u glyphs but max_gid is %u!\n",
-              subset_glyph_count, max_gid);
-      printf( "[FontSubsetter] HARD FAIL: GIDs above %u would be missing.\n",
-              subset_glyph_count - 1);
       hb_face_destroy(subset_face);
       result.error_message = "Subset glyph count less than max GID - font would be broken";
       return result;
     }
-  } else {
-    printf( "[FontSubsetter] OK: Glyph count preserved at %u (RETAIN_NUM_GLYPHS working)\n",
-            orig_glyph_count);
   }
 
   // Extract the subsetted font data.
@@ -307,7 +252,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
 
   if (!subset_blob) {
     result.error_message = "Failed to get subset blob";
-    printf( "[FontSubsetter] ERROR: %s\n", result.error_message);
     return result;
   }
 
@@ -316,7 +260,6 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   if (!data || length == 0) {
     hb_blob_destroy(subset_blob);
     result.error_message = "Empty subset result";
-    printf( "[FontSubsetter] ERROR: %s\n", result.error_message);
     return result;
   }
 
@@ -336,33 +279,19 @@ SubsetResult CPDF_FontSubsetter::SubsetByGlyphIds(
   // - UnicodeFromCharCode() may be lossy (multiple CIDs -> same Unicode)
   // - /ToUnicode may be missing or incomplete
   // - Ligatures get truncated to first codepoint
-  if (is_cid_font) {
-    printf("[FontSubsetter] CID font: skipping cmap rebuild (CIDToGIDMap is used instead)\n");
-  } else {
-    printf("[FontSubsetter] Rebuilding cmap table for security...\n");
+  if (!is_cid_font) {
     if (ReplaceEntireCmapTable(result.font_data, char_code_to_gid)) {
-      printf("[FontSubsetter] cmap rebuild: SUCCESS\n");
-      
       // After replacing cmap, recalculate font checksums for validity
-      if (RecalcFontChecksums(pdfium::span<uint8_t>(result.font_data))) {
-        printf("[FontSubsetter] Checksums: RECALCULATED\n");
-      }
-    } else {
-      printf("[FontSubsetter] cmap rebuild: FAILED\n");
+      RecalcFontChecksums(pdfium::span<uint8_t>(result.font_data));
     }
   }
   
   result.success = true;
-  
-  printf( "[FontSubsetter] SUCCESS: output_size=%zu (was %zu, saved %zu bytes)\n",
-          result.font_data.size(), font_data.size(),
-          font_data.size() > result.font_data.size() ? font_data.size() - result.font_data.size() : 0);
 
   return result;
 
 #else
   // Font sanitizer not enabled - return original data unchanged.
-  printf( "[FontSubsetter] WARNING: PDF_ENABLE_FONT_SANITIZER not defined, returning original\n");
   result.font_data.assign(font_data.begin(), font_data.end());
   result.success = true;
   return result;
@@ -378,42 +307,26 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
   if (!doc || !font || gids_to_keep.empty())
     return false;
 
-  // Debug: Log font identification info
-  RetainPtr<const CPDF_Dictionary> font_dict = font->GetFontDict();
-  ByteString base_font = font_dict ? font_dict->GetByteStringFor("BaseFont") : "";
-  uint32_t font_obj_num = font->GetFontDictObjNum();
-  printf("[FontSubsetter] SubsetAndReplaceFont: obj#%u BaseFont=%s is_cid=%d\n",
-          font_obj_num, base_font.c_str(), is_cid_font);
-
   // Get the font file stream.
   RetainPtr<CPDF_Stream> font_stream = GetFontFileStream(font);
   if (!font_stream) {
-    printf("[FontSubsetter] No embedded font program for obj#%u - skipping\n",
-            font_obj_num);
     return false;  // No embedded font program.
   }
 
   const char* font_file_key = GetFontFileKeyName(font);
-  printf("[FontSubsetter] Font file key: %s\n", font_file_key ? font_file_key : "(null)");
 
   // Load the font data.
   auto stream_acc = pdfium::MakeRetain<CPDF_StreamAcc>(font_stream);
   stream_acc->LoadAllDataFiltered();
   pdfium::span<const uint8_t> font_data = stream_acc->GetSpan();
   if (font_data.empty()) {
-    printf("[FontSubsetter] Empty font data for obj#%u - skipping\n", font_obj_num);
     return false;
   }
-
-  printf("[FontSubsetter] Original font stream size: %zu bytes\n", font_data.size());
 
   // Perform subsetting with GIDs and the exact char_code -> GID mapping for cmap rebuild.
   // For CID fonts, cmap rebuild will be skipped (they use CIDToGIDMap instead).
   SubsetResult result = SubsetByGlyphIds(font_data, gids_to_keep, char_code_to_gid, is_cid_font);
   if (!result.success) {
-    printf( "[FontSubsetter] Subsetting FAILED for obj#%u: %s\n",
-            font_obj_num, result.error_message ? result.error_message : "unknown error");
-    
     // IMPORTANT: Don't modify the font if subsetting fails!
     // This preserves the original font and prevents rendering issues.
     return false;
@@ -421,15 +334,11 @@ bool CPDF_FontSubsetter::SubsetAndReplaceFont(
 
   // Sanity check: Don't replace with empty or suspiciously small data
   if (result.font_data.size() < 100) {
-    printf( "[FontSubsetter] WARNING: Subset result is suspiciously small (%zu bytes) "
-            "- NOT replacing original font to be safe!\n", result.font_data.size());
     return false;
   }
 
   // Replace the font stream data.
   font_stream->SetDataAndRemoveFilter(result.font_data);
-  printf( "[FontSubsetter] Replaced font stream: %zu -> %zu bytes\n",
-          font_data.size(), result.font_data.size());
 
   // Update Length1 in the stream dictionary ONLY for FontFile2 (TrueType).
   // Length1 has specific semantics for different font types:
@@ -477,29 +386,23 @@ bool CPDF_FontSubsetter::SanitizeCIDToGIDMap(CPDF_Font* font,
   // Check CIDFont subtype - CIDToGIDMap only applies to CIDFontType2 (TrueType-based)
   ByteString cid_subtype = cid_font_dict->GetByteStringFor("Subtype");
   if (cid_subtype != "CIDFontType2") {
-    printf("[FontSubsetter] CIDToGIDMap: Not CIDFontType2 (is %s), skipping\n",
-           cid_subtype.c_str());
     return false;
   }
 
   // Get CIDToGIDMap
   RetainPtr<CPDF_Object> cid_to_gid_obj = cid_font_dict->GetMutableObjectFor("CIDToGIDMap");
   if (!cid_to_gid_obj) {
-    printf("[FontSubsetter] CIDToGIDMap: Not present, skipping\n");
     return false;
   }
 
   // If it's a name (e.g., /Identity), we can't sanitize it
   if (cid_to_gid_obj->IsName()) {
-    ByteString name = cid_to_gid_obj->GetString();
-    printf("[FontSubsetter] CIDToGIDMap: Is name '/%s', skipping\n", name.c_str());
     return false;
   }
 
   // Must be a stream
   CPDF_Stream* cid_to_gid_stream = cid_to_gid_obj->AsMutableStream();
   if (!cid_to_gid_stream) {
-    printf("[FontSubsetter] CIDToGIDMap: Not a stream, skipping\n");
     return false;
   }
 
@@ -509,21 +412,17 @@ bool CPDF_FontSubsetter::SanitizeCIDToGIDMap(CPDF_Font* font,
   pdfium::span<const uint8_t> data = stream_acc->GetSpan();
   
   if (data.empty()) {
-    printf("[FontSubsetter] CIDToGIDMap: Empty stream, skipping\n");
     return false;
   }
 
   // The stream is a sequence of 2-byte big-endian GID values.
   // CID n maps to bytes [2n, 2n+1].
   size_t max_cid = data.size() / 2;
-  printf("[FontSubsetter] CIDToGIDMap: %zu bytes, max CID %zu\n", 
-         data.size(), max_cid);
 
   // Create a modifiable copy
   DataVector<uint8_t> new_data(data.begin(), data.end());
   
   bool modified = false;
-  size_t zeroed_count = 0;
   
   // Zero out entries for unused CIDs
   for (size_t cid = 0; cid < max_cid; cid++) {
@@ -534,21 +433,16 @@ bool CPDF_FontSubsetter::SanitizeCIDToGIDMap(CPDF_Font* font,
         new_data[offset] = 0;
         new_data[offset + 1] = 0;
         modified = true;
-        zeroed_count++;
       }
     }
   }
 
   if (!modified) {
-    printf("[FontSubsetter] CIDToGIDMap: No changes needed\n");
     return false;
   }
 
   // Replace the stream data
   cid_to_gid_stream->SetDataAndRemoveFilter(new_data);
-  
-  printf("[FontSubsetter] CIDToGIDMap: Zeroed %zu unused CID entries\n", 
-         zeroed_count);
 
   return true;
 }
@@ -572,7 +466,6 @@ RetainPtr<CPDF_Stream> CPDF_FontSubsetter::GetFontFileStream(CPDF_Font* font) {
       RetainPtr<CPDF_Dictionary> cid_font = descendants->GetMutableDictAt(0);
       if (cid_font) {
         font_desc = cid_font->GetMutableDictFor("FontDescriptor");
-        printf("[FontSubsetter] Type0 font: found FontDescriptor in DescendantFonts[0]\n");
       }
     }
   } else {
@@ -645,7 +538,6 @@ uint32_t CPDF_FontSubsetter::FindCmapTableDirEntry(
   uint32_t sfnt_version = ReadU32BE(font_data.data());
   if (sfnt_version != 0x00010000 &&  // TrueType
       sfnt_version != 0x4F54544F) {  // 'OTTO' (CFF)
-    printf("[CmapRebuild] Unknown font format: 0x%08X\n", sfnt_version);
     return 0;
   }
 
@@ -661,13 +553,10 @@ uint32_t CPDF_FontSubsetter::FindCmapTableDirEntry(
     
     // 'cmap' = 0x636D6170
     if (tag == 0x636D6170) {
-      printf("[CmapRebuild] Found cmap table directory entry at offset %u\n",
-             entry_offset);
       return entry_offset;
     }
   }
   
-  printf("[CmapRebuild] cmap table not found in directory\n");
   return 0;
 }
 
@@ -699,19 +588,15 @@ DataVector<uint8_t> CPDF_FontSubsetter::BuildCmapFormat0(
   
   // glyphIdArray[256] - all initialized to 0 already
   // Only fill in the mappings we have
-  unsigned int mappings_written = 0;
   for (const auto& mapping : char_code_to_gid) {
     uint32_t char_code = mapping.first;
     uint16_t gid = mapping.second;
     
     if (char_code <= 255 && gid <= 255) {
       subtable[6 + char_code] = static_cast<uint8_t>(gid);
-      mappings_written++;
     }
   }
   
-  printf("[CmapRebuild] Built Format 0 cmap: %u mappings, size=%zu\n",
-         mappings_written, cmap.size());
   return cmap;
 }
 
@@ -810,8 +695,6 @@ DataVector<uint8_t> CPDF_FontSubsetter::BuildCmapFormat4(
   
   // Format 4 length field is uint16_t - if overflow, fall back to Format 12
   if (subtable_size > 0xFFFF) {
-    printf("[CmapRebuild] Format 4 subtable too large (%zu > 65535), using Format 12\n",
-           subtable_size);
     return BuildCmapFormat12(char_code_to_gid);
   }
   
@@ -896,8 +779,6 @@ DataVector<uint8_t> CPDF_FontSubsetter::BuildCmapFormat4(
     current_glyph_offset += segments[i].gids.size();
   }
   
-  printf("[CmapRebuild] Built Format 4 cmap: %zu segments, %zu GIDs, size=%zu\n",
-         segments.size(), glyph_id_array_size, cmap.size());
   return cmap;
 }
 
@@ -985,8 +866,6 @@ DataVector<uint8_t> CPDF_FontSubsetter::BuildCmapFormat12(
     WriteU32BE(group_ptr + 8, groups[i].start_gid);
   }
   
-  printf("[CmapRebuild] Built Format 12 cmap: %u groups, size=%zu\n",
-         num_groups, cmap.size());
   return cmap;
 }
 
@@ -1005,11 +884,7 @@ DataVector<uint8_t> CPDF_FontSubsetter::BuildCmapFormat12(
 bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
     DataVector<uint8_t>& font_data,
     const std::map<uint32_t, uint16_t>& char_code_to_gid) {
-  printf("[CmapRebuild] Starting cmap rebuild with %zu mappings\n", 
-         char_code_to_gid.size());
-  
   if (char_code_to_gid.empty()) {
-    printf("[CmapRebuild] No mappings to write\n");
     return false;
   }
   
@@ -1038,29 +913,23 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
     }
     
     if (all_gids_8bit) {
-      printf("[CmapRebuild] Using Format 0 (max_char_code=%u, all GIDs <= 255)\n", max_char_code);
       new_cmap = BuildCmapFormat0(char_code_to_gid);
     } else {
-      printf("[CmapRebuild] Using Format 4 (max_char_code=%u, some GIDs > 255)\n", max_char_code);
       new_cmap = BuildCmapFormat4(char_code_to_gid);
     }
   } else if (max_char_code <= 0xFFFF) {
-    printf("[CmapRebuild] Using Format 4 (max_char_code=%u <= 65535)\n", max_char_code);
     new_cmap = BuildCmapFormat4(char_code_to_gid);
   } else {
-    printf("[CmapRebuild] Using Format 12 (max_char_code=%u > 65535)\n", max_char_code);
     new_cmap = BuildCmapFormat12(char_code_to_gid);
   }
   
   if (new_cmap.empty()) {
-    printf("[CmapRebuild] Failed to build new cmap\n");
     return false;
   }
   
   // Find the old cmap table directory entry
   uint32_t cmap_dir_entry = FindCmapTableDirEntry(pdfium::span<const uint8_t>(font_data));
   if (cmap_dir_entry == 0) {
-    printf("[CmapRebuild] Could not find cmap in table directory\n");
     return false;
   }
   
@@ -1078,33 +947,25 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
   uint32_t new_length = static_cast<uint32_t>(new_cmap.size());
   uint32_t new_padded = Align4(new_length);
   
-  printf("[CmapRebuild] Old cmap: offset=%u, length=%u (padded=%u)\n", 
-         old_offset, old_length, old_padded);
-  printf("[CmapRebuild] New cmap: length=%u (padded=%u)\n", new_length, new_padded);
-  
   // Sanity checks for old_offset (security hardening for potentially hostile input)
   uint16_t num_tables = ReadU16BE(font_data.data() + 4);
   uint32_t table_dir_end = 12 + num_tables * 16;
   
   // Validate table directory doesn't exceed font data (malicious num_tables)
   if (table_dir_end > font_data.size()) {
-    printf("[CmapRebuild] ERROR: table directory exceeds font data (corrupt font?)\n");
     return false;
   }
   
   if (old_offset < table_dir_end) {
-    printf("[CmapRebuild] ERROR: old cmap overlaps table directory (corrupt font?)\n");
     return false;
   }
   
   if ((old_offset & 3) != 0) {
-    printf("[CmapRebuild] ERROR: old cmap offset 0x%08X not 4-byte aligned\n", old_offset);
     return false;  // Hard fail: misaligned offset indicates corrupt font
   }
   
   // Bounds check: validate old cmap doesn't exceed font data
   if (old_offset + old_padded > font_data.size()) {
-    printf("[CmapRebuild] ERROR: old cmap extends beyond font data (corrupt font?)\n");
     return false;
   }
   
@@ -1114,8 +975,6 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
   int64_t new_size64 = static_cast<int64_t>(font_data.size()) + size_diff;
   
   if (new_size64 <= 0 || new_size64 > static_cast<int64_t>(UINT32_MAX)) {
-    printf("[CmapRebuild] ERROR: invalid new font size (%lld bytes)\n", 
-           static_cast<long long>(new_size64));
     return false;
   }
   
@@ -1171,7 +1030,6 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
       if (table_offset >= old_cmap_end) {
         int64_t new_offset64 = static_cast<int64_t>(table_offset) + size_diff;
         if (new_offset64 < 0 || new_offset64 > static_cast<int64_t>(UINT32_MAX)) {
-          printf("[CmapRebuild] ERROR: table offset overflow\n");
           return false;
         }
         WriteU32BE(font_data.data() + entry_offset + 8, 
@@ -1180,7 +1038,5 @@ bool CPDF_FontSubsetter::ReplaceEntireCmapTable(
     }
   }
   
-  printf("[CmapRebuild] Successfully replaced cmap table (padded_size_diff=%lld)\n", 
-         static_cast<long long>(size_diff));
   return true;
 }

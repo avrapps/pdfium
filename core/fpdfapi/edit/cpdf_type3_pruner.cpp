@@ -21,42 +21,25 @@ CPDF_Type3Pruner::~CPDF_Type3Pruner() = default;
 bool CPDF_Type3Pruner::PruneUnusedCharProcs(
     CPDF_Font* font,
     const std::set<uint32_t>& used_char_codes) {
-  printf( "[Type3Pruner] PruneUnusedCharProcs called, used_char_codes: %zu\n", 
-          used_char_codes.size());
-          
   if (!font || !font->IsType3Font()) {
-    printf( "[Type3Pruner] Not a Type3 font\n");
     return false;
   }
 
   CPDF_Type3Font* type3_font = font->AsType3Font();
   if (!type3_font) {
-    printf( "[Type3Pruner] AsType3Font failed\n");
     return false;
   }
 
   RetainPtr<CPDF_Dictionary> font_dict = font->GetMutableFontDict();
   if (!font_dict) {
-    printf( "[Type3Pruner] No font dict\n");
     return false;
   }
 
   RetainPtr<CPDF_Dictionary> char_procs =
       font_dict->GetMutableDictFor("CharProcs");
   if (!char_procs) {
-    printf( "[Type3Pruner] No CharProcs\n");
     return false;
   }
-
-  // Count CharProcs
-  size_t total_charprocs = 0;
-  {
-    CPDF_DictionaryLocker locker(char_procs);
-    for (const auto& entry : locker) {
-      total_charprocs++;
-    }
-  }
-  printf( "[Type3Pruner] Total CharProcs in font: %zu\n", total_charprocs);
 
   // Build set of glyph names that should be retained.
   std::set<ByteString> used_names;
@@ -64,17 +47,11 @@ bool CPDF_Type3Pruner::PruneUnusedCharProcs(
     const char* name = GetGlyphName(type3_font, char_code);
     if (name && name[0] != '\0') {
       used_names.insert(ByteString(name));
-      printf( "[Type3Pruner] Used char_code %u -> glyph name '%s'\n", 
-              char_code, name);
-    } else {
-      printf( "[Type3Pruner] char_code %u has no glyph name\n", char_code);
     }
   }
 
   // Always keep .notdef if present.
   used_names.insert(".notdef");
-  
-  printf( "[Type3Pruner] Keeping %zu glyph names\n", used_names.size());
 
   // Find CharProcs entries to remove.
   std::vector<ByteString> keys_to_remove;
@@ -83,13 +60,9 @@ bool CPDF_Type3Pruner::PruneUnusedCharProcs(
     for (const auto& entry : locker) {
       if (used_names.find(entry.first) == used_names.end()) {
         keys_to_remove.push_back(entry.first);
-        printf( "[Type3Pruner] Will remove CharProc: %s\n", 
-                entry.first.c_str());
       }
     }
   }
-
-  printf( "[Type3Pruner] Removing %zu CharProcs\n", keys_to_remove.size());
 
   // Remove unused CharProcs.
   for (const ByteString& key : keys_to_remove) {
@@ -171,9 +144,6 @@ bool CPDF_Type3Pruner::PruneUnusedCharProcs(
       font_dict->SetNewFor<CPDF_Number>("FirstChar", static_cast<int>(min_code));
       font_dict->SetNewFor<CPDF_Number>("LastChar", static_cast<int>(max_code));
       font_dict->SetFor("Widths", std::move(new_widths));
-      
-      printf( "[Type3Pruner] Updated Widths: FirstChar=%u, LastChar=%u, entries=%u\n",
-              min_code, max_code, max_code - min_code + 1);
     }
   }
 
