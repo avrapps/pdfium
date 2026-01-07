@@ -43,6 +43,9 @@ class CPDF_Type3Char;
 class CPDF_Type3Font;
 class PauseIndicatorIface;
 
+// For ObjectId, ObjectTable, and CPDF_RenderObjectFilter
+#include "core/fpdfapi/render/cpdf_renderobjectfilter.h"
+
 class CPDF_RenderStatus {
  public:
   CPDF_RenderStatus(CPDF_RenderContext* pContext, CFX_RenderDevice* pDevice);
@@ -67,6 +70,21 @@ class CPDF_RenderStatus {
     transparency_ = transparency;
   }
   void SetInGroup(bool bInGroup) { in_group_ = bInGroup; }
+  
+  // Set render filter and object table for filtered rendering.
+  // Both must be non-null for filtering to take effect.
+  void SetRenderFilter(const pdfium::render::CPDF_RenderObjectFilter* pFilter,
+                       const pdfium::render::ObjectTable* pObjectTable) {
+    filter_ = pFilter;
+    obj_table_ = pObjectTable;
+  }
+  
+  const pdfium::render::CPDF_RenderObjectFilter* GetRenderFilter() const {
+    return filter_;
+  }
+  const pdfium::render::ObjectTable* GetObjectTable() const {
+    return obj_table_;
+  }
 
   void Initialize(const CPDF_RenderStatus* pParentStatus,
                   const CPDF_GraphicStates* pInitialStates);
@@ -75,6 +93,16 @@ class CPDF_RenderStatus {
                         const CFX_Matrix& mtObj2Device);
   void RenderSingleObject(CPDF_PageObject* pObj,
                           const CFX_Matrix& mtObj2Device);
+  
+  // Render only the objects with the given ObjectIds from the ObjectTable.
+  // This is an O(K) operation where K is the number of ids.
+  // |base_mtObj2Device| is the base transform (e.g., page -> device).
+  // |device_clip| is an optional clip rect in device coordinates.
+  void RenderObjectSubsetById(
+      const pdfium::render::ObjectTable& obj_table,
+      const std::vector<pdfium::render::ObjectId>& ids,
+      const CFX_Matrix& base_mtObj2Device,
+      const FX_RECT* device_clip = nullptr);
   bool ContinueSingleObject(CPDF_PageObject* pObj,
                             const CFX_Matrix& mtObj2Device,
                             PauseIndicatorIface* pPause);
@@ -215,6 +243,10 @@ class CPDF_RenderStatus {
   bool in_group_ = false;
   CPDF_ColorSpace::Family group_family_ = CPDF_ColorSpace::Family::kUnknown;
   FX_ARGB t3_fill_color_ = 0;
+  
+  // Render filter and object table for filtered rendering (optional)
+  UnownedPtr<const pdfium::render::CPDF_RenderObjectFilter> filter_;
+  UnownedPtr<const pdfium::render::ObjectTable> obj_table_;
 };
 
 #endif  // CORE_FPDFAPI_RENDER_CPDF_RENDERSTATUS_H_

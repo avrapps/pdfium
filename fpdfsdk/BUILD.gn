@@ -42,6 +42,7 @@ source_set("fpdfsdk") {
     "fpdf_annot.cpp",
     "fpdf_attachment.cpp",
     "fpdf_catalog.cpp",
+    "fpdf_contentediting.cpp",
     "fpdf_dataavail.cpp",
     "fpdf_doc.cpp",
     "fpdf_editimg.cpp",

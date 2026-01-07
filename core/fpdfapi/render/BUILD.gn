@@ -21,6 +21,8 @@ source_set("render") {
     "cpdf_progressiverenderer.h",
     "cpdf_rendercontext.cpp",
     "cpdf_rendercontext.h",
+    "cpdf_renderobjectfilter.cpp",
+    "cpdf_renderobjectfilter.h",
     "cpdf_renderoptions.cpp",
     "cpdf_renderoptions.h",
     "cpdf_rendershading.cpp",

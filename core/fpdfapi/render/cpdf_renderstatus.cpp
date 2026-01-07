@@ -45,6 +45,7 @@
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fpdfapi/render/cpdf_imagerenderer.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
+#include "core/fpdfapi/render/cpdf_renderobjectfilter.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfapi/render/cpdf_rendershading.h"
 #include "core/fpdfapi/render/cpdf_rendertiling.h"
@@ -222,6 +223,14 @@ void CPDF_RenderStatus::RenderObjectList(
       continue;
     }
 
+    // Apply render filter if present (for filtered rendering)
+    if (filter_ && obj_table_) {
+      pdfium::render::ObjectId obj_id = obj_table_->GetId(pCurObj.get());
+      if (!filter_->ShouldRender(obj_id, pCurObj.get())) {
+        continue;
+      }
+    }
+
     if (pCurObj->GetRect().left > clip_rect.right ||
         pCurObj->GetRect().right < clip_rect.left ||
         pCurObj->GetRect().bottom > clip_rect.top ||
@@ -229,6 +238,58 @@ void CPDF_RenderStatus::RenderObjectList(
       continue;
     }
     RenderSingleObject(pCurObj.get(), mtObj2Device);
+    if (stopped_) {
+      return;
+    }
+  }
+}
+
+void CPDF_RenderStatus::RenderObjectSubsetById(
+    const pdfium::render::ObjectTable& obj_table,
+    const std::vector<pdfium::render::ObjectId>& ids,
+    const CFX_Matrix& base_mtObj2Device,
+    const FX_RECT* device_clip) {
+  CFX_RenderDevice::StateRestorer restorer(device_);
+
+  // Apply device clip if provided
+  if (device_clip) {
+    device_->SetClip_Rect(*device_clip);
+  }
+
+  // Get clip box in device coordinates for early rejection
+  FX_RECT clip_box = device_->GetClipBox();
+  CFX_FloatRect clip_f(clip_box);
+
+  for (pdfium::render::ObjectId id : ids) {
+    const pdfium::render::ObjectEntry* entry = obj_table.GetEntry(id);
+    if (!entry || !entry->obj) {
+      continue;
+    }
+
+    const CPDF_PageObject* obj = entry->obj;
+    if (!obj->IsActive()) {
+      continue;
+    }
+    if (obj == stop_obj_) {
+      stopped_ = true;
+      return;
+    }
+
+    // Final matrix: holder_to_root * base
+    // This transforms from holder space -> root page space -> device space
+    CFX_Matrix final_matrix = entry->holder_to_root_matrix * base_mtObj2Device;
+
+    // Device-space clip test (optimization, can be disabled for debugging)
+    // Transform object rect to device space and test against clip
+    CFX_FloatRect dev_rect = final_matrix.TransformRect(obj->GetRect());
+    if (dev_rect.left > clip_f.right || dev_rect.right < clip_f.left ||
+        dev_rect.bottom > clip_f.top || dev_rect.top < clip_f.bottom) {
+      continue;
+    }
+
+    // Cast only at call site where non-const is required
+    // RenderSingleObject expects non-const pointer for historical reasons
+    RenderSingleObject(const_cast<CPDF_PageObject*>(obj), final_matrix);
     if (stopped_) {
       return;
     }
@@ -411,6 +472,8 @@ bool CPDF_RenderStatus::ProcessForm(const CPDF_FormObject* pFormObj,
   status.SetDropObjects(drop_objects_);
   status.SetFormResource(std::move(pResources));
   status.SetInGroup(in_group_);
+  // Thread filter and object table through to child forms
+  status.SetRenderFilter(filter_, obj_table_);
   status.Initialize(this, &pFormObj->graphic_states());
   {
     CFX_RenderDevice::StateRestorer restorer(device_);

@@ -24,6 +24,9 @@ class CPDF_PageObject;
 class CPDF_PageObjectHolder;
 class CPDF_RenderOptions;
 
+// Include for ObjectId, ObjectTable, and CPDF_RenderObjectFilter
+#include "core/fpdfapi/render/cpdf_renderobjectfilter.h"
+
 class CPDF_RenderContext {
  public:
   class Layer {
@@ -51,7 +54,9 @@ class CPDF_RenderContext {
   void Render(CFX_RenderDevice* pDevice,
               const CPDF_PageObject* pStopObj,
               const CPDF_RenderOptions* pOptions,
-              const CFX_Matrix* pLastMatrix);
+              const CFX_Matrix* pLastMatrix,
+              const pdfium::render::CPDF_RenderObjectFilter* pFilter = nullptr,
+              const pdfium::render::ObjectTable* pObjectTable = nullptr);
 
   void GetBackgroundToDevice(CFX_RenderDevice* device,
                              const CPDF_PageObject* object,

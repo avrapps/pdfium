@@ -9,6 +9,8 @@ source_set("fpdftext") {
   sources = [
     "cpdf_linkextract.cpp",
     "cpdf_linkextract.h",
+    "cpdf_textblock_detector.cpp",
+    "cpdf_textblock_detector.h",
     "cpdf_textpage.cpp",
     "cpdf_textpage.h",
     "cpdf_textpagefind.cpp",
@@ -21,6 +23,7 @@ source_set("fpdftext") {
     "../fpdfapi/font",
     "../fpdfapi/page",
     "../fpdfapi/parser",
+    "../fpdfapi/render",
     "../fxcrt",
   ]
   visibility = [ "../../*" ]

@@ -15,6 +15,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
+#include "core/fpdfapi/render/cpdf_renderobjectfilter.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfapi/render/cpdf_renderstatus.h"
 #include "core/fpdfapi/render/cpdf_textrenderer.h"
@@ -59,10 +60,13 @@ void CPDF_RenderContext::AppendLayer(CPDF_PageObjectHolder* pObjectHolder,
   layers_.emplace_back(pObjectHolder, mtObject2Device);
 }
 
-void CPDF_RenderContext::Render(CFX_RenderDevice* pDevice,
-                                const CPDF_PageObject* pStopObj,
-                                const CPDF_RenderOptions* pOptions,
-                                const CFX_Matrix* pLastMatrix) {
+void CPDF_RenderContext::Render(
+    CFX_RenderDevice* pDevice,
+    const CPDF_PageObject* pStopObj,
+    const CPDF_RenderOptions* pOptions,
+    const CFX_Matrix* pLastMatrix,
+    const pdfium::render::CPDF_RenderObjectFilter* pFilter,
+    const pdfium::render::ObjectTable* pObjectTable) {
   for (auto& layer : layers_) {
     CFX_RenderDevice::StateRestorer restorer(pDevice);
     CPDF_RenderStatus status(this, pDevice);
@@ -71,6 +75,8 @@ void CPDF_RenderContext::Render(CFX_RenderDevice* pDevice,
     }
     status.SetStopObject(pStopObj);
     status.SetTransparency(layer.GetObjectHolder()->GetTransparency());
+    // Set filter and object table for filtered rendering
+    status.SetRenderFilter(pFilter, pObjectTable);
     CFX_Matrix final_matrix = layer.GetMatrix();
     if (pLastMatrix) {
       final_matrix *= *pLastMatrix;
