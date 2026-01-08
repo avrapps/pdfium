@@ -68,3 +68,4 @@
 *.xcodeproj
 *~
 
+third_party/harfbuzz-ng/src/
