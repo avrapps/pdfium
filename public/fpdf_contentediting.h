@@ -15,8 +15,20 @@
 
 // Detection flags
 #define EPDF_TEXTBLOCK_DEFAULT           0x00
-#define EPDF_TEXTBLOCK_DETECT_TABLES     0x01  // Reserved for Phase 1C
+#define EPDF_TEXTBLOCK_DETECT_TABLES     0x01  // Detect ruled tables
 #define EPDF_TEXTBLOCK_STRICT_EXCLUSIONS 0x02  // More aggressive RTL/complex filtering
+#define EPDF_TEXTBLOCK_DETECT_UNRULED    0x04  // Detect unruled tables (opt-in)
+#define EPDF_TEXTBLOCK_USE_NEW_PIPELINE  0x08  // Use new hierarchical pipeline
+#define EPDF_TEXTBLOCK_ENABLE_DEBUG      0x10  // Enable debug logging
+
+// Debug overlay flags for EPDFPage_RenderLayoutDebugOverlay
+#define EPDF_DEBUG_SHOW_WORDS         0x01
+#define EPDF_DEBUG_SHOW_LINES         0x02
+#define EPDF_DEBUG_SHOW_COLUMNS       0x04
+#define EPDF_DEBUG_SHOW_GUTTERS       0x08
+#define EPDF_DEBUG_SHOW_TABLES        0x10
+#define EPDF_DEBUG_SHOW_BLOCKS        0x20
+#define EPDF_DEBUG_SHOW_READING_ORDER 0x40
 
 #ifdef __cplusplus
 extern "C" {
@@ -219,6 +231,186 @@ EPDFPage_RenderTextBlockBitmap(FPDF_BITMAP bitmap,
                                int block_index,
                                int rotate,
                                int flags);
+
+// Experimental API.
+// Function: EPDFPage_EnableLayoutDebug
+//          Enable or disable layout debug mode for a page.
+// Parameters:
+//          page    -   Handle to a page.
+//          enable  -   TRUE to enable, FALSE to disable.
+// Return value:
+//          TRUE on success, FALSE if page is invalid.
+// Comments:
+//          When enabled, subsequent detection will store debug information
+//          such as merge logs and intermediate results.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_EnableLayoutDebug(FPDF_PAGE page, FPDF_BOOL enable);
+
+// Experimental API.
+// Function: EPDFPage_RenderLayoutDebugOverlay
+//          Render a debug overlay showing layout detection results.
+// Parameters:
+//          bitmap    -   Handle to the device-independent bitmap.
+//          page      -   Handle to the page.
+//          start_x   -   Left pixel position in bitmap coordinates.
+//          start_y   -   Top pixel position in bitmap coordinates.
+//          size_x    -   Horizontal size in pixels.
+//          size_y    -   Vertical size in pixels.
+//          rotate    -   Page orientation (0-3).
+//          debug_flags - Bit-wise OR of EPDF_DEBUG_* flags above.
+// Return value:
+//          TRUE on success, FALSE if detection has not been run.
+// Comments:
+//          EPDFPage_DetectTextBlocks() must be called first with
+//          EPDF_TEXTBLOCK_USE_NEW_PIPELINE flag.
+//          This renders colored overlays for words, lines, columns, etc.
+//          based on the specified debug_flags.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RenderLayoutDebugOverlay(FPDF_BITMAP bitmap,
+                                  FPDF_PAGE page,
+                                  int start_x,
+                                  int start_y,
+                                  int size_x,
+                                  int size_y,
+                                  int rotate,
+                                  int debug_flags);
+
+// Experimental API.
+// Function: EPDFPage_GetWordCount
+//          Get the number of detected words on a page.
+// Parameters:
+//          page    -   Handle to a page.
+// Return value:
+//          The number of words, or -1 if detection has not been run
+//          with the new pipeline or an error occurred.
+// Comments:
+//          EPDFPage_DetectTextBlocks() must be called first with
+//          EPDF_TEXTBLOCK_USE_NEW_PIPELINE flag.
+//
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetWordCount(FPDF_PAGE page);
+
+// Experimental API.
+// Function: EPDFPage_GetLineCount
+//          Get the number of detected lines on a page.
+// Parameters:
+//          page    -   Handle to a page.
+// Return value:
+//          The number of lines, or -1 if detection has not been run
+//          with the new pipeline or an error occurred.
+//
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetLineCount(FPDF_PAGE page);
+
+// Experimental API.
+// Function: EPDFPage_GetColumnCount
+//          Get the number of detected columns on a page.
+// Parameters:
+//          page    -   Handle to a page.
+// Return value:
+//          The number of columns, or -1 if detection has not been run
+//          with the new pipeline or an error occurred.
+//
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetColumnCount(FPDF_PAGE page);
+
+// Experimental API.
+// Function: EPDFPage_GetTableCount
+//          Get the number of detected tables on a page.
+// Parameters:
+//          page    -   Handle to a page.
+// Return value:
+//          The number of tables, or -1 if detection has not been run
+//          with the new pipeline or an error occurred.
+//
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetTableCount(FPDF_PAGE page);
+
+// Experimental API.
+// Function: EPDFPage_GetWordBounds
+//          Get the bounding box of a word.
+// Parameters:
+//          page      -   Handle to a page.
+//          word_index -  Zero-based index of the word.
+//          out_rect  -   Pointer to FS_RECTF to receive bounds.
+// Return value:
+//          TRUE on success, FALSE if not run or index invalid.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetWordBounds(FPDF_PAGE page, int word_index, FS_RECTF* out_rect);
+
+// Experimental API.
+// Function: EPDFPage_GetLineBounds
+//          Get the bounding box of a line.
+// Parameters:
+//          page       -   Handle to a page.
+//          line_index -   Zero-based index of the line.
+//          out_rect   -   Pointer to FS_RECTF to receive bounds.
+// Return value:
+//          TRUE on success, FALSE if not run or index invalid.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetLineBounds(FPDF_PAGE page, int line_index, FS_RECTF* out_rect);
+
+// Experimental API.
+// Function: EPDFPage_GetColumnBounds
+//          Get the bounding box of a column.
+// Parameters:
+//          page        -   Handle to a page.
+//          column_index -  Zero-based index of the column.
+//          out_rect    -   Pointer to FS_RECTF to receive bounds.
+// Return value:
+//          TRUE on success, FALSE if not run or index invalid.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetColumnBounds(FPDF_PAGE page, int column_index, FS_RECTF* out_rect);
+
+// Experimental API.
+// Function: EPDFPage_GetTableBounds
+//          Get the bounding box of a table.
+// Parameters:
+//          page        -   Handle to a page.
+//          table_index -   Zero-based index of the table.
+//          out_rect    -   Pointer to FS_RECTF to receive bounds.
+// Return value:
+//          TRUE on success, FALSE if not run or index invalid.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetTableBounds(FPDF_PAGE page, int table_index, FS_RECTF* out_rect);
+
+// Experimental API.
+// Function: EPDFPage_GetTableCellCount
+//          Get the number of cells in a table.
+// Parameters:
+//          page        -   Handle to a page.
+//          table_index -   Zero-based index of the table.
+// Return value:
+//          The number of cells, or -1 if not run or index invalid.
+//
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFPage_GetTableCellCount(FPDF_PAGE page, int table_index);
+
+// Experimental API.
+// Function: EPDFPage_GetAdaptiveParams
+//          Get the adaptive parameters computed for a page.
+// Parameters:
+//          page                -   Handle to a page.
+//          out_median_height   -   Pointer to receive median glyph height.
+//          out_median_width    -   Pointer to receive median glyph width.
+//          out_baseline_tol    -   Pointer to receive baseline tolerance.
+// Return value:
+//          TRUE on success, FALSE if not run with new pipeline.
+// Comments:
+//          These parameters are derived from page statistics and used
+//          for detection thresholds. Useful for debugging.
+//
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_GetAdaptiveParams(FPDF_PAGE page,
+                           float* out_median_height,
+                           float* out_median_width,
+                           float* out_baseline_tol);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -14,7 +14,14 @@
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
+#include "core/fpdftext/cpdf_block_builder.h"
+#include "core/fpdftext/cpdf_column_detector.h"
+#include "core/fpdftext/cpdf_glyph_extractor.h"
+#include "core/fpdftext/cpdf_line_builder.h"
+#include "core/fpdftext/cpdf_reading_order.h"
+#include "core/fpdftext/cpdf_table_detector.h"
 #include "core/fpdftext/cpdf_textpage.h"
+#include "core/fpdftext/cpdf_word_builder.h"
 #include "core/fxcrt/fx_unicode.h"
 
 namespace pdfium {
@@ -124,7 +131,11 @@ TextBlock& TextBlock::operator=(TextBlock&& other) noexcept = default;
 TextBlock::~TextBlock() = default;
 
 // TextBlockSnapshot implementation
-TextBlockSnapshot::TextBlockSnapshot() : generation(0), flags_used(0) {}
+TextBlockSnapshot::TextBlockSnapshot()
+    : generation(0),
+      flags_used(0),
+      debug_enabled(false),
+      content_hash(0) {}
 
 TextBlockSnapshot::TextBlockSnapshot(const TextBlockSnapshot& other) = default;
 TextBlockSnapshot::TextBlockSnapshot(TextBlockSnapshot&& other) noexcept =
@@ -165,6 +176,7 @@ std::unique_ptr<TextBlockSnapshot> CPDF_TextBlockDetector::Detect(
   auto snapshot = std::make_unique<TextBlockSnapshot>();
   snapshot->flags_used = flags;
   snapshot->generation = 1;
+  snapshot->debug_enabled = (flags & kTextBlockEnableDebug) != 0;
 
   if (!page || !text_page || text_page->size() == 0) {
     return snapshot;
@@ -174,6 +186,12 @@ std::unique_ptr<TextBlockSnapshot> CPDF_TextBlockDetector::Detect(
   // This recursively traverses Form XObjects and assigns flat ObjectIds.
   snapshot->object_table.Build(page);
 
+  // Check if we should use the new hierarchical pipeline
+  if (flags & kTextBlockUseNewPipeline) {
+    return DetectWithNewPipeline(page, text_page, flags, std::move(snapshot));
+  }
+
+  // Legacy pipeline
   // Step 1: Build lines from characters
   std::vector<Line> lines = BuildLines(text_page, flags);
   if (lines.empty()) {
@@ -190,6 +208,134 @@ std::unique_ptr<TextBlockSnapshot> CPDF_TextBlockDetector::Detect(
   EmitTextBlocks(page, text_page, lines, paragraphs, snapshot.get());
 
   return snapshot;
+}
+
+std::unique_ptr<TextBlockSnapshot> CPDF_TextBlockDetector::DetectWithNewPipeline(
+    CPDF_Page* page,
+    CPDF_TextPage* text_page,
+    int flags,
+    std::unique_ptr<TextBlockSnapshot> snapshot) {
+  bool debug_enabled = snapshot->debug_enabled;
+
+  // Phase 0: Extract glyphs and compute page statistics
+  layout::GlyphExtractor glyph_extractor;
+  glyph_extractor.Extract(page, text_page, snapshot->object_table);
+
+  snapshot->glyphs = glyph_extractor.GetGlyphs();
+  snapshot->stats = glyph_extractor.GetStats();
+  snapshot->params = glyph_extractor.GetAdaptiveParams();
+
+  if (snapshot->glyphs.empty()) {
+    return snapshot;
+  }
+
+  // Phase 0.5: Extract provisional table zones
+  layout::TableDetector table_detector;
+  auto provisional_zones =
+      table_detector.ExtractProvisionalZones(page, snapshot->params);
+
+  // Phase 1: Build LINES from glyphs (LINE-FIRST approach)
+  // This is the correct order: once glyphs are in lines, word segmentation
+  // becomes a trivial 1D problem.
+  layout::LineBuilder line_builder;
+  line_builder.SetDebugEnabled(debug_enabled);
+  line_builder.BuildFromGlyphs(snapshot->glyphs, snapshot->params);
+  snapshot->lines = line_builder.GetLines();
+
+  if (debug_enabled) {
+    for (const auto& decision : line_builder.GetMergeLog()) {
+      snapshot->merge_log.push_back(decision);
+    }
+  }
+
+  if (snapshot->lines.empty()) {
+    return snapshot;
+  }
+
+  // Phase 2: Build WORDS from lines (1D gap-split inside each line)
+  layout::WordBuilder word_builder;
+  word_builder.SetDebugEnabled(debug_enabled);
+  word_builder.BuildFromLines(snapshot->lines, snapshot->glyphs, snapshot->params);
+  snapshot->words = word_builder.GetWords();
+
+  if (debug_enabled) {
+    for (const auto& decision : word_builder.GetMergeLog()) {
+      snapshot->merge_log.push_back(decision);
+    }
+  }
+
+  if (snapshot->words.empty()) {
+    return snapshot;
+  }
+
+  // Phase 3: Detect columns
+  layout::ColumnDetector column_detector;
+  snapshot->columns = column_detector.Detect(
+      snapshot->lines, snapshot->words, provisional_zones,
+      snapshot->stats, snapshot->params);
+
+  // Phase 4: Detect tables
+  if (flags & kTextBlockDetectTables) {
+    snapshot->tables = table_detector.DetectRuledTables(page, snapshot->params);
+  }
+
+  if (flags & kTextBlockDetectUnruledTables) {
+    auto unruled = table_detector.DetectUnruledTables(
+        snapshot->words, snapshot->lines, snapshot->columns, snapshot->params);
+    for (auto& t : unruled) {
+      t.id = static_cast<int>(snapshot->tables.size());
+      snapshot->tables.push_back(std::move(t));
+    }
+  }
+
+  // Phase 5: Build blocks from lines
+  layout::BlockBuilder block_builder;
+  block_builder.SetDebugEnabled(debug_enabled);
+  block_builder.Build(snapshot->lines, snapshot->words, snapshot->glyphs,
+                      snapshot->columns, snapshot->tables, snapshot->params);
+
+  if (debug_enabled) {
+    for (const auto& decision : block_builder.GetMergeLog()) {
+      snapshot->merge_log.push_back(decision);
+    }
+  }
+
+  snapshot->blocks = block_builder.GetBlocks();
+
+  // Phase 6: Compute reading order
+  layout::ReadingOrderComputer reading_order;
+  reading_order.ComputeReadingOrder(snapshot->blocks, snapshot->columns);
+  snapshot->sections = reading_order.GetSections();
+
+  // Precompute object ID mappings for rendering
+  PrecomputeObjectMappings(snapshot.get());
+
+  return snapshot;
+}
+
+void CPDF_TextBlockDetector::PrecomputeObjectMappings(
+    TextBlockSnapshot* snapshot) const {
+  snapshot->block_to_object_ids.clear();
+  snapshot->block_to_object_ids.resize(snapshot->blocks.size());
+  snapshot->all_block_object_ids.clear();
+
+  for (size_t block_idx = 0; block_idx < snapshot->blocks.size(); ++block_idx) {
+    const TextBlock& block = snapshot->blocks[block_idx];
+    std::vector<ObjectId>& object_ids = snapshot->block_to_object_ids[block_idx];
+
+    for (const TextSpanRef& span : block.spans) {
+      if (span.object_id != kInvalidObjectId) {
+        object_ids.push_back(span.object_id);
+        snapshot->all_block_object_ids.insert(span.object_id);
+      }
+    }
+
+    // Sort for binary search
+    std::sort(object_ids.begin(), object_ids.end());
+    // Remove duplicates
+    object_ids.erase(std::unique(object_ids.begin(), object_ids.end()),
+                     object_ids.end());
+  }
 }
 
 bool CPDF_TextBlockDetector::ShouldExcludeChar(
@@ -231,8 +377,22 @@ bool CPDF_TextBlockDetector::ShouldExcludeChar(
   }
 
   // Check for decorative/too small font
+  // NOTE: Many PDFs use font size 1 with a text matrix that scales up (e.g., Tm
+  // with large a/d values). We must compute the EFFECTIVE font size by
+  // multiplying the raw font size by the matrix scale factor.
   float font_size = text_page->GetCharFontSize(char_index);
-  if (font_size < kMinFontSizeThreshold) {
+  // Compute scale factor from the text matrix (Y scale = sqrt(c² + d²))
+  float scale_y = std::sqrt(matrix.c * matrix.c + matrix.d * matrix.d);
+  float effective_font_size = font_size * scale_y;
+
+  // Also check char box height as a fallback - this is already in page coords
+  const CFX_FloatRect& char_box = char_info.char_box();
+  float char_height = char_box.top - char_box.bottom;
+
+  // Use the larger of effective font size or char box height
+  float actual_size = std::max(effective_font_size, char_height);
+
+  if (actual_size < kMinFontSizeThreshold) {
     *out_reason = TextBlockExclusionReason::kDecorativeOrTooSmall;
     return true;
   }
@@ -304,9 +464,18 @@ CPDF_TextBlockDetector::BuildLines(CPDF_TextPage* text_page, int flags) const {
 
     const CPDF_TextPage::CharInfo& char_info = text_page->GetCharInfo(i);
     const CFX_FloatRect& char_box = char_info.char_box();
-    float font_size = text_page->GetCharFontSize(i);
     float char_y = char_info.origin().y;
     wchar_t unicode = char_info.unicode();
+
+    // Compute effective font size (raw size * matrix scale)
+    // Many PDFs use font size 1 with scaling in the text matrix
+    float raw_font_size = text_page->GetCharFontSize(i);
+    const CFX_Matrix& matrix = char_info.matrix();
+    float scale_y = std::sqrt(matrix.c * matrix.c + matrix.d * matrix.d);
+    float effective_font_size = raw_font_size * scale_y;
+    // Also use char box height as fallback
+    float char_height = char_box.top - char_box.bottom;
+    float font_size = std::max(effective_font_size, char_height);
 
     // Track RTL characters for line-level detection
     if (IsRTLCharacter(unicode)) {

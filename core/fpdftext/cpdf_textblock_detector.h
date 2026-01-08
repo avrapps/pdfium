@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/fpdfapi/render/cpdf_renderobjectfilter.h"
+#include "core/fpdftext/cpdf_layout_types.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/widestring.h"
 
@@ -108,6 +109,25 @@ struct TextBlockSnapshot {
   std::vector<std::vector<ObjectId>> block_to_object_ids;  // Per-block, sorted
   std::unordered_set<ObjectId> all_block_object_ids;       // For background exclusion
 
+  // Hierarchical layout data (from new detection pipeline)
+  std::vector<layout::GlyphItem> glyphs;
+  std::vector<layout::WordItem> words;
+  std::vector<layout::LineItem> lines;
+  std::vector<layout::Table> tables;
+  layout::ColumnModel columns;
+  std::vector<layout::ReadingSection> sections;
+
+  // Page statistics and adaptive parameters
+  layout::PageStats stats;
+  layout::AdaptiveParams params;
+
+  // Debug / traceability
+  std::vector<layout::MergeDecision> merge_log;
+  bool debug_enabled;
+
+  // Cache key for deterministic regeneration
+  uint64_t content_hash;
+
   TextBlockSnapshot();
   TextBlockSnapshot(const TextBlockSnapshot& other);
   TextBlockSnapshot(TextBlockSnapshot&& other) noexcept;
@@ -123,8 +143,11 @@ struct TextBlockSnapshot {
 
 // Detection flags (matches EPDF_TEXTBLOCK_* in fpdf_contentediting.h)
 constexpr int kTextBlockDefault = 0x00;
-constexpr int kTextBlockDetectTables = 0x01;      // Reserved for Phase 1C
-constexpr int kTextBlockStrictExclusions = 0x02;  // More aggressive filtering
+constexpr int kTextBlockDetectTables = 0x01;        // Detect ruled tables
+constexpr int kTextBlockStrictExclusions = 0x02;    // More aggressive filtering
+constexpr int kTextBlockDetectUnruledTables = 0x04; // Detect unruled tables (opt-in)
+constexpr int kTextBlockUseNewPipeline = 0x08;      // Use new hierarchical pipeline
+constexpr int kTextBlockEnableDebug = 0x10;         // Enable debug logging
 
 // Main detector class
 class CPDF_TextBlockDetector {
@@ -139,6 +162,15 @@ class CPDF_TextBlockDetector {
                                             int flags);
 
  private:
+  // New hierarchical detection pipeline
+  std::unique_ptr<TextBlockSnapshot> DetectWithNewPipeline(
+      CPDF_Page* page,
+      CPDF_TextPage* text_page,
+      int flags,
+      std::unique_ptr<TextBlockSnapshot> snapshot);
+
+  // Precompute object ID mappings for rendering
+  void PrecomputeObjectMappings(TextBlockSnapshot* snapshot) const;
   // Internal line representation during detection
   struct Line {
     int start_char_index;
