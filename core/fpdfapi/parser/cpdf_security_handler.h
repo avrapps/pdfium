@@ -48,6 +48,12 @@ class CPDF_SecurityHandler final : public Retainable {
   // conversion.
   ByteString GetEncodedPassword(ByteStringView password) const;
 
+  // Attempts to unlock owner permissions using the given password.
+  // Password encoding is handled internally (same as load-time path).
+  // Returns true if the password is valid and owner_unlocked_ is now true.
+  // Returns false if password is invalid, empty, or document isn't encrypted.
+  bool UnlockOwner(const ByteString& password);
+
  private:
   enum PasswordEncodingConversion {
     kUnknown,

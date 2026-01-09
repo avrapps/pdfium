@@ -716,6 +716,24 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_RemoveEncryption(FPDF_DOCUMENT document);
 
+// Experimental EmbedPDF Extension API.
+// Attempts to unlock owner permissions on an already-opened encrypted document.
+//
+//   document        - handle to a document
+//   owner_password  - the owner password to verify (raw, encoding handled internally)
+//
+// Returns TRUE if the password is valid and owner permissions are now unlocked.
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser (not loaded from file)
+//   - document is not encrypted
+//   - password is empty or invalid
+//
+// After successful unlock, FPDF_GetDocPermissions() will return full permissions.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
+                            FPDF_BYTESTRING owner_password);
+
 // Function: FPDF_GetPageCount
 //          Get total number of pages in the document.
 // Parameters:

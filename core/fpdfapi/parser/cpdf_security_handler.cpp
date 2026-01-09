@@ -231,6 +231,22 @@ uint32_t CPDF_SecurityHandler::GetPermissions(bool get_owner_perms) const {
   return dwPermission;
 }
 
+bool CPDF_SecurityHandler::UnlockOwner(const ByteString& password) {
+  if (owner_unlocked_) {
+    return true;  // Already unlocked
+  }
+  if (password.IsEmpty()) {
+    return false;  // Owner password cannot be empty
+  }
+  // CheckPassword handles encoding internally (Latin1/UTF8 conversions)
+  // and calls AES256_CheckPassword for R>=5
+  if (CheckPassword(password, /*bOwner=*/true)) {
+    owner_unlocked_ = true;
+    return true;
+  }
+  return false;
+}
+
 static bool LoadCryptInfo(const CPDF_Dictionary* pEncryptDict,
                           const ByteString& name,
                           CPDF_CryptoHandler::Cipher* cipher,

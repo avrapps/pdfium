@@ -597,6 +597,30 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
+                            FPDF_BYTESTRING owner_password) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;  // Document wasn't loaded from file
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;  // Document isn't encrypted
+  }
+
+  // Pass raw password - encoding is handled inside UnlockOwner/CheckPassword
+  // DO NOT call GetEncodedPassword here - that would double-encode
+  ByteString password(owner_password ? owner_password : "");
+  return security_handler->UnlockOwner(password);
+}
+
 FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageCount(FPDF_DOCUMENT document) {
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
   if (!pDoc) {
