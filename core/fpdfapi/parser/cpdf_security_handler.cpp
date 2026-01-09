@@ -641,6 +641,43 @@ void CPDF_SecurityHandler::OnCreate(CPDF_Dictionary* pEncryptDict,
   InitCryptoHandler();
 }
 
+bool CPDF_SecurityHandler::OnCreateWithPasswords(
+    CPDF_Dictionary* pEncryptDict,
+    const ByteString& user_password,
+    const ByteString& owner_password) {
+  DCHECK(pEncryptDict);
+
+  CPDF_CryptoHandler::Cipher cipher = CPDF_CryptoHandler::Cipher::kNone;
+  size_t key_len = 0;
+  if (!LoadDict(pEncryptDict, &cipher, &key_len)) {
+    return false;
+  }
+
+  // Only support R=6 (AES-256) for dual-password creation
+  if (revision_ != 6) {
+    return false;
+  }
+
+  // Generate random file encryption key (32 bytes) directly
+  // Using 8 x uint32_t = 32 bytes from MT RNG, then copy to avoid alignment
+  // issues
+  static_assert(sizeof(encrypt_key_) == 32);
+  uint32_t random_key[8];
+  FX_Random_GenerateMT(random_key);
+  memcpy(encrypt_key_.data(), random_key, 32);
+
+  // Set all password entries (U, UE, O, OE)
+  AES256_SetPasswords(pEncryptDict, user_password, owner_password);
+
+  // Set Perms entry
+  AES256_SetPerms(pEncryptDict);
+
+  // Initialize crypto handler for encryption
+  InitCryptoHandler();
+
+  return true;
+}
+
 void CPDF_SecurityHandler::AES256_SetPassword(CPDF_Dictionary* pEncryptDict,
                                               const ByteString& password) {
   CRYPT_sha1_context sha;
@@ -716,6 +753,66 @@ void CPDF_SecurityHandler::AES256_SetPerms(CPDF_Dictionary* pEncryptDict) {
   CRYPT_AESEncrypt(&aes, dest, buf);
   pEncryptDict->SetNewFor<CPDF_String>(
       "Perms", ByteString(ByteStringView(pdfium::span(dest))));
+}
+
+void CPDF_SecurityHandler::AES256_SetPasswords(
+    CPDF_Dictionary* pEncryptDict,
+    const ByteString& user_password,
+    const ByteString& owner_password) {
+  // Generate 4 separate random salts (8 bytes each = 32 bytes total)
+  // Use uint8_t array so we can pass to Revision6_Hash directly
+  uint8_t salt_buffer[32];
+  uint32_t random_salt[8];
+  FX_Random_GenerateMT(random_salt);
+  memcpy(salt_buffer, random_salt, 32);
+
+  // Create salt spans matching Revision6_Hash signature (span<const uint8_t,8>)
+  auto u_val_salt = pdfium::span(salt_buffer).subspan<0, 8>();
+  auto u_key_salt = pdfium::span(salt_buffer).subspan<8, 8>();
+  auto o_val_salt = pdfium::span(salt_buffer).subspan<16, 8>();
+  auto o_key_salt = pdfium::span(salt_buffer).subspan<24, 8>();
+
+  uint8_t hash[32];
+  uint8_t U[48], UE[32], O[48], OE[32];
+
+  // --- Compute U (user validation - NO U dependency) ---
+  Revision6_Hash(user_password, u_val_salt, std::nullopt,
+                 pdfium::span(hash).first<32u>());
+  fxcrt::Copy(pdfium::span(hash), pdfium::span(U).first<32u>());
+  fxcrt::Copy(u_val_salt, pdfium::span(U).subspan<32, 8>());
+  fxcrt::Copy(u_key_salt, pdfium::span(U).subspan<40, 8>());
+  pEncryptDict->SetNewFor<CPDF_String>(
+      "U", ByteString(ByteStringView(pdfium::span(U))));
+
+  // --- Compute UE (user encrypted key) ---
+  Revision6_Hash(user_password, u_key_salt, std::nullopt,
+                 pdfium::span(hash).first<32u>());
+  CRYPT_aes_context aes = {};
+  uint8_t iv[16] = {};
+  CRYPT_AESSetKey(&aes, hash);
+  CRYPT_AESSetIV(&aes, iv);
+  CRYPT_AESEncrypt(&aes, UE, encrypt_key_);
+  pEncryptDict->SetNewFor<CPDF_String>(
+      "UE", ByteString(ByteStringView(pdfium::span(UE))));
+
+  // --- Compute O (owner validation - INCLUDES U) ---
+  auto U_span = pdfium::span(U).first<48>();
+  Revision6_Hash(owner_password, o_val_salt, U_span,
+                 pdfium::span(hash).first<32u>());
+  fxcrt::Copy(pdfium::span(hash), pdfium::span(O).first<32u>());
+  fxcrt::Copy(o_val_salt, pdfium::span(O).subspan<32, 8>());
+  fxcrt::Copy(o_key_salt, pdfium::span(O).subspan<40, 8>());
+  pEncryptDict->SetNewFor<CPDF_String>(
+      "O", ByteString(ByteStringView(pdfium::span(O))));
+
+  // --- Compute OE (owner encrypted key - INCLUDES U) ---
+  Revision6_Hash(owner_password, o_key_salt, U_span,
+                 pdfium::span(hash).first<32u>());
+  CRYPT_AESSetKey(&aes, hash);
+  CRYPT_AESSetIV(&aes, iv);
+  CRYPT_AESEncrypt(&aes, OE, encrypt_key_);
+  pEncryptDict->SetNewFor<CPDF_String>(
+      "OE", ByteString(ByteStringView(pdfium::span(OE))));
 }
 
 void CPDF_SecurityHandler::InitCryptoHandler() {

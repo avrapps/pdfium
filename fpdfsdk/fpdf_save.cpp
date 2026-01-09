@@ -27,13 +27,15 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_edit.h"
 
-// External pending encryption storage defined in fpdf_view.cpp
-struct PendingEncryption {
+// External pending security storage defined in fpdf_view.cpp
+enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
+struct PendingSecurity {
+  PendingSecurityMode mode = PendingSecurityMode::kNone;
   RetainPtr<CPDF_Dictionary> encrypt_dict;
   RetainPtr<CPDF_SecurityHandler> security_handler;
 };
-extern std::mutex g_pending_encryption_mutex;
-extern std::unordered_map<FPDF_DOCUMENT, PendingEncryption> g_pending_encryptions;
+extern std::mutex g_pending_security_mutex;
+extern std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
 
 #ifdef PDF_ENABLE_XFA
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -198,25 +200,29 @@ bool DoDocSave(FPDF_DOCUMENT document,
     fileMaker.SetFileVersion(version.value());
   }
 
-  // Apply pending encryption BEFORE Create() is called
-  // This ensures encrypt_dict_ and security_handler_ are set on the creator
-  {
-    std::lock_guard<std::mutex> lock(g_pending_encryption_mutex);
-    auto it = g_pending_encryptions.find(document);
-    if (it != g_pending_encryptions.end()) {
-      // SetEncryption sets both:
-      // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
-      // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
-      fileMaker.SetEncryption(it->second.encrypt_dict,
-                              it->second.security_handler);
+  // Security handling: explicit FPDF_REMOVE_SECURITY flag takes highest
+  // precedence, then pending security state
+  if (flags == FPDF_REMOVE_SECURITY) {
+    // Explicit flag wins - always remove security
+    flags = 0;
+    fileMaker.RemoveSecurity();
+  } else {
+    // Apply pending security state
+    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+    auto it = g_pending_security.find(document);
+    if (it != g_pending_security.end()) {
+      if (it->second.mode == PendingSecurityMode::kRemove) {
+        fileMaker.RemoveSecurity();
+      } else if (it->second.mode == PendingSecurityMode::kEncrypt) {
+        // SetEncryption sets both:
+        // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
+        // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
+        fileMaker.SetEncryption(it->second.encrypt_dict,
+                                it->second.security_handler);
+      }
       // Don't erase from map here - leave for cleanup on doc close
       // This allows multiple saves of the same encrypted doc
     }
-  }
-
-  if (flags == FPDF_REMOVE_SECURITY) {
-    flags = 0;
-    fileMaker.RemoveSecurity();
   }
 
   bool bRet = fileMaker.Create(static_cast<uint32_t>(flags));
