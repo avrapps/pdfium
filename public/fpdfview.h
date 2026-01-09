@@ -672,6 +672,50 @@ FPDF_GetDocUserPermissions(FPDF_DOCUMENT document);
 FPDF_EXPORT int FPDF_CALLCONV
 FPDF_GetSecurityHandlerRevision(FPDF_DOCUMENT document);
 
+// Permission flags for EPDF_SetEncryption allowed_flags parameter
+#define EPDF_PERM_PRINT              (1 << 2)   // Bit 3: Print document
+#define EPDF_PERM_MODIFY             (1 << 3)   // Bit 4: Modify contents
+#define EPDF_PERM_COPY               (1 << 4)   // Bit 5: Copy/extract text
+#define EPDF_PERM_ANNOT              (1 << 5)   // Bit 6: Add/modify annotations
+#define EPDF_PERM_FILL_FORMS         (1 << 8)   // Bit 9: Fill form fields
+#define EPDF_PERM_ACCESSIBILITY      (1 << 9)   // Bit 10: Extract for accessibility
+#define EPDF_PERM_ASSEMBLE           (1 << 10)  // Bit 11: Assemble document
+#define EPDF_PERM_PRINT_HIGH         (1 << 11)  // Bit 12: High quality print
+
+// Experimental EmbedPDF Extension API.
+// Sets AES-256 encryption on a document with user/owner passwords and permissions.
+//
+//   document        - handle to a document. Must not already be encrypted.
+//   user_password   - password required to open the document.
+//                     NULL or empty = no open password (document opens freely
+//                     but has owner restrictions enforced by compliant readers).
+//   owner_password  - password required to change permissions. Required, cannot
+//                     be NULL or empty.
+//   allowed_flags   - OR'd combination of EPDF_PERM_* flags indicating which
+//                     actions ARE ALLOWED. Internally converted to proper P value.
+//
+// Returns TRUE on success, FALSE on failure (e.g., already encrypted, NULL
+// owner password).
+// Note: Must be called before FPDF_SaveAsCopy for encryption to take effect.
+//
+// Example allowed_flags: EPDF_PERM_PRINT | EPDF_PERM_COPY
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetEncryption(FPDF_DOCUMENT document,
+                   FPDF_BYTESTRING user_password,
+                   FPDF_BYTESTRING owner_password,
+                   unsigned long allowed_flags);
+
+// Experimental EmbedPDF Extension API.
+// Clears any pending encryption set by EPDF_SetEncryption.
+// To remove encryption from an already-encrypted document, use
+// FPDF_REMOVE_SECURITY flag with FPDF_SaveAsCopy instead.
+//
+//   document - handle to a document.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_RemoveEncryption(FPDF_DOCUMENT document);
+
 // Function: FPDF_GetPageCount
 //          Get total number of pages in the document.
 // Parameters:

@@ -6,7 +6,9 @@
 
 #include "public/fpdf_save.h"
 
+#include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/fx_extension.h"
@@ -23,6 +26,14 @@
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_edit.h"
+
+// External pending encryption storage defined in fpdf_view.cpp
+struct PendingEncryption {
+  RetainPtr<CPDF_Dictionary> encrypt_dict;
+  RetainPtr<CPDF_SecurityHandler> security_handler;
+};
+extern std::mutex g_pending_encryption_mutex;
+extern std::unordered_map<FPDF_DOCUMENT, PendingEncryption> g_pending_encryptions;
 
 #ifdef PDF_ENABLE_XFA
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -186,6 +197,23 @@ bool DoDocSave(FPDF_DOCUMENT document,
   if (version.has_value()) {
     fileMaker.SetFileVersion(version.value());
   }
+
+  // Apply pending encryption BEFORE Create() is called
+  // This ensures encrypt_dict_ and security_handler_ are set on the creator
+  {
+    std::lock_guard<std::mutex> lock(g_pending_encryption_mutex);
+    auto it = g_pending_encryptions.find(document);
+    if (it != g_pending_encryptions.end()) {
+      // SetEncryption sets both:
+      // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
+      // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
+      fileMaker.SetEncryption(it->second.encrypt_dict,
+                              it->second.security_handler);
+      // Don't erase from map here - leave for cleanup on doc close
+      // This allows multiple saves of the same encrypted doc
+    }
+  }
+
   if (flags == FPDF_REMOVE_SECURITY) {
     flags = 0;
     fileMaker.RemoveSecurity();
