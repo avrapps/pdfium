@@ -734,6 +734,34 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
                             FPDF_BYTESTRING owner_password);
 
+// Experimental EmbedPDF Extension API.
+// Checks if a document is encrypted.
+//
+//   document - handle to a document
+//
+// Returns TRUE if the document has encryption (Standard security handler).
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser
+//   - document is not encrypted
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsEncrypted(FPDF_DOCUMENT document);
+
+// Experimental EmbedPDF Extension API.
+// Checks if owner permissions are currently unlocked on an encrypted document.
+//
+//   document - handle to a document
+//
+// Returns TRUE if:
+//   - Document is encrypted AND owner password was verified (at load or via UnlockOwner)
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser
+//   - document is not encrypted
+//   - owner permissions are not unlocked
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsOwnerUnlocked(FPDF_DOCUMENT document);
+
 // Function: FPDF_GetPageCount
 //          Get total number of pages in the document.
 // Parameters:

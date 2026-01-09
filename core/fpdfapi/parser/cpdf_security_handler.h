@@ -54,6 +54,9 @@ class CPDF_SecurityHandler final : public Retainable {
   // Returns false if password is invalid, empty, or document isn't encrypted.
   bool UnlockOwner(const ByteString& password);
 
+  // Returns true if owner permissions are currently unlocked.
+  bool IsOwnerUnlocked() const { return owner_unlocked_; }
+
  private:
   enum PasswordEncodingConversion {
     kUnknown,

@@ -621,6 +621,41 @@ EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
   return security_handler->UnlockOwner(password);
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsEncrypted(FPDF_DOCUMENT document) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  return pParser->GetSecurityHandler() != nullptr;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsOwnerUnlocked(FPDF_DOCUMENT document) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;  // Not encrypted
+  }
+
+  return security_handler->IsOwnerUnlocked();
+}
+
 FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageCount(FPDF_DOCUMENT document) {
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
   if (!pDoc) {
