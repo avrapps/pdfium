@@ -31,6 +31,12 @@ class CPDF_SecurityHandler final : public Retainable {
                 const CPDF_Array* pIdArray,
                 const ByteString& password);
 
+  // New method for AES-256 R=6 with both passwords.
+  // Returns true on success, false if LoadDict fails or revision is not 6.
+  bool OnCreateWithPasswords(CPDF_Dictionary* pEncryptDict,
+                             const ByteString& user_password,
+                             const ByteString& owner_password);
+
   // When `get_owner_perms` is true, returns full permissions if unlocked by
   // owner.
   uint32_t GetPermissions(bool get_owner_perms) const;
@@ -41,6 +47,15 @@ class CPDF_SecurityHandler final : public Retainable {
   // Take |password| and encode it, if necessary, based on the password encoding
   // conversion.
   ByteString GetEncodedPassword(ByteStringView password) const;
+
+  // Attempts to unlock owner permissions using the given password.
+  // Password encoding is handled internally (same as load-time path).
+  // Returns true if the password is valid and owner_unlocked_ is now true.
+  // Returns false if password is invalid, empty, or document isn't encrypted.
+  bool UnlockOwner(const ByteString& password);
+
+  // Returns true if owner permissions are currently unlocked.
+  bool IsOwnerUnlocked() const { return owner_unlocked_; }
 
  private:
   enum PasswordEncodingConversion {
@@ -67,6 +82,10 @@ class CPDF_SecurityHandler final : public Retainable {
   void AES256_SetPassword(CPDF_Dictionary* pEncryptDict,
                           const ByteString& password);
   void AES256_SetPerms(CPDF_Dictionary* pEncryptDict);
+  // Helper that sets U, UE, O, OE for R=6 with both user and owner passwords
+  void AES256_SetPasswords(CPDF_Dictionary* pEncryptDict,
+                           const ByteString& user_password,
+                           const ByteString& owner_password);
   bool CheckSecurity(const ByteString& password);
 
   void InitCryptoHandler();

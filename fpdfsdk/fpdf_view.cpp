@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -20,10 +22,13 @@
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
@@ -118,6 +123,27 @@ static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
                   FPDF_RENDERERTYPE_SKIA,
               "CFX_DefaultRenderDevice::RendererType::kSkia value mismatch");
 #endif  // defined(PDF_USE_SKIA)
+
+// Experimental EmbedPDF Extension: Pending security storage
+// Unified structure for pending encryption or removal
+enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
+
+struct PendingSecurity {
+  PendingSecurityMode mode = PendingSecurityMode::kNone;
+  RetainPtr<CPDF_Dictionary> encrypt_dict;      // Only for kEncrypt
+  RetainPtr<CPDF_SecurityHandler> security_handler;  // Only for kEncrypt
+};
+
+// Thread-safe storage - keyed by FPDF_DOCUMENT handle
+// Note: NOT static - needs external linkage for fpdf_save.cpp
+std::mutex g_pending_security_mutex;
+std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
+
+// Helper to cleanup pending security on document close
+void EPDF_CleanupPendingSecurity(FPDF_DOCUMENT doc) {
+  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+  g_pending_security.erase(doc);
+}
 
 namespace {
 
@@ -457,6 +483,177 @@ FPDF_GetSecurityHandlerRevision(FPDF_DOCUMENT document) {
 
   RetainPtr<const CPDF_Dictionary> dict = pDoc->GetParser()->GetEncryptDict();
   return dict ? dict->GetIntegerFor("R") : -1;
+}
+
+namespace {
+
+// Build P value with correct reserved bits for R>=3 (including R=4 and R=6)
+// Input: allowed_flags - OR'd combination of permission bits user wants to ALLOW
+// Output: proper P value with reserved bits set correctly
+uint32_t BuildPermissionsForRevision(uint32_t allowed_flags) {
+  // Enforce: PrintHighQuality implies Print (bit 12 requires bit 3)
+  // Some readers interpret oddly if PRINT_HIGH is set without PRINT
+  if (allowed_flags & EPDF_PERM_PRINT_HIGH) {
+    allowed_flags |= EPDF_PERM_PRINT;
+  }
+
+  // Start with allowed flags
+  uint32_t p = allowed_flags;
+
+  // Apply reserved bit requirements (PDF Reference 1.7, Table 3.20)
+  // Bits 1-2 must be 0
+  p &= 0xFFFFFFFC;
+  // Bits 7-8 must be 1 (for R>=3)
+  // Bits 13-32 must be 1
+  p |= 0xFFFFF0C0;
+
+  return p;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetEncryption(FPDF_DOCUMENT document,
+                   FPDF_BYTESTRING user_password,
+                   FPDF_BYTESTRING owner_password,
+                   unsigned long allowed_flags) {
+  // Validation
+  if (!document || !owner_password || !*owner_password) {
+    return false;
+  }
+
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  // NOTE: We allow re-keying already encrypted documents.
+  // User opens with old password, calls setEncryption with new, saves.
+
+  // Build permissions P value (negative, with reserved bits set)
+  int32_t permissions =
+      static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags));
+
+  // Create encrypt dictionary as indirect object
+  auto pEncryptDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  pEncryptDict->SetNewFor<CPDF_Name>("Filter", "Standard");
+  pEncryptDict->SetNewFor<CPDF_Number>("V", 5);
+  pEncryptDict->SetNewFor<CPDF_Number>("R", 6);
+  pEncryptDict->SetNewFor<CPDF_Number>("Length", 256);
+  pEncryptDict->SetNewFor<CPDF_Number>("P", permissions);
+  pEncryptDict->SetNewFor<CPDF_Boolean>("EncryptMetadata", true);
+
+  // Crypt filters for AES-256
+  auto pCF = pEncryptDict->SetNewFor<CPDF_Dictionary>("CF");
+  auto pStdCF = pCF->SetNewFor<CPDF_Dictionary>("StdCF");
+  pStdCF->SetNewFor<CPDF_Name>("Type", "CryptFilter");
+  pStdCF->SetNewFor<CPDF_Name>("CFM", "AESV3");
+  pStdCF->SetNewFor<CPDF_Name>("AuthEvent", "DocOpen");
+  pStdCF->SetNewFor<CPDF_Number>("Length", 32);
+  pEncryptDict->SetNewFor<CPDF_Name>("StmF", "StdCF");
+  pEncryptDict->SetNewFor<CPDF_Name>("StrF", "StdCF");
+
+  // Create security handler and initialize with BOTH passwords
+  auto pSecurityHandler = pdfium::MakeRetain<CPDF_SecurityHandler>();
+  ByteString owner_pwd(owner_password);
+  ByteString user_pwd(user_password ? user_password : "");
+
+  // OnCreateWithPasswords properly sets U, UE, O, OE, Perms for R=6
+  // Returns false if LoadDict fails or R != 6
+  if (!pSecurityHandler->OnCreateWithPasswords(pEncryptDict.Get(), user_pwd,
+                                               owner_pwd)) {
+    // Cleanup the indirect object we created
+    pDoc->DeleteIndirectObject(pEncryptDict->GetObjNum());
+    return false;
+  }
+
+  // Store (OVERWRITE if exists - allows changing password multiple times)
+  {
+    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+    PendingSecurity pending;
+    pending.mode = PendingSecurityMode::kEncrypt;
+    pending.encrypt_dict = std::move(pEncryptDict);
+    pending.security_handler = std::move(pSecurityHandler);
+    g_pending_security[document] = std::move(pending);
+  }
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
+  if (!document) {
+    return false;
+  }
+
+  // Set pending security to removal mode
+  // This will cause RemoveSecurity() to be called during save
+  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+  PendingSecurity pending;
+  pending.mode = PendingSecurityMode::kRemove;
+  // encrypt_dict and security_handler remain null for removal
+  g_pending_security[document] = std::move(pending);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
+                            FPDF_BYTESTRING owner_password) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;  // Document wasn't loaded from file
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;  // Document isn't encrypted
+  }
+
+  // Pass raw password - encoding is handled inside UnlockOwner/CheckPassword
+  // DO NOT call GetEncodedPassword here - that would double-encode
+  ByteString password(owner_password ? owner_password : "");
+  return security_handler->UnlockOwner(password);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsEncrypted(FPDF_DOCUMENT document) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  return pParser->GetSecurityHandler() != nullptr;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsOwnerUnlocked(FPDF_DOCUMENT document) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;  // Not encrypted
+  }
+
+  return security_handler->IsOwnerUnlocked();
 }
 
 FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageCount(FPDF_DOCUMENT document) {
@@ -938,6 +1135,9 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
+  // Cleanup pending security BEFORE deletion
+  EPDF_CleanupPendingSecurity(document);
+
   // Take it back across the API and throw it away,
   std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));
 }
