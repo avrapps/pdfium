@@ -1911,6 +1911,60 @@ bool GenerateStrikeOutAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const 
   return true;
 }
 
+bool GenerateLinkAP(CPDF_Document* doc,
+                    CPDF_Dictionary* annot_dict,
+                    const ByteString& blend_name) {
+  // Get border width - default to 1 if not specified
+  float border_width = GetBorderWidth(annot_dict);
+  if (border_width <= 0)
+    return true;  // No visible border, no AP needed
+
+  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
+
+  fxcrt::ostringstream app_stream;
+  app_stream << "/" << kGSDictName << " gs ";
+
+  // Set stroke color from /C array (default: blue for links)
+  app_stream << GetColorStringWithDefault(
+      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
+      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 1),  // Default: blue
+      PaintOperation::kStroke);
+
+  app_stream << border_width << " w ";
+  app_stream << GetDashPatternString(annot_dict);
+
+  // Determine border style
+  BorderStyleInfo border_info = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+
+  switch (border_info.style) {
+    case BorderStyle::kUnderline: {
+      // Draw underline: 1pt above bottom, inset 1pt from sides (matches Apryse)
+      float y = rect.bottom + 1.0f;
+      app_stream << (rect.left + 1.0f) << " " << y << " m "
+                 << (rect.right - 1.0f) << " " << y << " l S\n";
+      break;
+    }
+    case BorderStyle::kSolid:
+    case BorderStyle::kDash:
+    default: {
+      // Draw rectangle border
+      CFX_FloatRect stroke_rect = rect;
+      stroke_rect.Deflate(border_width / 2.0f, border_width / 2.0f);
+      app_stream << stroke_rect.left << " " << stroke_rect.bottom << " "
+                 << stroke_rect.Width() << " " << stroke_rect.Height()
+                 << " re S\n";
+      break;
+    }
+  }
+
+  auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+                       /*is_text_markup_annotation=*/false);
+  return true;
+}
+
 }  // namespace
 
 // static
@@ -2102,6 +2156,8 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
       return GeneratePolyLineAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::LINE:
       return GenerateLineAP(doc, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::LINK:
+      return GenerateLinkAP(doc, annot_dict, blend_name);
     default:
       return false;
   }

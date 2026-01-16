@@ -1522,6 +1522,21 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key, FPDF_ANNOTATION linked_annot);
 
 // Experimental EmbedPDF Extension API.
+// Set the action of a Link annotation.
+//
+//   annot  - handle to a link annotation.
+//   action - handle to an action dictionary (e.g. from EPDFAction_CreateGoTo()).
+//
+// Returns true on success.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * The action must be an indirect object.
+//  * Any existing /A entry will be replaced.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
 // Get the annotation count.
 //
 //   doc    - handle to a document.
