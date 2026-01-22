@@ -450,6 +450,17 @@ static_assert(static_cast<int>(CPDF_Annot::Icon::kLast) ==
                   FPDF_ANNOT_ICON_LAST, 
               "Icon::kLast mismatch");
 
+// These checks ensure the consistency of reply type values across core/ and public.
+static_assert(static_cast<int>(CPDF_Annot::ReplyType::kUnknown) ==
+                  FPDF_ANNOT_RT_UNKNOWN,
+              "ReplyType::kUnknown mismatch");
+static_assert(static_cast<int>(CPDF_Annot::ReplyType::kReply) ==
+                  FPDF_ANNOT_RT_REPLY,
+              "ReplyType::kReply mismatch");
+static_assert(static_cast<int>(CPDF_Annot::ReplyType::kGroup) ==
+                  FPDF_ANNOT_RT_GROUP,
+              "ReplyType::kGroup mismatch");
+
 class RawAnnotContext final : public CPDF_AnnotContext {
   public:
     // Takes ownership of |unparsed_page| by value (RetainPtr).
@@ -2169,6 +2180,34 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetURI(FPDF_ANNOTATION annot,
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action) {
+  if (!action || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINK)
+    return false;
+
+  CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!pAnnotContext)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> annot_dict = pAnnotContext->GetMutableAnnotDict();
+  if (!annot_dict)
+    return false;
+
+  CPDF_Dictionary* act_dict = CPDFDictionaryFromFPDFAction(action);
+  if (!act_dict)
+    return false;
+
+  // Require the action to be indirect so we can reference it.
+  if (act_dict->GetObjNum() == 0)
+    return false;
+
+  CPDF_Document* pDoc = pAnnotContext->GetPage()->GetDocument();
+
+  // Set /A as an indirect reference to the action.
+  annot_dict->SetNewFor<CPDF_Reference>("A", pDoc, act_dict->GetObjNum());
+  return true;
+}
+
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot) {
   if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FILEATTACHMENT) {
@@ -3431,4 +3470,42 @@ EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   // Build the public handle
   auto ctx = std::make_unique<CPDF_AnnotContext>(dict, IPDFPageFromFPDFPage(page));
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+}
+
+FPDF_EXPORT FPDF_ANNOT_REPLY_TYPE FPDF_CALLCONV
+EPDFAnnot_GetReplyType(FPDF_ANNOTATION annot) {
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
+    return FPDF_ANNOT_RT_UNKNOWN;
+  }
+
+  // Read the /RT name from the annotation dictionary.
+  // Per PDF spec, if RT is missing, the default is /R (Reply).
+  ByteString rt_name = dict->GetNameFor("RT");
+  CPDF_Annot::ReplyType rt = CPDF_Annot::StringToReplyType(rt_name);
+  return static_cast<FPDF_ANNOT_REPLY_TYPE>(rt);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt) {
+  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
+    return false;
+  }
+
+  // If unknown, remove the RT entry.
+  if (rt == FPDF_ANNOT_RT_UNKNOWN) {
+    dict->RemoveFor("RT");
+    return true;
+  }
+
+  // Convert the public enum to internal and get the string representation.
+  auto internal_rt = static_cast<CPDF_Annot::ReplyType>(rt);
+  ByteString rt_name = CPDF_Annot::ReplyTypeToString(internal_rt);
+  if (rt_name.IsEmpty()) {
+    return false;
+  }
+
+  dict->SetNewFor<CPDF_Name>("RT", rt_name);
+  return true;
 }

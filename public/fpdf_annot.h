@@ -217,6 +217,14 @@ typedef enum EPDF_STAMP_FIT {
   EPDF_STAMP_FIT_STRETCH = 2   // ignore aspect, fill box
 } EPDF_STAMP_FIT;
 
+// Reply Type (RT) for annotations that reply to other annotations via IRT.
+// See ISO 32000-2, section 12.5.6.
+typedef enum FPDF_ANNOT_REPLY_TYPE {
+  FPDF_ANNOT_RT_UNKNOWN = 0,  // Unknown or invalid
+  FPDF_ANNOT_RT_REPLY,        // /R - comment reply (default if RT missing)
+  FPDF_ANNOT_RT_GROUP         // /Group - logical grouping
+} FPDF_ANNOT_REPLY_TYPE;
+
 // Experimental API.
 // Check if an annotation subtype is currently supported for creation.
 // Currently supported subtypes:
@@ -1522,6 +1530,21 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key, FPDF_ANNOTATION linked_annot);
 
 // Experimental EmbedPDF Extension API.
+// Set the action of a Link annotation.
+//
+//   annot  - handle to a link annotation.
+//   action - handle to an action dictionary (e.g. from EPDFAction_CreateGoTo()).
+//
+// Returns true on success.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * The action must be an indirect object.
+//  * Any existing /A entry will be replaced.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
 // Get the annotation count.
 //
 //   doc    - handle to a document.
@@ -1592,6 +1615,31 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
 // Returns the annotation.
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV 
 EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype);
+
+// Experimental EmbedPDF Extension API.
+// Get the reply type (RT) of an annotation. This specifies how an annotation
+// relates to another annotation when used together with IRT (In Reply To).
+// See ISO 32000-2, section 12.5.6.
+//
+//   annot - handle to an annotation.
+//
+// Returns the reply type. Returns FPDF_ANNOT_RT_REPLY if RT is missing
+// (the default per PDF specification).
+FPDF_EXPORT FPDF_ANNOT_REPLY_TYPE FPDF_CALLCONV
+EPDFAnnot_GetReplyType(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Set the reply type (RT) of an annotation. This specifies how an annotation
+// relates to another annotation when used together with IRT (In Reply To).
+// See ISO 32000-2, section 12.5.6.
+//
+//   annot - handle to an annotation.
+//   rt    - the reply type to set. Pass FPDF_ANNOT_RT_UNKNOWN to remove the
+//           RT entry from the annotation dictionary.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt);
 
 #ifdef __cplusplus
 }  // extern "C"
