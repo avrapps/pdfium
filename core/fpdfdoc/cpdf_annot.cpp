@@ -601,6 +601,31 @@ ByteString CPDF_Annot::IconToString(CPDF_Annot::Icon icon) {
   return ByteString();
 }
 
+// static
+CPDF_Annot::ReplyType CPDF_Annot::StringToReplyType(const ByteString& name) {
+  // Per PDF spec, if RT is missing, the default is /R (Reply).
+  if (name.IsEmpty() || name == "R") {
+    return ReplyType::kReply;
+  }
+  if (name == "Group") {
+    return ReplyType::kGroup;
+  }
+  return ReplyType::kUnknown;
+}
+
+// static
+ByteString CPDF_Annot::ReplyTypeToString(CPDF_Annot::ReplyType rt) {
+  switch (rt) {
+    case ReplyType::kReply:
+      return "R";
+    case ReplyType::kGroup:
+      return "Group";
+    case ReplyType::kUnknown:
+      break;
+  }
+  return ByteString();
+}
+
 ByteString CPDF_Annot::LineEndingToString(CPDF_Annot::LineEnding le) {
   switch (le) {
     case LineEnding::kNone:

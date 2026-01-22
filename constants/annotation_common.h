@@ -34,6 +34,11 @@ inline constexpr char kInkList[] = "InkList";
 // Entries for line annotations
 inline constexpr char kL[] = "L";
 
+// Entries for markup annotations (comments/replies)
+// See ISO 32000-2, section 12.5.6.
+inline constexpr char kIRT[] = "IRT";  // In Reply To
+inline constexpr char kRT[] = "RT";    // Reply Type
+
 }  // namespace annotation
 }  // namespace pdfium
 
