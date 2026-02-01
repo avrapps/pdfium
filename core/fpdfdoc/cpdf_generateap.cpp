@@ -1965,6 +1965,154 @@ bool GenerateLinkAP(CPDF_Document* doc,
   return true;
 }
 
+void GenerateRedactAPDicts(CPDF_Document* doc,
+                           CPDF_Dictionary* annot_dict,
+                           fxcrt::ostringstream* normal_stream,
+                           fxcrt::ostringstream* rollover_stream,
+                           RetainPtr<CPDF_Dictionary> resource_dict,
+                           bool is_text_markup) {
+  CFX_FloatRect rect = is_text_markup
+                           ? CPDF_Annot::BoundingRectFromQuadPoints(annot_dict)
+                           : annot_dict->GetRectFor(pdfium::annotation::kRect);
+
+  // Create Normal appearance stream (border only)
+  auto normal_stream_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  normal_stream_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  normal_stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  normal_stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  normal_stream_dict->SetMatrixFor("Matrix", CFX_Matrix());
+  normal_stream_dict->SetRectFor("BBox", rect);
+  normal_stream_dict->SetFor("Resources", resource_dict->Clone());
+
+  auto normal_pdf_stream = 
+      doc->NewIndirect<CPDF_Stream>(std::move(normal_stream_dict));
+  normal_pdf_stream->SetDataFromStringstream(normal_stream);
+
+  // Create Rollover/Down/RO appearance stream (filled preview)
+  // This single stream is shared by R, D, and RO
+  auto rollover_stream_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  rollover_stream_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  rollover_stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  rollover_stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  rollover_stream_dict->SetMatrixFor("Matrix", CFX_Matrix());
+  rollover_stream_dict->SetRectFor("BBox", rect);
+  rollover_stream_dict->SetFor("Resources", resource_dict->Clone());
+
+  auto rollover_pdf_stream = 
+      doc->NewIndirect<CPDF_Stream>(std::move(rollover_stream_dict));
+  rollover_pdf_stream->SetDataFromStringstream(rollover_stream);
+
+  // Get the object number for the shared rollover stream
+  uint32_t rollover_obj_num = rollover_pdf_stream->GetObjNum();
+
+  // Set all entries in AP dictionary
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_pdf_stream->GetObjNum());
+  ap_dict->SetNewFor<CPDF_Reference>("R", doc, rollover_obj_num);  // Rollover
+  ap_dict->SetNewFor<CPDF_Reference>("D", doc, rollover_obj_num);  // Down
+
+  // Set RO (Redact Overlay) - this is what gets applied when redaction is finalized
+  // RO is stored directly on the annotation dict, not inside AP
+  annot_dict->SetNewFor<CPDF_Reference>("RO", doc, rollover_obj_num);
+}
+
+bool GenerateRedactAP(CPDF_Document* doc, 
+                      CPDF_Dictionary* annot_dict, 
+                      const ByteString& blend_name) {
+  fxcrt::ostringstream normal_stream;
+  fxcrt::ostringstream rollover_stream;
+  normal_stream << "/" << kGSDictName << " gs ";
+  rollover_stream << "/" << kGSDictName << " gs ";
+
+  // Get colors from annotation dictionary
+  // C - stroke/border color (default: red for redact)
+  // IC - interior color (fill when redaction applied, default: black)
+  RetainPtr<const CPDF_Array> stroke_color = 
+      annot_dict->GetArrayFor(pdfium::annotation::kC);
+  RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
+  const bool has_fill = interior_color && !interior_color->IsEmpty();
+
+  // Normal appearance: stroke color for border
+  normal_stream << GetColorStringWithDefault(
+      stroke_color.Get(),
+      CFX_Color(CFX_Color::Type::kRGB, 1, 0, 0),  // default: red
+      PaintOperation::kStroke);
+
+  // Rollover appearance: interior color for fill
+  rollover_stream << GetColorStringWithDefault(
+      interior_color.Get(),
+      CFX_Color(CFX_Color::Type::kTransparent),  // default: no fill
+      PaintOperation::kFill);
+
+  float border_width = GetBorderWidth(annot_dict);
+  if (border_width > 0) {
+    normal_stream << border_width << " w ";
+    normal_stream << GetDashPatternString(annot_dict);
+  }
+
+  // Check for QuadPoints (text-based redaction)
+  RetainPtr<const CPDF_Array> quad_points_array =
+      annot_dict->GetArrayFor("QuadPoints");
+
+  if (quad_points_array && quad_points_array->size() >= 8) {
+    // QuadPoints present - iterate through each quad
+    const size_t quad_point_count =
+        CPDF_Annot::QuadPointCount(quad_points_array.Get());
+    for (size_t i = 0; i < quad_point_count; ++i) {
+      CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
+      rect.Normalize();
+
+      // Normal: stroke the rectangle (border only)
+      if (border_width > 0) {
+        CFX_FloatRect stroke_rect = rect;
+        stroke_rect.Deflate(border_width / 2, border_width / 2);
+        normal_stream << stroke_rect.left << " " << stroke_rect.bottom << " "
+                      << stroke_rect.Width() << " " << stroke_rect.Height()
+                      << " re S\n";
+      }
+
+      // Rollover: fill the rectangle (only if interior color is set)
+      if (has_fill) {
+        rollover_stream << rect.left << " " << rect.top << " m "
+                        << rect.right << " " << rect.top << " l "
+                        << rect.right << " " << rect.bottom << " l "
+                        << rect.left << " " << rect.bottom << " l h f\n";
+      }
+    }
+  } else {
+    // No QuadPoints - use the annotation Rect
+    CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+    rect.Normalize();
+
+    // Normal: stroke the rectangle (border only)
+    if (border_width > 0) {
+      CFX_FloatRect stroke_rect = rect;
+      stroke_rect.Deflate(border_width / 2, border_width / 2);
+      normal_stream << stroke_rect.left << " " << stroke_rect.bottom << " "
+                    << stroke_rect.Width() << " " << stroke_rect.Height()
+                    << " re S\n";
+    }
+
+    // Rollover: fill the rectangle (only if interior color is set)
+    if (has_fill) {
+      rollover_stream << rect.left << " " << rect.bottom << " "
+                      << rect.Width() << " " << rect.Height() << " re f\n";
+    }
+  }
+
+  // Build resources
+  auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
+
+  // Generate both Normal and Rollover appearance streams
+  bool has_quad_points = quad_points_array && quad_points_array->size() >= 8;
+  GenerateRedactAPDicts(doc, annot_dict, &normal_stream, &rollover_stream,
+                        resources_dict, has_quad_points);
+
+  return true;
+} 
+
 }  // namespace
 
 // static
@@ -2158,6 +2306,8 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
       return GenerateLineAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::LINK:
       return GenerateLinkAP(doc, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::REDACT:
+      return GenerateRedactAP(doc, annot_dict, blend_name);
     default:
       return false;
   }

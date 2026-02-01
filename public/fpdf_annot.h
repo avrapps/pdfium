@@ -94,7 +94,8 @@ extern "C" {
 
 typedef enum FPDFANNOT_COLORTYPE {
   FPDFANNOT_COLORTYPE_Color = 0,
-  FPDFANNOT_COLORTYPE_InteriorColor
+  FPDFANNOT_COLORTYPE_InteriorColor,
+  FPDFANNOT_COLORTYPE_OverlayColor  // For Redact annotations only (OC key)
 } FPDFANNOT_COLORTYPE;
 
 typedef enum FPDF_ANNOT_BORDER_STYLE {
@@ -233,9 +234,13 @@ typedef enum FPDF_ANNOT_REPLY_TYPE {
 //    - freetext
 //    - highlight
 //    - ink
+//    - line
 //    - link
+//    - polygon
+//    - polyline
 //    - popup
-//    - square,
+//    - redact
+//    - square
 //    - squiggly
 //    - stamp
 //    - strikeout
@@ -1640,6 +1645,100 @@ EPDFAnnot_GetReplyType(FPDF_ANNOTATION annot);
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt);
+
+// Experimental EmbedPDF Extension API.
+// Set the overlay text for a Redact annotation. The overlay text is displayed
+// on the redacted area after the redaction is applied.
+//
+//   annot - handle to a Redact annotation.
+//   text  - the overlay text to set. Pass NULL or empty string to remove.
+//
+// Returns true on success. Returns false if the annotation is not a Redact.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetOverlayText(FPDF_ANNOTATION annot, FPDF_WIDESTRING text);
+
+// Experimental EmbedPDF Extension API.
+// Get the overlay text for a Redact annotation.
+//
+//   annot  - handle to a Redact annotation.
+//   buffer - a buffer for the overlay text (UTF-16LE).
+//   buflen - the length of the buffer in bytes.
+//
+// Returns the number of bytes in the overlay text (including the terminating
+// NUL character), or 0 if not a Redact annotation or no overlay text is set.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetOverlayText(FPDF_ANNOTATION annot,
+                         FPDF_WCHAR* buffer,
+                         unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Set whether the overlay text repeats to fill the redaction area.
+//
+//   annot  - handle to a Redact annotation.
+//   repeat - true to repeat the overlay text, false otherwise.
+//
+// Returns true on success. Returns false if the annotation is not a Redact.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetOverlayTextRepeat(FPDF_ANNOTATION annot, FPDF_BOOL repeat);
+
+// Experimental EmbedPDF Extension API.
+// Get whether the overlay text repeats to fill the redaction area.
+//
+//   annot - handle to a Redact annotation.
+//
+// Returns true if the overlay text repeats, false otherwise or if not a Redact.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Apply a redact annotation, permanently removing content underneath.
+// If the annotation has an RO (Redact Overlay) stream, it will be flattened
+// as page content (filled rectangles with overlay text).
+// If no RO stream exists, content is simply removed with no overlay.
+// The annotation is automatically removed from the page after applying.
+//
+// The caller is responsible for:
+//   1. Closing the annotation handle with FPDFPage_CloseAnnot after this call
+//   2. Calling FPDFPage_GenerateContent to persist changes
+//
+//   page  - handle to the page containing the annotation
+//   annot - handle to a REDACT annotation
+//
+// Returns TRUE on success, FALSE if not a REDACT annotation or on error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Apply all redact annotations on a page, permanently removing content
+// underneath each one. For each annotation with an RO stream, the overlay
+// is flattened as page content. Annotations without RO simply have content
+// removed with no overlay.
+// All REDACT annotations are automatically removed from the page after applying.
+//
+// The caller is responsible for:
+//   1. Calling FPDFPage_GenerateContent to persist changes
+//
+//   page - handle to a page
+//
+// Returns TRUE if any redactions were applied, FALSE otherwise.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_ApplyRedactions(FPDF_PAGE page);
+
+// Experimental EmbedPDF Extension API.
+// Flatten an annotation's normal appearance (AP/N) to page content.
+// The annotation's appearance becomes part of the page itself.
+// The annotation is automatically removed from the page after flattening.
+//
+// The caller is responsible for:
+//   1. Closing the annotation handle with FPDFPage_CloseAnnot after this call
+//   2. Calling FPDFPage_GenerateContent to persist changes
+//
+//   page  - handle to the page containing the annotation
+//   annot - handle to an annotation with an appearance stream
+//
+// Returns TRUE on success, FALSE if no appearance stream or error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot);
 
 #ifdef __cplusplus
 }  // extern "C"
