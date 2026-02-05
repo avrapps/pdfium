@@ -195,10 +195,30 @@ CFX_Matrix CPDF_Page::GetDisplayMatrix() const {
 }
 
 int CPDF_Page::GetPageRotation() const {
+  // EmbedPDF: If rotation override is set, use it instead of dictionary value
+  if (rotation_override_.has_value()) {
+    return rotation_override_.value();
+  }
+  return GetOriginalRotation();
+}
+
+int CPDF_Page::GetOriginalRotation() const {
+  // Always read from dictionary, ignoring any override
   RetainPtr<const CPDF_Object> pRotate =
       GetPageAttr(pdfium::page_object::kRotate);
   int rotation = pRotate ? (pRotate->GetInteger() / 90) % 4 : 0;
   return (rotation < 0) ? (rotation + 4) : rotation;
+}
+
+void CPDF_Page::SetRotationOverride(int rotation) {
+  // Set override (-1 clears it)
+  if (rotation < 0) {
+    rotation_override_.reset();
+  } else {
+    rotation_override_ = rotation % 4;
+  }
+  // Recalculate dimensions with the new rotation
+  UpdateDimensions();
 }
 
 RetainPtr<CPDF_Array> CPDF_Page::GetOrCreateAnnotsArray() {
