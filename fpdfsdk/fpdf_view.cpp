@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
@@ -1420,6 +1421,66 @@ EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
     return -1;
   auto page = pdfium::MakeRetain<CPDF_Page>(pDoc, std::move(dict));
   return page->GetPageRotation();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
+                                   int page_index,
+                                   FS_SIZEF* size) {
+  if (!size)
+    return false;
+
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc)
+    return false;
+
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
+    return false;
+
+  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
+  if (!dict)
+    return false;
+
+  // Get bbox WITHOUT rotation adjustment
+  CFX_FloatRect mediabox = dict->GetRectFor(pdfium::page_object::kMediaBox);
+  if (mediabox.IsEmpty())
+    mediabox = CFX_FloatRect(0, 0, 612, 792);
+
+  CFX_FloatRect cropbox = dict->GetRectFor(pdfium::page_object::kCropBox);
+  CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
+  bbox.Intersect(mediabox);
+
+  // Return original dimensions - NO swap for rotation
+  size->width = bbox.Width();
+  size->height = bbox.Height();
+  return true;
+}
+
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDF_LoadPageNormalized(FPDF_DOCUMENT document,
+                         int page_index,
+                         int* out_original_rotation) {
+  // Load page normally first
+  FPDF_PAGE page = FPDF_LoadPage(document, page_index);
+  if (!page)
+    return nullptr;
+
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage) {
+    FPDF_ClosePage(page);
+    return nullptr;
+  }
+
+  // Store original rotation before we override it
+  if (out_original_rotation) {
+    *out_original_rotation = pPage->GetOriginalRotation();
+  }
+
+  // Force rotation to 0 - this re-runs UpdateDimensions()
+  // Now page_size_ and page_matrix_ are calculated as if rotation=0
+  pPage->SetRotationOverride(0);
+
+  return page;
 }
 
 FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageSizeByIndex(FPDF_DOCUMENT document,

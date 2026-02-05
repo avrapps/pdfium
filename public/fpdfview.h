@@ -874,7 +874,43 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
 //          The rotation in degrees (must be one of 0, 90, 180, 270).
 //          Returns -1 on error (document or page not found).
 FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);                
+EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);
+
+// Experimental EmbedPDF API.
+// Function: EPDF_GetPageSizeByIndexNormalized
+//          Get the ORIGINAL (non-rotated) size of the page at the given index.
+//          Unlike FPDF_GetPageSizeByIndexF, this does NOT swap width/height
+//          for 90/270 degree rotated pages. Does NOT load the page (lightweight).
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+//          size        -   Pointer to a FS_SIZEF to receive the page size (in points).
+// Return value:
+//          Non-zero for success. 0 for error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
+                                   int page_index,
+                                   FS_SIZEF* size);
+
+// Experimental EmbedPDF API.
+// Function: EPDF_LoadPageNormalized
+//          Load a page with rotation normalized to 0 degrees.
+//          All subsequent operations (GetPageWidth, annotations, text, rendering)
+//          will use normalized coordinates as if the page had no rotation.
+// Parameters:
+//          document            -   Handle to document.
+//          page_index          -   Page index, zero for the first page.
+//          out_original_rotation - Optional. Receives the original rotation (0-3).
+//                                  Can be NULL if not needed.
+// Return value:
+//          Handle to the loaded page, or NULL on failure.
+// Comments:
+//          The returned page must be closed with FPDF_ClosePage().
+//          Use out_original_rotation to know the actual page rotation for display.
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDF_LoadPageNormalized(FPDF_DOCUMENT document,
+                         int page_index,
+                         int* out_original_rotation);
 
 // Function: FPDF_GetPageSizeByIndex
 //          Get the size of the page at the given index.
