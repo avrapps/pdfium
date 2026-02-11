@@ -672,6 +672,96 @@ FPDF_GetDocUserPermissions(FPDF_DOCUMENT document);
 FPDF_EXPORT int FPDF_CALLCONV
 FPDF_GetSecurityHandlerRevision(FPDF_DOCUMENT document);
 
+// Permission flags for EPDF_SetEncryption allowed_flags parameter
+#define EPDF_PERM_PRINT              (1 << 2)   // Bit 3: Print document
+#define EPDF_PERM_MODIFY             (1 << 3)   // Bit 4: Modify contents
+#define EPDF_PERM_COPY               (1 << 4)   // Bit 5: Copy/extract text
+#define EPDF_PERM_ANNOT              (1 << 5)   // Bit 6: Add/modify annotations
+#define EPDF_PERM_FILL_FORMS         (1 << 8)   // Bit 9: Fill form fields
+#define EPDF_PERM_ACCESSIBILITY      (1 << 9)   // Bit 10: Extract for accessibility
+#define EPDF_PERM_ASSEMBLE           (1 << 10)  // Bit 11: Assemble document
+#define EPDF_PERM_PRINT_HIGH         (1 << 11)  // Bit 12: High quality print
+
+// Experimental EmbedPDF Extension API.
+// Sets AES-256 encryption on a document with user/owner passwords and permissions.
+//
+//   document        - handle to a document. Must not already be encrypted.
+//   user_password   - password required to open the document.
+//                     NULL or empty = no open password (document opens freely
+//                     but has owner restrictions enforced by compliant readers).
+//   owner_password  - password required to change permissions. Required, cannot
+//                     be NULL or empty.
+//   allowed_flags   - OR'd combination of EPDF_PERM_* flags indicating which
+//                     actions ARE ALLOWED. Internally converted to proper P value.
+//
+// Returns TRUE on success, FALSE on failure (e.g., already encrypted, NULL
+// owner password).
+// Note: Must be called before FPDF_SaveAsCopy for encryption to take effect.
+//
+// Example allowed_flags: EPDF_PERM_PRINT | EPDF_PERM_COPY
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetEncryption(FPDF_DOCUMENT document,
+                   FPDF_BYTESTRING user_password,
+                   FPDF_BYTESTRING owner_password,
+                   unsigned long allowed_flags);
+
+// Experimental EmbedPDF Extension API.
+// Clears any pending encryption set by EPDF_SetEncryption.
+// To remove encryption from an already-encrypted document, use
+// FPDF_REMOVE_SECURITY flag with FPDF_SaveAsCopy instead.
+//
+//   document - handle to a document.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_RemoveEncryption(FPDF_DOCUMENT document);
+
+// Experimental EmbedPDF Extension API.
+// Attempts to unlock owner permissions on an already-opened encrypted document.
+//
+//   document        - handle to a document
+//   owner_password  - the owner password to verify (raw, encoding handled internally)
+//
+// Returns TRUE if the password is valid and owner permissions are now unlocked.
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser (not loaded from file)
+//   - document is not encrypted
+//   - password is empty or invalid
+//
+// After successful unlock, FPDF_GetDocPermissions() will return full permissions.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
+                            FPDF_BYTESTRING owner_password);
+
+// Experimental EmbedPDF Extension API.
+// Checks if a document is encrypted.
+//
+//   document - handle to a document
+//
+// Returns TRUE if the document has encryption (Standard security handler).
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser
+//   - document is not encrypted
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsEncrypted(FPDF_DOCUMENT document);
+
+// Experimental EmbedPDF Extension API.
+// Checks if owner permissions are currently unlocked on an encrypted document.
+//
+//   document - handle to a document
+//
+// Returns TRUE if:
+//   - Document is encrypted AND owner password was verified (at load or via UnlockOwner)
+// Returns FALSE if:
+//   - document is NULL
+//   - document has no parser
+//   - document is not encrypted
+//   - owner permissions are not unlocked
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_IsOwnerUnlocked(FPDF_DOCUMENT document);
+
 // Function: FPDF_GetPageCount
 //          Get total number of pages in the document.
 // Parameters:
@@ -784,7 +874,43 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
 //          The rotation in degrees (must be one of 0, 90, 180, 270).
 //          Returns -1 on error (document or page not found).
 FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);                
+EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index);
+
+// Experimental EmbedPDF API.
+// Function: EPDF_GetPageSizeByIndexNormalized
+//          Get the ORIGINAL (non-rotated) size of the page at the given index.
+//          Unlike FPDF_GetPageSizeByIndexF, this does NOT swap width/height
+//          for 90/270 degree rotated pages. Does NOT load the page (lightweight).
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+//          size        -   Pointer to a FS_SIZEF to receive the page size (in points).
+// Return value:
+//          Non-zero for success. 0 for error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
+                                   int page_index,
+                                   FS_SIZEF* size);
+
+// Experimental EmbedPDF API.
+// Function: EPDF_LoadPageNormalized
+//          Load a page with rotation normalized to 0 degrees.
+//          All subsequent operations (GetPageWidth, annotations, text, rendering)
+//          will use normalized coordinates as if the page had no rotation.
+// Parameters:
+//          document            -   Handle to document.
+//          page_index          -   Page index, zero for the first page.
+//          out_original_rotation - Optional. Receives the original rotation (0-3).
+//                                  Can be NULL if not needed.
+// Return value:
+//          Handle to the loaded page, or NULL on failure.
+// Comments:
+//          The returned page must be closed with FPDF_ClosePage().
+//          Use out_original_rotation to know the actual page rotation for display.
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDF_LoadPageNormalized(FPDF_DOCUMENT document,
+                         int page_index,
+                         int* out_original_rotation);
 
 // Function: FPDF_GetPageSizeByIndex
 //          Get the size of the page at the given index.

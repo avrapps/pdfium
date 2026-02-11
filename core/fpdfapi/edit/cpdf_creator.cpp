@@ -696,6 +696,15 @@ void CPDF_Creator::RemoveSecurity() {
   new_encrypt_dict_.Reset();
 }
 
+void CPDF_Creator::SetEncryption(
+    RetainPtr<CPDF_Dictionary> encrypt_dict,
+    RetainPtr<CPDF_SecurityHandler> security_handler) {
+  new_encrypt_dict_ = std::move(encrypt_dict);
+  encrypt_dict_ = new_encrypt_dict_;
+  security_handler_ = std::move(security_handler);
+  security_changed_ = true;
+}
+
 CPDF_CryptoHandler* CPDF_Creator::GetCryptoHandler() {
   return security_handler_ ? security_handler_->GetCryptoHandler() : nullptr;
 }

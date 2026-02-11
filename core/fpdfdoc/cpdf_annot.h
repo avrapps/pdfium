@@ -157,6 +157,20 @@ class CPDF_Annot {
     kLast = kStamp_ForPublicRelease
   };
 
+  // --------------------------------------------------------------------
+  // Reply Type (RT) enumeration for annotations that reply to others via IRT.
+  // Must stay in sync with the public FPDF_ANNOT_REPLY_TYPE enum.
+  // See ISO 32000-2, section 12.5.6.
+  // --------------------------------------------------------------------
+  enum class ReplyType {
+    kUnknown = 0,  // Unknown or invalid
+    kReply,        // /R - comment reply (default if RT missing)
+    kGroup         // /Group - logical grouping
+  };
+
+  static ReplyType StringToReplyType(const ByteString& name);
+  static ByteString ReplyTypeToString(ReplyType rt);
+
   static Icon StringToIcon(const ByteString& name);
   static ByteString IconToString(Icon icon);
   static BorderStyle StringToBorderStyle(const ByteString& sStyle);

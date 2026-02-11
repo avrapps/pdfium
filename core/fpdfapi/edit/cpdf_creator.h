@@ -36,6 +36,12 @@ class CPDF_Creator {
   bool Create(uint32_t flags);
   bool SetFileVersion(int32_t fileVersion);
 
+  // Experimental EmbedPDF Extension: Set encryption for documents that weren't
+  // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
+  // and security_handler_ (for GetCryptoHandler() used in stream/string encryption).
+  void SetEncryption(RetainPtr<CPDF_Dictionary> encrypt_dict,
+                     RetainPtr<CPDF_SecurityHandler> security_handler);
+
  private:
   enum class Stage {
     kInvalid = -1,

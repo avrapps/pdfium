@@ -77,6 +77,13 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   CFX_Matrix GetDisplayMatrix() const;
   int GetPageRotation() const;
 
+  // EmbedPDF extensions for rotation normalization
+  // Returns the rotation value from the page dictionary, ignoring any override.
+  int GetOriginalRotation() const;
+  // Sets a rotation override and recalculates dimensions.
+  // Pass -1 to clear the override.
+  void SetRotationOverride(int rotation);
+
   RetainPtr<CPDF_Array> GetOrCreateAnnotsArray();
   RetainPtr<CPDF_Array> GetMutableAnnotsArray();
   RetainPtr<const CPDF_Array> GetAnnotsArray() const;
@@ -111,6 +118,7 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   std::unique_ptr<CPDF_PageImageCache> page_image_cache_;
   std::unique_ptr<RenderContextIface> render_context_;
   ObservedPtr<View> view_;
+  std::optional<int> rotation_override_;  // EmbedPDF: rotation normalization
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_PAGE_H_
