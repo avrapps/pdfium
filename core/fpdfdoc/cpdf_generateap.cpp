@@ -1471,7 +1471,9 @@ bool GenerateFreeTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const B
 
   const BorderStyleInfo border_style_info =
       GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  // Get rotation info -- if rotated, draws in local unrotated space
+  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+  CFX_FloatRect rect = rot_info.bbox;
   const float half_border_width = border_style_info.width / 2.0f;
   CFX_FloatRect background_rect = rect;
   background_rect.Deflate(half_border_width, half_border_width);
@@ -1541,9 +1543,15 @@ bool GenerateFreeTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const B
       GenerateResourceFontDict(doc, font_name, font_dict->GetObjNum());
   auto resource_dict = GenerateResourcesDict(
       doc, std::move(graphics_state_dict), std::move(resource_font_dict));
-  GenerateAndSetAPDict(doc, annot_dict, &appearance_stream,
-                       std::move(resource_dict),
-                       /*is_text_markup_annotation=*/false);
+  if (rot_info.is_rotated) {
+    GenerateAndSetAPDictWithTransform(doc, annot_dict, &appearance_stream,
+                                     std::move(resource_dict),
+                                     rot_info.matrix, rot_info.bbox);
+  } else {
+    GenerateAndSetAPDict(doc, annot_dict, &appearance_stream,
+                         std::move(resource_dict),
+                         /*is_text_markup_annotation=*/false);
+  }
   return true;
 }
 
