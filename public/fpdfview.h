@@ -1586,6 +1586,23 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
                        const FS_MATRIX* matrix,
                        int flags);
 
+// Experimental EmbedPDF Extension API.
+// Renders the annotation's AP form content WITHOUT the AP stream's rotation
+// Matrix applied, using /EPDFUnrotatedRect (falling back to /Rect) for the
+// MatchRect mapping. This produces an unrotated bitmap suitable for UI layers
+// that apply CSS rotation separately.
+//
+// Same parameters as EPDF_RenderAnnotBitmap.
+//
+// Returns true if the rendering was successful, false otherwise.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
+                                FPDF_PAGE page,
+                                FPDF_ANNOTATION annot,
+                                FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                const FS_MATRIX* matrix,
+                                int flags);
+
 #ifdef PDF_ENABLE_V8
 // Function: FPDF_GetRecommendedV8Flags
 //          Returns a space-separated string of command line flags that are

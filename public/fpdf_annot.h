@@ -1807,6 +1807,38 @@ EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
 
+// Experimental EmbedPDF Extension API.
+// Set the Matrix on an annotation's appearance stream for the given mode.
+// This overwrites any existing Matrix entry on the AP stream.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - one of FPDF_ANNOT_APPEARANCEMODE_NORMAL (0),
+//                    FPDF_ANNOT_APPEARANCEMODE_ROLLOVER (1),
+//                    FPDF_ANNOT_APPEARANCEMODE_DOWN (2).
+//   matrix         - pointer to FS_MATRIX to set. Must not be NULL.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAPMatrix(FPDF_ANNOTATION annot,
+                      FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                      const FS_MATRIX* matrix);
+
+// Experimental EmbedPDF Extension API.
+// Get the Matrix from an annotation's appearance stream for the given mode.
+// Returns identity matrix {1,0,0,1,0,0} if no Matrix entry exists.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - one of FPDF_ANNOT_APPEARANCEMODE_NORMAL (0),
+//                    FPDF_ANNOT_APPEARANCEMODE_ROLLOVER (1),
+//                    FPDF_ANNOT_APPEARANCEMODE_DOWN (2).
+//   matrix         - receives the matrix. Must not be NULL.
+//
+// Returns true on success, false if annot is invalid or matrix is NULL.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
+                      FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                      FS_MATRIX* matrix);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

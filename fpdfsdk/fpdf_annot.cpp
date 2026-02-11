@@ -4,12 +4,13 @@
 
 #include "public/fpdf_annot.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <sstream>
 #include <utility>
 #include <vector>
-#include <algorithm>
 
 #include "constants/annotation_common.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
@@ -3415,8 +3416,16 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   if (!ad)
     return false;
 
-  // 1) Target box from /Rect.
-  CFX_FloatRect rect = ad->GetRectFor(pdfium::annotation::kRect);
+  // 1) Check for EPDFRotate + EPDFUnrotatedRect first.
+  float rotate_deg = ad->GetFloatFor("EPDFRotate");
+  rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
+  bool has_rotation = (rotate_deg > 0.01f && rotate_deg < 359.99f);
+
+  CFX_FloatRect unrotated = ad->GetRectFor("EPDFUnrotatedRect");
+  bool use_rotation = has_rotation && !unrotated.IsEmpty();
+
+  // Use unrotated rect for image fitting when rotated, otherwise /Rect.
+  CFX_FloatRect rect = use_rotation ? unrotated : ad->GetRectFor(pdfium::annotation::kRect);
   const float box_w = std::max(0.f, rect.Width());
   const float box_h = std::max(0.f, rect.Height());
   if (box_w <= 0 || box_h <= 0)
@@ -3448,9 +3457,14 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     return true;
   }
 
-  // 5) Update AP /BBox to [0 0 w h].
+  // 5) Update AP /BBox.
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
-  ap_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, box_w, box_h));
+  if (use_rotation) {
+    // BBox = unrotated rect (page coordinates, not 0-based)
+    ap_dict->SetRectFor("BBox", unrotated);
+  } else {
+    ap_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, box_w, box_h));
+  }
 
   // 6) Cleanup Resources/XObject *only when we will rewrite the content*.
   // This prevents resource growth and also avoids nuking resources when we bail.
@@ -3477,12 +3491,38 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   image_obj->mutable_clip_path() = CPDF_ClipPath();
 
   // Apply matrix and update bounds.
-  CFX_Matrix m(drawn_w, 0, 0, drawn_h, dx, dy);
+  // When rotated, BBox is in page coordinates (unrotated rect), so offset
+  // the image placement by the unrotated rect's origin.
+  float img_dx = dx;
+  float img_dy = dy;
+  if (use_rotation) {
+    img_dx += unrotated.left;
+    img_dy += unrotated.bottom;
+  }
+  CFX_Matrix m(drawn_w, 0, 0, drawn_h, img_dx, img_dy);
   image_obj->SetImageMatrix(m);
   image_obj->CalcBoundingBox();
 
   // 9) Rewrite content stream from objects.
   UpdateContentStream(form, ap.Get());
+
+  // 10) If rotated, set the AP Matrix to rotate around unrotated rect center.
+  if (use_rotation) {
+    const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
+    const float cos_t = cosf(theta);
+    const float sin_t = sinf(theta);
+    const float cx = (unrotated.left + unrotated.right) / 2.0f;
+    const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
+    // M = T(cx,cy) * R(theta) * T(-cx,-cy)
+    ap_dict->SetMatrixFor("Matrix", CFX_Matrix(
+        cos_t, sin_t, -sin_t, cos_t,
+        cx * (1.0f - cos_t) + cy * sin_t,
+        cy * (1.0f - cos_t) - cx * sin_t));
+  } else {
+    // Remove any stale rotation matrix for non-rotated stamps.
+    ap_dict->RemoveFor("Matrix");
+  }
+
   return true;
 }
 
@@ -3957,5 +3997,74 @@ EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
     return false;
 
   *rect = FSRectFFromCFXFloatRect(dict->GetRectFor("EPDFUnrotatedRect"));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAPMatrix(FPDF_ANNOTATION annot,
+                      FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                      const FS_MATRIX* matrix) {
+  if (!matrix)
+    return false;
+  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  // Map mode to AP stream key: N, R, D
+  static constexpr auto kModeKey =
+      std::to_array<const char*>({"N", "R", "D"});
+  RetainPtr<CPDF_Dictionary> ap =
+      dict->GetMutableDictFor(pdfium::annotation::kAP);
+  if (!ap)
+    return false;
+
+  RetainPtr<CPDF_Stream> stream =
+      ap->GetMutableStreamFor(kModeKey[appearanceMode]);
+  if (!stream)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> stream_dict = stream->GetMutableDict();
+  if (!stream_dict)
+    return false;
+
+  stream_dict->SetMatrixFor("Matrix", CFXMatrixFromFSMatrix(*matrix));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
+                      FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                      FS_MATRIX* matrix) {
+  if (!matrix)
+    return false;
+  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT)
+    return false;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  // Map mode to AP stream key: N, R, D
+  static constexpr auto kModeKey =
+      std::to_array<const char*>({"N", "R", "D"});
+  RetainPtr<const CPDF_Dictionary> ap =
+      dict->GetDictFor(pdfium::annotation::kAP);
+  if (!ap)
+    return false;
+
+  RetainPtr<const CPDF_Stream> stream =
+      ap->GetStreamFor(kModeKey[appearanceMode]);
+  if (!stream)
+    return false;
+
+  RetainPtr<const CPDF_Dictionary> stream_dict = stream->GetDict();
+  if (!stream_dict)
+    return false;
+
+  *matrix = FSMatrixFromCFXMatrix(stream_dict->GetMatrixFor("Matrix"));
   return true;
 }
