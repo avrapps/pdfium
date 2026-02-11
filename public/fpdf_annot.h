@@ -1760,6 +1760,53 @@ EPDFPage_ApplyRedactions(FPDF_PAGE page);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot);
 
+// Experimental EmbedPDF Extension API.
+// Set the EmbedPDF extended rotation on an annotation. This stores a custom
+// /EPDFRotate entry (not the standard /Rotate) for non-widget annotations.
+// A value of 0 removes the key to keep the PDF clean.
+//
+//   annot    - handle to an annotation.
+//   rotation - the rotation in degrees.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetExtendedRotation(FPDF_ANNOTATION annot, float rotation);
+
+// Experimental EmbedPDF Extension API.
+// Get the EmbedPDF extended rotation from an annotation.
+// Reads the custom /EPDFRotate entry.
+//
+//   annot    - handle to an annotation.
+//   rotation - receives the rotation value in degrees. 0 if not set.
+//
+// Returns true on success, false if annot is invalid or rotation is NULL.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetExtendedRotation(FPDF_ANNOTATION annot, float* rotation);
+
+// Experimental EmbedPDF Extension API.
+// Set the EmbedPDF unrotated rect on an annotation. This stores a custom
+// /EPDFUnrotatedRect array representing the annotation's rect before rotation
+// was applied. Follows the same FS_RECTF convention as FPDFAnnot_SetRect.
+//
+//   annot - handle to an annotation.
+//   rect  - pointer to the unrotated rect. Pass NULL to remove.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
+// Get the EmbedPDF unrotated rect from an annotation.
+// Reads the custom /EPDFUnrotatedRect array.
+// Follows the same FS_RECTF convention as FPDFAnnot_GetRect.
+//
+//   annot - handle to an annotation.
+//   rect  - receives the unrotated rect. All zeros if not set.
+//
+// Returns true on success, false if annot is invalid or rect is NULL.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

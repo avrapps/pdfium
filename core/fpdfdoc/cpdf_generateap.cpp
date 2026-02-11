@@ -401,6 +401,51 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
   };
 }
 
+// Rotation info for shape annotations (Square, Circle) using EmbedPDF's
+// custom /EPDFRotate and /EPDFUnrotatedRect entries.
+struct ShapeRotationInfo {
+  CFX_FloatRect bbox;    // BBox for the AP stream (unrotated rect in page coords)
+  CFX_Matrix matrix;     // Transforms from local BBox space to page/AABB space
+  bool is_rotated;       // Whether rotation was applied
+};
+
+ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict) {
+  ShapeRotationInfo info;
+  info.is_rotated = false;
+  info.matrix = CFX_Matrix();
+  info.bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
+
+  float rotate_deg = annot_dict->GetFloatFor("EPDFRotate");
+  // Normalize to [0, 360)
+  rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
+  if (rotate_deg < 0.01f || rotate_deg > 359.99f) {
+    return info;  // No rotation
+  }
+
+  CFX_FloatRect unrotated = annot_dict->GetRectFor("EPDFUnrotatedRect");
+  if (unrotated.IsEmpty()) {
+    return info;  // No unrotated rect stored -> no rotation in AP
+  }
+
+  info.is_rotated = true;
+  info.bbox = unrotated;
+
+  const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
+  const float cos_t = cosf(theta);
+  const float sin_t = sinf(theta);
+  const float cx = (unrotated.left + unrotated.right) / 2.0f;
+  const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
+
+  // Matrix: rotate around center of unrotated rect
+  // M = T(cx, cy) * R(theta) * T(-cx, -cy)
+  info.matrix = CFX_Matrix(
+      cos_t, sin_t, -sin_t, cos_t,
+      cx * (1.0f - cos_t) + cy * sin_t,
+      cy * (1.0f - cos_t) - cx * sin_t);
+
+  return info;
+}
+
 struct DefaultAppearanceInfo {
   ByteString font_name;
   float font_size;
@@ -980,6 +1025,31 @@ void GenerateAndSetAPDict(CPDF_Document* doc,
   ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
 }
 
+// Overload that accepts explicit Matrix and BBox, used by rotation-aware
+// shape annotation generators (Square, Circle).
+void GenerateAndSetAPDictWithTransform(
+    CPDF_Document* doc,
+    CPDF_Dictionary* annot_dict,
+    fxcrt::ostringstream* app_stream,
+    RetainPtr<CPDF_Dictionary> resource_dict,
+    const CFX_Matrix& matrix,
+    const CFX_FloatRect& bbox) {
+  auto stream_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  stream_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  stream_dict->SetMatrixFor("Matrix", matrix);
+  stream_dict->SetRectFor("BBox", bbox);
+  stream_dict->SetFor("Resources", std::move(resource_dict));
+
+  auto normal_stream = doc->NewIndirect<CPDF_Stream>(std::move(stream_dict));
+  normal_stream->SetDataFromStringstream(app_stream);
+
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
+}
+
 // This helper encapsulates all logic for drawing the start and end caps.
 void GenerateLineEndings(fxcrt::ostringstream& ap,
                          const std::vector<CFX_PointF>& points,
@@ -1299,52 +1369,62 @@ bool GenerateCircleAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const Byt
     app_stream << GetDashPatternString(annot_dict);
   }
 
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
+  // Get rotation info -- if rotated, draws in local unrotated space
+  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+  CFX_FloatRect draw_rect = rot_info.bbox;
+  draw_rect.Normalize();
 
   if (is_stroke_rect) {
     // Deflating rect because stroking a path entails painting all points
     // whose perpendicular distance from the path in user space is less than
     // or equal to half the line width.
-    rect.Deflate(border_width / 2, border_width / 2);
+    draw_rect.Deflate(border_width / 2, border_width / 2);
   }
 
-  const float middle_x = (rect.left + rect.right) / 2;
-  const float middle_y = (rect.top + rect.bottom) / 2;
+  const float middle_x = (draw_rect.left + draw_rect.right) / 2;
+  const float middle_y = (draw_rect.top + draw_rect.bottom) / 2;
 
   // `kL` is precalculated approximate value of 4 * tan((3.14 / 2) / 4) / 3,
   // where `kL` * radius is a good approximation of control points for
   // arc with 90 degrees.
   static constexpr float kL = 0.5523f;
-  const float delta_x = kL * rect.Width() / 2.0;
-  const float delta_y = kL * rect.Height() / 2.0;
+  const float delta_x = kL * draw_rect.Width() / 2.0;
+  const float delta_y = kL * draw_rect.Height() / 2.0;
 
   // Starting point
-  app_stream << middle_x << " " << rect.top << " m\n";
+  app_stream << middle_x << " " << draw_rect.top << " m\n";
   // First Bezier Curve
-  app_stream << middle_x + delta_x << " " << rect.top << " " << rect.right
-             << " " << middle_y + delta_y << " " << rect.right << " "
-             << middle_y << " c\n";
+  app_stream << middle_x + delta_x << " " << draw_rect.top << " "
+             << draw_rect.right << " " << middle_y + delta_y << " "
+             << draw_rect.right << " " << middle_y << " c\n";
   // Second Bezier Curve
-  app_stream << rect.right << " " << middle_y - delta_y << " "
-             << middle_x + delta_x << " " << rect.bottom << " " << middle_x
-             << " " << rect.bottom << " c\n";
+  app_stream << draw_rect.right << " " << middle_y - delta_y << " "
+             << middle_x + delta_x << " " << draw_rect.bottom << " "
+             << middle_x << " " << draw_rect.bottom << " c\n";
   // Third Bezier Curve
-  app_stream << middle_x - delta_x << " " << rect.bottom << " " << rect.left
-             << " " << middle_y - delta_y << " " << rect.left << " " << middle_y
-             << " c\n";
+  app_stream << middle_x - delta_x << " " << draw_rect.bottom << " "
+             << draw_rect.left << " " << middle_y - delta_y << " "
+             << draw_rect.left << " " << middle_y << " c\n";
   // Fourth Bezier Curve
-  app_stream << rect.left << " " << middle_y + delta_y << " "
-             << middle_x - delta_x << " " << rect.top << " " << middle_x << " "
-             << rect.top << " c\n";
+  app_stream << draw_rect.left << " " << middle_y + delta_y << " "
+             << middle_x - delta_x << " " << draw_rect.top << " " << middle_x
+             << " " << draw_rect.top << " c\n";
 
   bool is_fill_rect = interior_color && !interior_color->IsEmpty();
   app_stream << GetPaintOperatorString(is_stroke_rect, is_fill_rect) << "\n";
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
-                       false /*IsTextMarkupAnnotation*/);
+
+  if (rot_info.is_rotated) {
+    GenerateAndSetAPDictWithTransform(doc, annot_dict, &app_stream,
+                                     std::move(resources_dict),
+                                     rot_info.matrix, rot_info.bbox);
+  } else {
+    GenerateAndSetAPDict(doc, annot_dict, &app_stream,
+                         std::move(resources_dict),
+                         false /*IsTextMarkupAnnotation*/);
+  }
   return true;
 }
 
@@ -1808,25 +1888,35 @@ bool GenerateSquareAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const Byt
     app_stream << GetDashPatternString(annot_dict);
   }
 
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
+  // Get rotation info -- if rotated, draws in local unrotated space
+  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+  CFX_FloatRect draw_rect = rot_info.bbox;
+  draw_rect.Normalize();
 
   if (is_stroke_rect) {
     // Deflating rect because stroking a path entails painting all points
     // whose perpendicular distance from the path in user space is less than
     // or equal to half the line width.
-    rect.Deflate(border_width / 2, border_width / 2);
+    draw_rect.Deflate(border_width / 2, border_width / 2);
   }
 
   const bool is_fill_rect = interior_color && (interior_color->size() > 0);
-  app_stream << rect.left << " " << rect.bottom << " " << rect.Width() << " "
-             << rect.Height() << " re "
+  app_stream << draw_rect.left << " " << draw_rect.bottom << " "
+             << draw_rect.Width() << " " << draw_rect.Height() << " re "
              << GetPaintOperatorString(is_stroke_rect, is_fill_rect) << "\n";
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
-                       false /*IsTextMarkupAnnotation*/);
+
+  if (rot_info.is_rotated) {
+    GenerateAndSetAPDictWithTransform(doc, annot_dict, &app_stream,
+                                     std::move(resources_dict),
+                                     rot_info.matrix, rot_info.bbox);
+  } else {
+    GenerateAndSetAPDict(doc, annot_dict, &app_stream,
+                         std::move(resources_dict),
+                         false /*IsTextMarkupAnnotation*/);
+  }
   return true;
 }
 

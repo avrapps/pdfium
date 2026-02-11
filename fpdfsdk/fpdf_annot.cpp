@@ -3897,3 +3897,65 @@ EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot) {
 
   return true;
 }
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetExtendedRotation(FPDF_ANNOTATION annot, float rotation) {
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  if (rotation == 0.0f) {
+    dict->RemoveFor("EPDFRotate");
+  } else {
+    dict->SetNewFor<CPDF_Number>("EPDFRotate", rotation);
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetExtendedRotation(FPDF_ANNOTATION annot, float* rotation) {
+  if (!rotation)
+    return false;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  *rotation = dict->GetFloatFor("EPDFRotate");
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect) {
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  if (!rect) {
+    dict->RemoveFor("EPDFUnrotatedRect");
+    return true;
+  }
+
+  CFX_FloatRect float_rect = CFXFloatRectFromFSRectF(*rect);
+  if (float_rect.IsEmpty()) {
+    dict->RemoveFor("EPDFUnrotatedRect");
+  } else {
+    dict->SetRectFor("EPDFUnrotatedRect", float_rect);
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
+  if (!rect)
+    return false;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  *rect = FSRectFFromCFXFloatRect(dict->GetRectFor("EPDFUnrotatedRect"));
+  return true;
+}
