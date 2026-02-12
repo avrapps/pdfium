@@ -16,6 +16,7 @@
 #include "build/build_config.h"
 #include "constants/page_object.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
+#include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
@@ -1082,6 +1083,90 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
       static_cast<CPDF_Annot::AppearanceMode>(appearanceMode));
 
   return ok;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
+                                FPDF_PAGE page,
+                                FPDF_ANNOTATION annot,
+                                FPDF_ANNOT_APPEARANCEMODE appearanceMode,
+                                const FS_MATRIX* matrix,
+                                int flags) {
+  // Guards (same as EPDF_RenderAnnotBitmap)
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!bitmap || !pPage || !annot)
+    return false;
+
+  CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!pAnnotContext)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnotContext->GetMutableAnnotDict();
+  if (!pAnnotDict)
+    return false;
+
+  CPDF_Document* pDoc = pPage->GetDocument();
+  if (!pDoc)
+    return false;
+
+  auto pAnnot = std::make_unique<CPDF_Annot>(std::move(pAnnotDict), pDoc);
+
+  // Get the AP form for the requested mode.
+  // Note: we skip ShouldDrawAnnotation/GenerateAPIfNeeded (private) because
+  // the AP stream is expected to already exist when rendering stamps.
+  auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
+  CPDF_Form* pForm = pAnnot->GetAPForm(pPage, mode);
+  if (!pForm)
+    return false;
+
+  // Read the raw BBox WITHOUT applying the AP Matrix.
+  CFX_FloatRect form_bbox = pForm->GetDict()->GetRectFor("BBox");
+
+  // Use EPDFUnrotatedRect as the target rect for MatchRect.
+  // Falls back to /Rect if EPDFUnrotatedRect is not set.
+  CFX_FloatRect target = pAnnot->GetAnnotDict()->GetRectFor("EPDFUnrotatedRect");
+  if (target.IsEmpty())
+    target = pAnnot->GetRect();
+
+  // The form's Matrix (rotation) was baked into the content objects during
+  // parsing by CPDF_ContentParser.  We must undo it so the bitmap is unrotated.
+  CFX_Matrix form_matrix = pForm->GetDict()->GetMatrixFor("Matrix");
+  CFX_Matrix mtForm2Page = form_matrix.GetInverse();
+
+  // Then map raw BBox -> target rect (identity when BBox == unrotatedRect).
+  CFX_Matrix matchRect;
+  matchRect.MatchRect(target, form_bbox);
+  mtForm2Page.Concat(matchRect);
+
+  // Build CTM = displayMatrix * userMatrix
+  CFX_Matrix ctm = pPage->GetDisplayMatrix();
+  if (matrix)
+    ctm.Concat(CFXMatrixFromFSMatrix(*matrix));
+
+  // Combine: form -> page -> device
+  mtForm2Page.Concat(ctm);
+
+  // ---- Bitmap setup (same as EPDF_RenderAnnotBitmap) ----
+  RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
+  if (!pBitmap)
+    return false;
+  ValidateBitmapPremultiplyState(pBitmap);
+
+#if defined(PDF_USE_SKIA)
+  CFX_DIBitmap::ScopedPremultiplier scoped(pBitmap);
+#endif
+
+  auto device = std::make_unique<CFX_DefaultRenderDevice>();
+  device->AttachWithRgbByteOrder(std::move(pBitmap),
+                                 !!(flags & FPDF_REVERSE_BYTE_ORDER));
+
+  // Render the AP form with our custom matrix (no AP Matrix distortion).
+  CPDF_RenderContext context(pDoc,
+                             pPage->GetMutablePageResources(),
+                             pPage->GetPageImageCache());
+  context.AppendLayer(pForm, mtForm2Page);
+  context.Render(device.get(), nullptr, nullptr, nullptr);
+  return true;
 }
 
 #if defined(PDF_USE_SKIA)
