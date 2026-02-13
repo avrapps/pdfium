@@ -689,43 +689,47 @@ CPDF_Annot::LineEnding CPDF_Annot::StringToLineEnding(const ByteString& n) {
 }
 
 CPDF_Annot::StandardFont CPDF_Annot::StringToStandardFont(const ByteString& name) {
-  if (name == "Courier") {
+  // Full canonical names (PDF Reference, Table 5.17)
+  if (name == "Courier" || name == "Cour") {
     return StandardFont::kCourier;
   }
-  if (name == "Courier-Bold") {
+  if (name == "Courier-Bold" || name == "CoBo") {
     return StandardFont::kCourier_Bold;
   }
   if (name == "Courier-BoldOblique") {
     return StandardFont::kCourier_BoldOblique;
   }
-  if (name == "Courier-Oblique") {
+  if (name == "Courier-Oblique" || name == "CoOb") {
     return StandardFont::kCourier_Oblique;
   }
-  if (name == "Helvetica") {
+  if (name == "Helvetica" || name == "Helv") {
     return StandardFont::kHelvetica;
   }
-  if (name == "Helvetica-Bold") {
+  if (name == "Helvetica-Bold" || name == "HeBo") {
     return StandardFont::kHelvetica_Bold;
   }
   if (name == "Helvetica-BoldOblique") {
     return StandardFont::kHelvetica_BoldOblique;
   }
-  if (name == "Times-Roman") {
+  if (name == "Helvetica-Oblique") {
+    return StandardFont::kHelvetica_Oblique;
+  }
+  if (name == "Times-Roman" || name == "TiRo") {
     return StandardFont::kTimes_Roman;
   }
-  if (name == "Times-Bold") {
+  if (name == "Times-Bold" || name == "TiBo") {
     return StandardFont::kTimes_Bold;
   }
   if (name == "Times-BoldItalic") {
     return StandardFont::kTimes_BoldItalic;
   }
-  if (name == "Times-Italic") {
+  if (name == "Times-Italic" || name == "TiIt") {
     return StandardFont::kTimes_Italic;
   }
-  if (name == "Symbol") {
+  if (name == "Symbol" || name == "Symb") {
     return StandardFont::kSymbol;
   }
-  if (name == "ZapfDingbats") {
+  if (name == "ZapfDingbats" || name == "ZaDb") {
     return StandardFont::kZapfDingbats;
   }
   return StandardFont::kUnknown;
