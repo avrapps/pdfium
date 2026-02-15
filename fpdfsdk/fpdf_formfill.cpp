@@ -354,7 +354,7 @@ FPDFDOC_InitFormFillEnvironment(FPDF_DOCUMENT document,
   }
 
 #ifdef PDF_ENABLE_XFA
-  CPDFXFA_Context* pContext = nullptr;
+  CPDFXFA_Context* context = nullptr;
   if (!formInfo->xfa_disabled) {
     if (!pDocument->GetExtension()) {
       pDocument->SetExtension(std::make_unique<CPDFXFA_Context>(pDocument));
@@ -363,10 +363,10 @@ FPDFDOC_InitFormFillEnvironment(FPDF_DOCUMENT document,
     // If the CPDFXFA_Context has a FormFillEnvironment already then we've done
     // this and can just return the old Env. Otherwise, we'll end up setting a
     // new environment into the XFADocument and, that could get weird.
-    pContext = static_cast<CPDFXFA_Context*>(pDocument->GetExtension());
-    if (pContext->GetFormFillEnv()) {
+    context = static_cast<CPDFXFA_Context*>(pDocument->GetExtension());
+    if (context->GetFormFillEnv()) {
       return FPDFFormHandleFromCPDFSDKFormFillEnvironment(
-          pContext->GetFormFillEnv());
+          context->GetFormFillEnv());
     }
   }
 #endif  // PDF_ENABLE_XFA
@@ -375,8 +375,8 @@ FPDFDOC_InitFormFillEnvironment(FPDF_DOCUMENT document,
       std::make_unique<CPDFSDK_FormFillEnvironment>(pDocument, formInfo);
 
 #ifdef PDF_ENABLE_XFA
-  if (pContext) {
-    pContext->SetFormFillEnv(pFormFillEnv.get());
+  if (context) {
+    context->SetFormFillEnv(pFormFillEnv.get());
   }
 #endif  // PDF_ENABLE_XFA
 
@@ -403,10 +403,10 @@ FPDFDOC_ExitFormFillEnvironment(FPDF_FORMHANDLE hHandle) {
   pFormFillEnv->ClearAllFocusedAnnots();
   // If the document was closed first, it's possible the XFA document
   // is now a nullptr.
-  auto* pContext =
+  auto* context =
       static_cast<CPDFXFA_Context*>(pFormFillEnv->GetDocExtension());
-  if (pContext) {
-    pContext->SetFormFillEnv(nullptr);
+  if (context) {
+    context->SetFormFillEnv(nullptr);
   }
 #endif  // PDF_ENABLE_XFA
 }
@@ -693,7 +693,7 @@ FORM_GetFocusedAnnot(FPDF_FORMHANDLE handle,
     return true;
   }
 
-  // TODO(crbug.com/pdfium/1482): Handle XFA case.
+  // TODO(crbug.com/42270486): Handle XFA case.
   if (cpdfsdk_annot->AsXFAWidget()) {
     return true;
   }
@@ -881,8 +881,8 @@ FPDF_EXPORT void FPDF_CALLCONV FORM_DoDocumentAAction(FPDF_FORMHANDLE hHandle,
     return;
   }
 
-  CPDF_Document* pDoc = pFormFillEnv->GetPDFDocument();
-  const CPDF_Dictionary* dict = pDoc->GetRoot();
+  CPDF_Document* doc = pFormFillEnv->GetPDFDocument();
+  const CPDF_Dictionary* dict = doc->GetRoot();
   if (!dict) {
     return;
   }

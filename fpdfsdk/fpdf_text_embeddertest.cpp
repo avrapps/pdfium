@@ -664,7 +664,7 @@ TEST_F(FPDFTextEmbedderTest, TextSearchSpaceInSearchTerm) {
   EXPECT_FALSE(FPDFText_FindNext(search.get()));
 }
 
-// Fails on Windows. https://crbug.com/pdfium/1370
+// Fails on Windows. https://crbug.com/42270374
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_TextSearchLatinExtended DISABLED_TextSearchLatinExtended
 #else
@@ -1038,7 +1038,7 @@ TEST_F(FPDFTextEmbedderTest, GetFontInfo) {
     ASSERT_EQ(expected_length, length);
     EXPECT_EQ(pdfium::kFontStyleNonSymbolic, flags);
     font_name.resize(length);
-    std::fill(font_name.begin(), font_name.end(), 'a');
+    std::ranges::fill(font_name, 'a');
     flags = -1;
     EXPECT_EQ(expected_length,
               FPDFText_GetFontInfo(textpage.get(), i, font_name.data(),
@@ -1049,7 +1049,7 @@ TEST_F(FPDFTextEmbedderTest, GetFontInfo) {
   // If the size of the buffer is not large enough, the buffer should remain
   // unchanged.
   font_name.pop_back();
-  std::fill(font_name.begin(), font_name.end(), 'a');
+  std::ranges::fill(font_name, 'a');
   EXPECT_EQ(sizeof(kExpectedFontName1),
             FPDFText_GetFontInfo(textpage.get(), 0, font_name.data(),
                                  font_name.size(), nullptr));
@@ -1076,7 +1076,7 @@ TEST_F(FPDFTextEmbedderTest, GetFontInfo) {
     ASSERT_EQ(expected_length, length);
     EXPECT_EQ(pdfium::kFontStyleNonSymbolic, flags);
     font_name.resize(length);
-    std::fill(font_name.begin(), font_name.end(), 'a');
+    std::ranges::fill(font_name, 'a');
     flags = -1;
     EXPECT_EQ(expected_length,
               FPDFText_GetFontInfo(textpage.get(), i, font_name.data(),
@@ -1204,9 +1204,9 @@ TEST_F(FPDFTextEmbedderTest, Bug921) {
   static constexpr auto kData = std::to_array<const unsigned int>(
       {1095, 1077, 1083, 1086, 1074, 1077, 1095, 1077, 1089, 1082, 1086, 1077,
        32,   1089, 1090, 1088, 1072, 1076, 1072, 1085, 1080, 1077, 46,   32});
-  static constexpr int kStartIndex = 238;
+  static constexpr int kStartIndex = 248;
 
-  ASSERT_EQ(268, FPDFText_CountChars(textpage.get()));
+  ASSERT_EQ(278, FPDFText_CountChars(textpage.get()));
   for (size_t i = 0; i < std::size(kData); ++i) {
     EXPECT_EQ(kData[i], FPDFText_GetUnicode(textpage.get(), kStartIndex + i));
   }
@@ -1393,7 +1393,7 @@ TEST_F(FPDFTextEmbedderTest, CountRects) {
   }
 
   // Now test larger start values.
-  const int kExpectedLength = UNSAFE_TODO(strlen(kHelloGoodbyeText));
+  const int kExpectedLength = strlen(kHelloGoodbyeText);
   for (int start = kGoodbyeWorldStart + 1; start < kExpectedLength; ++start) {
     EXPECT_EQ(1, FPDFText_CountRects(textpage.get(), start, -1));
     EXPECT_EQ(0, FPDFText_CountRects(textpage.get(), start, 0));
@@ -1616,7 +1616,7 @@ TEST_F(FPDFTextEmbedderTest, GetFontWeight) {
 
   // Using a /StemV value of 82, the estimate comes out to 410, even though
   // /FontWeight is 400.
-  // TODO(crbug.com/pdfium/1420): Fix this the return value here.
+  // TODO(crbug.com/42270423): Fix this the return value here.
   EXPECT_EQ(410, FPDFText_GetFontWeight(text_page.get(), 1));
 }
 
@@ -1995,6 +1995,46 @@ TEST_F(FPDFTextEmbedderTest, CharBoxForLatinExtendedText) {
   EXPECT_NEAR(752.422f, rect.top, 0.001f);
 }
 
+TEST_F(FPDFTextEmbedderTest, Bug402562387) {
+  ASSERT_TRUE(OpenDocument("bug_402562387.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(text_page);
+
+  int char_count = FPDFText_CountChars(text_page.get());
+  ASSERT_EQ(char_count, 4);
+
+  for (int i = 0; i < char_count; ++i) {
+    SCOPED_TRACE(testing::Message() << "Character " << i);
+
+    double char_left;
+    double char_right;
+    double char_bottom;
+    double char_top;
+    if (!FPDFText_GetCharBox(text_page.get(), i, &char_left, &char_right,
+                             &char_bottom, &char_top)) {
+      ADD_FAILURE() << "FPDFText_GetCharBox failed";
+      continue;
+    }
+
+    FS_RECTF loose_rect;
+    if (!FPDFText_GetLooseCharBox(text_page.get(), i, &loose_rect)) {
+      ADD_FAILURE() << "FPDFText_GetLooseCharBox failed";
+      continue;
+    }
+
+    EXPECT_LE(loose_rect.left, char_left);
+    EXPECT_GE(loose_rect.right, char_right);
+    EXPECT_LE(loose_rect.bottom, char_bottom);
+    EXPECT_GE(loose_rect.top, char_top);
+
+    EXPECT_GE(loose_rect.right - loose_rect.left, char_right - char_left);
+    EXPECT_GE(loose_rect.top - loose_rect.bottom, char_top - char_bottom);
+  }
+}
+
 TEST_F(FPDFTextEmbedderTest, Bug399689604) {
   ASSERT_TRUE(OpenDocument("bug_399689604.pdf"));
   ScopedPage page = LoadScopedPage(0);
@@ -2147,14 +2187,9 @@ TEST_F(FPDFTextEmbedderTest, Bug1769) {
   ASSERT_TRUE(textpage);
 
   unsigned short buffer[128] = {};
-  // TODO(crbug.com/pdfium/1769): Improve text extraction.
-  // The first instance of "world" is visible to the human eye and should be
-  // extracted as is. The second instance is not, so how it should be
-  // extracted is debatable.
-  static constexpr char kNeedsImprovementResult[] = "wo d wo d";
-  ASSERT_EQ(10, FPDFText_GetText(textpage.get(), 0, 128, buffer));
-  EXPECT_THAT(pdfium::span(buffer).first(10u),
-              ElementsAreArray(kNeedsImprovementResult));
+  static constexpr char kResult[] = "world world";
+  ASSERT_EQ(12, FPDFText_GetText(textpage.get(), 0, 128, buffer));
+  EXPECT_THAT(pdfium::span(buffer).first(12u), ElementsAreArray(kResult));
 }
 
 TEST_F(FPDFTextEmbedderTest, Bug384770169) {
@@ -2278,4 +2313,64 @@ TEST_F(FPDFTextEmbedderTest, Bug425244539) {
   EXPECT_TRUE(FPDFText_FindNext(search.get()));
   EXPECT_EQ(22, FPDFText_GetSchResultIndex(search.get()));
   EXPECT_EQ(5, FPDFText_GetSchCount(search.get()));
+}
+
+TEST_F(FPDFTextEmbedderTest, Bug431824298) {
+  // TODO(crbug.com/431824298): 0xfffe should be a dash.
+  static constexpr std::array<unsigned short, 19> kExpectedChars = {
+      '-', 'h', 'e', 'l', 'l', 'o',    '-',    '\r',   '\n', '-',
+      'w', 'o', 'r', 'l', 'd', 0xfffe, 0x501f, 0x6b3e, 0};
+
+  ASSERT_TRUE(OpenDocument("bug_431824298.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  std::array<unsigned short, 128> buffer = {};
+  int num_chars =
+      FPDFText_GetText(textpage.get(), 0, buffer.size(), buffer.data());
+  ASSERT_EQ(static_cast<int>(kExpectedChars.size()), num_chars);
+  EXPECT_THAT(pdfium::span(buffer).first<kExpectedChars.size()>(),
+              ElementsAreArray(kExpectedChars));
+
+  ScopedFPDFWideString world = GetFPDFWideString(L"-world-");
+
+  ScopedFPDFTextFind search(
+      FPDFText_FindStart(textpage.get(), world.get(), 0, 0));
+  EXPECT_TRUE(search);
+  EXPECT_EQ(0, FPDFText_GetSchResultIndex(search.get()));
+  EXPECT_EQ(0, FPDFText_GetSchCount(search.get()));
+
+  // TODO(crbug.com/431824298): Once 0xfffe in `kExpectedChars` is a dash, this
+  // search should succeed.
+  EXPECT_FALSE(FPDFText_FindNext(search.get()));
+  EXPECT_EQ(0, FPDFText_GetSchResultIndex(search.get()));
+  EXPECT_EQ(0, FPDFText_GetSchCount(search.get()));
+}
+
+TEST_F(FPDFTextEmbedderTest, WhitespaceCharCount) {
+  ASSERT_TRUE(OpenDocument("whitespace.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  EXPECT_EQ(1, FPDFText_CountChars(textpage.get()));
+}
+
+TEST_F(FPDFTextEmbedderTest, Bug444176962) {
+  ASSERT_TRUE(OpenDocument("bug_444176962.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  unsigned short buffer[128] = {};
+  static constexpr char kResult[] = "local act";
+  ASSERT_EQ(10, FPDFText_GetText(textpage.get(), 0, std::size(buffer), buffer));
+  EXPECT_THAT(pdfium::span(buffer).first<10>(), ElementsAreArray(kResult));
 }

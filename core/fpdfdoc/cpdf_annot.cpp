@@ -835,7 +835,7 @@ bool CPDF_Annot::DrawAppearance(CPDF_Page* pPage,
 }
 
 bool CPDF_Annot::DrawInContext(CPDF_Page* pPage,
-                               CPDF_RenderContext* pContext,
+                               CPDF_RenderContext* context,
                                const CFX_Matrix& mtUser2Device,
                                AppearanceMode mode) {
   if (!ShouldDrawAnnotation()) {
@@ -855,7 +855,7 @@ bool CPDF_Annot::DrawInContext(CPDF_Page* pPage,
     return false;
   }
 
-  pContext->AppendLayer(pForm, matrix);
+  context->AppendLayer(pForm, matrix);
   return true;
 }
 

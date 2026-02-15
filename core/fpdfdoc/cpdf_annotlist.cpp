@@ -82,7 +82,7 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
     return nullptr;
   }
 
-  // TODO(crbug.com/pdfium/1098): Determine if we really need to check if
+  // TODO(crbug.com/40643646): Determine if we really need to check if
   // /Contents is empty or not. If so, optimize decoding for empty check.
   ByteString contents =
       pParentDict->GetByteStringFor(pdfium::annotation::kContents);
@@ -125,7 +125,7 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
   return pPopupAnnot;
 }
 
-void GenerateAP(CPDF_Document* pDoc, CPDF_Dictionary* pAnnotDict) {
+void GenerateAP(CPDF_Document* doc, CPDF_Dictionary* pAnnotDict) {
   if (!pAnnotDict ||
       pAnnotDict->GetByteStringFor(pdfium::annotation::kSubtype) != "Widget") {
     return;
@@ -139,7 +139,7 @@ void GenerateAP(CPDF_Document* pDoc, CPDF_Dictionary* pAnnotDict) {
 
   ByteString field_type = pFieldTypeObj->GetString();
   if (field_type == pdfium::form_fields::kTx) {
-    CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict,
+    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict,
                                     CPDF_GenerateAP::kTextField);
     return;
   }
@@ -151,7 +151,7 @@ void GenerateAP(CPDF_Document* pDoc, CPDF_Dictionary* pAnnotDict) {
     auto type = (flags & pdfium::form_flags::kChoiceCombo)
                     ? CPDF_GenerateAP::kComboBox
                     : CPDF_GenerateAP::kListBox;
-    CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict, type);
+    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict, type);
     return;
   }
 
@@ -239,11 +239,11 @@ bool CPDF_AnnotList::Contains(const CPDF_Annot* pAnnot) const {
   return it != annot_list_.end();
 }
 
-void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* pContext,
+void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
                                  bool bPrinting,
                                  const CFX_Matrix& mtMatrix,
                                  bool bWidgetPass) {
-  CHECK(pContext);
+  CHECK(context);
   for (const auto& pAnnot : annot_list_) {
     bool bWidget = pAnnot->GetSubtype() == CPDF_Annot::Subtype::WIDGET;
     if ((bWidgetPass && !bWidget) || (!bWidgetPass && bWidget)) {
@@ -263,18 +263,18 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* pContext,
       continue;
     }
 
-    pAnnot->DrawInContext(page_, pContext, mtMatrix,
+    pAnnot->DrawInContext(page_, context, mtMatrix,
                           CPDF_Annot::AppearanceMode::kNormal);
   }
 }
 
-void CPDF_AnnotList::DisplayAnnots(CPDF_RenderContext* pContext,
+void CPDF_AnnotList::DisplayAnnots(CPDF_RenderContext* context,
                                    bool bPrinting,
                                    const CFX_Matrix& mtUser2Device,
                                    bool bShowWidget) {
-  CHECK(pContext);
-  DisplayPass(pContext, bPrinting, mtUser2Device, false);
+  CHECK(context);
+  DisplayPass(context, bPrinting, mtUser2Device, false);
   if (bShowWidget) {
-    DisplayPass(pContext, bPrinting, mtUser2Device, true);
+    DisplayPass(context, bPrinting, mtUser2Device, true);
   }
 }

@@ -63,10 +63,10 @@ FPDF_WIDESTRING AsFPDFWideString(ByteString* bsUTF16LE) {
 }
 
 CPDFSDK_FormFillEnvironment::CPDFSDK_FormFillEnvironment(
-    CPDF_Document* pDoc,
+    CPDF_Document* doc,
     FPDF_FORMFILLINFO* pFFinfo)
     : info_(pFFinfo),
-      cpdfdoc_(pDoc),
+      cpdfdoc_(doc),
       interactive_form_filler_(
           std::make_unique<CFFL_InteractiveFormFiller>(this)) {
   DCHECK(cpdfdoc_);
@@ -877,7 +877,7 @@ void CPDFSDK_FormFillEnvironment::SendOnFocusChange(
     return;
   }
 
-  // TODO(crbug.com/pdfium/1482): Handle XFA case.
+  // TODO(crbug.com/42270486): Handle XFA case.
   if (pAnnot->AsXFAWidget()) {
     return;
   }
@@ -1274,8 +1274,8 @@ void CPDFSDK_FormFillEnvironment::DoActionResetForm(const CPDF_Action& action) {
 
 void CPDFSDK_FormFillEnvironment::RunScript(const WideString& script,
                                             const RunScriptCallback& cb) {
-  IJS_Runtime::ScopedEventContext pContext(GetIJSRuntime());
-  cb(pContext.Get());
-  pContext->RunScript(script);
+  IJS_Runtime::ScopedEventContext context(GetIJSRuntime());
+  cb(context.Get());
+  context->RunScript(script);
   // TODO(dsinclair): Return error if RunScript returns a IJS_Runtime::JS_Error.
 }

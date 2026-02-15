@@ -628,7 +628,7 @@ static uint32_t EnsureIndirect(CPDF_Document* doc,
 }
 
 RetainPtr<CPDF_Dictionary> SetExtGStateInResourceDict(
-    CPDF_Document* pDoc,
+    CPDF_Document* doc,
     const CPDF_Dictionary* pAnnotDict,
     const ByteString& sBlendMode) {
   auto pGSDict =
@@ -660,7 +660,7 @@ RetainPtr<CPDF_Dictionary> SetExtGStateInResourceDict(
 
   pExtGStateDict->SetFor("GS", pGSDict);
 
-  auto pResourceDict = pDoc->New<CPDF_Dictionary>();
+  auto pResourceDict = doc->New<CPDF_Dictionary>();
   pResourceDict->SetFor("ExtGState", pExtGStateDict);
   return pResourceDict;
 }
@@ -1674,8 +1674,8 @@ FPDFAnnot_SetAP(FPDF_ANNOTATION annot,
 
   CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
 
-  CPDF_Document* pDoc = pAnnotContext->GetPage()->GetDocument();
-  if (!pDoc) {
+  CPDF_Document* doc = pAnnotContext->GetPage()->GetDocument();
+  if (!doc) {
     return false;
   }
 
@@ -1689,19 +1689,19 @@ FPDFAnnot_SetAP(FPDF_ANNOTATION annot,
   // color.
   if (pAnnotDict->KeyExist("CA") && pAnnotDict->GetFloatFor("CA") < 1.0f) {
     stream_dict->SetFor("Resources", SetExtGStateInResourceDict(
-                                         pDoc, pAnnotDict.Get(), "Normal"));
+                                         doc, pAnnotDict.Get(), "Normal"));
   }
   // SAFETY: required from caller.
   ByteString new_stream_data = PDF_EncodeText(
       UNSAFE_BUFFERS(WideStringFromFPDFWideString(value).AsStringView()));
-  auto new_stream = pDoc->NewIndirect<CPDF_Stream>(std::move(stream_dict));
+  auto new_stream = doc->NewIndirect<CPDF_Stream>(std::move(stream_dict));
   new_stream->SetData(new_stream_data.unsigned_span());
 
   // Storing reference to indirect object in annotation's AP
   if (!ap_dict) {
     ap_dict = pAnnotDict->SetNewFor<CPDF_Dictionary>(pdfium::annotation::kAP);
   }
-  ap_dict->SetNewFor<CPDF_Reference>(mode_key, pDoc, new_stream->GetObjNum());
+  ap_dict->SetNewFor<CPDF_Reference>(mode_key, doc, new_stream->GetObjNum());
 
   return true;
 }
@@ -2165,7 +2165,7 @@ FPDFAnnot_GetFormFieldExportValue(FPDF_FORMHANDLE hHandle,
   // SAFETY: required from caller.
   return Utf16EncodeMaybeCopyAndReturnLength(
       pWidget->GetExportValue(),
-      UNSAFE_TODO(SpanFromFPDFApiArgs(buffer, buflen)));
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetURI(FPDF_ANNOTATION annot,
@@ -2238,11 +2238,6 @@ FPDFAnnot_AddFileAttachment(FPDF_ANNOTATION annot, FPDF_WIDESTRING name) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
-  if (!annot_dict) {
-    return nullptr;
-  }
-
   // SAFETY: required from caller.
   WideString ws_name = UNSAFE_BUFFERS(WideStringFromFPDFWideString(name));
   if (ws_name.IsEmpty()) {
@@ -2256,7 +2251,8 @@ FPDFAnnot_AddFileAttachment(FPDF_ANNOTATION annot, FPDF_WIDESTRING name) {
   fs_obj->SetNewFor<CPDF_String>("UF", ws_name.AsStringView());
   fs_obj->SetNewFor<CPDF_String>("F", ws_name.AsStringView());
 
-  annot_dict->SetNewFor<CPDF_Reference>("FS", doc, fs_obj->GetObjNum());
+  context->GetMutableAnnotDict()->SetNewFor<CPDF_Reference>(
+      "FS", doc, fs_obj->GetObjNum());
   return FPDFAttachmentFromCPDFObject(fs_obj);
 }
 

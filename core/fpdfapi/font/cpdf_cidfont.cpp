@@ -512,15 +512,15 @@ bool CPDF_CIDFont::Load() {
     LoadSubstFont();
   }
 
-  RetainPtr<const CPDF_Object> pmap =
+  RetainPtr<const CPDF_Object> cmap =
       pCIDFontDict->GetDirectObjectFor("CIDToGIDMap");
-  if (pmap) {
-    RetainPtr<const CPDF_Stream> pMapStream(pmap->AsStream());
-    if (pMapStream) {
-      stream_acc_ = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(pMapStream));
+  if (cmap) {
+    RetainPtr<const CPDF_Stream> cmap_stream(cmap->AsStream());
+    if (cmap_stream) {
+      stream_acc_ = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(cmap_stream));
       stream_acc_->LoadAllDataFiltered();
-    } else if (font_file_ && pmap->IsName() &&
-               pmap->GetString() == "Identity") {
+    } else if (font_file_ && cmap->IsName() &&
+               cmap->GetString() == "Identity") {
       cid_is_gid_ = true;
     }
   }
@@ -721,7 +721,8 @@ int CPDF_CIDFont::GlyphFromCharCode(uint32_t charcode, bool* pVertGlyph) {
       charcode += 31;
       RetainPtr<CFX_Face> face = font_.GetFace();
       bool bMSUnicode = UseTTCharmapUnicode(face);
-      bool bMacRoman = !bMSUnicode && UseTTCharmapMacRoman(face);
+      bool bMacRoman =
+          !bMSUnicode && UseTTCharmap(face, CFX_Face::kMacRomanCmapId);
       FontEncoding base_encoding = FontEncoding::kStandard;
       if (bMSUnicode) {
         base_encoding = FontEncoding::kWinAnsi;

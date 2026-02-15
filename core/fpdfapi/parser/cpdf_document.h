@@ -37,6 +37,7 @@ class CPDF_Document : public Observable,
     virtual bool ContainsExtensionForm() const = 0;
     virtual bool ContainsExtensionFullForm() const = 0;
     virtual bool ContainsExtensionForegroundForm() const = 0;
+    virtual void PagesInserted(int page_index, size_t num_pages) = 0;
   };
 
   class LinkListIface {
@@ -54,10 +55,10 @@ class CPDF_Document : public Observable,
     virtual RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
         RetainPtr<const CPDF_Stream> font_stream) = 0;
     virtual void MaybePurgeFontFileStreamAcc(
-        RetainPtr<CPDF_StreamAcc>&& pStreamAcc) = 0;
+        RetainPtr<CPDF_StreamAcc>&& stream_acc) = 0;
     virtual void MaybePurgeImage(uint32_t objnum) = 0;
 
-    void SetDocument(CPDF_Document* pDoc) { doc_ = pDoc; }
+    void SetDocument(CPDF_Document* doc) { doc_ = doc; }
 
    protected:
     CPDF_Document* GetDocument() const { return doc_; }
@@ -71,7 +72,7 @@ class CPDF_Document : public Observable,
     RenderDataIface();
     virtual ~RenderDataIface();
 
-    void SetDocument(CPDF_Document* pDoc) { doc_ = pDoc; }
+    void SetDocument(CPDF_Document* doc) { doc_ = doc; }
 
    protected:
     CPDF_Document* GetDocument() const { return doc_; }
@@ -120,7 +121,7 @@ class CPDF_Document : public Observable,
   // PageDataIface wrappers, try to avoid explicit getter calls.
   RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
       RetainPtr<const CPDF_Stream> font_stream);
-  void MaybePurgeFontFileStreamAcc(RetainPtr<CPDF_StreamAcc>&& pStreamAcc);
+  void MaybePurgeFontFileStreamAcc(RetainPtr<CPDF_StreamAcc>&& stream_acc);
   void MaybePurgeImage(uint32_t objnum);
 
   // Returns a valid pointer, unless it is called during destruction.
@@ -131,8 +132,8 @@ class CPDF_Document : public Observable,
 
   JBig2_DocumentContext* GetOrCreateCodecContext();
   LinkListIface* GetLinksContext() const { return links_context_.get(); }
-  void SetLinksContext(std::unique_ptr<LinkListIface> pContext) {
-    links_context_ = std::move(pContext);
+  void SetLinksContext(std::unique_ptr<LinkListIface> context) {
+    links_context_ = std::move(context);
   }
 
   // Behaves like NewIndirect<CPDF_Stream>(dict), but keeps track of the object

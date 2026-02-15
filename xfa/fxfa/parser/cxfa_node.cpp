@@ -18,8 +18,7 @@
 #include <vector>
 
 #include "core/fxcrt/autorestorer.h"
-#include "core/fxcrt/cfx_read_only_string_stream.h"
-#include "core/fxcrt/cfx_read_only_vector_stream.h"
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
@@ -478,7 +477,7 @@ FXCODEC_IMAGE_TYPE XFA_GetImageType(const WideString& wsType) {
   return FXCODEC_IMAGE_UNKNOWN;
 }
 
-RetainPtr<CFX_DIBitmap> XFA_LoadImageData(CXFA_FFDoc* pDoc,
+RetainPtr<CFX_DIBitmap> XFA_LoadImageData(CXFA_FFDoc* doc,
                                           CXFA_Image* pImage,
                                           bool& bNameImage,
                                           int32_t& iImageXDpi,
@@ -498,24 +497,24 @@ RetainPtr<CFX_DIBitmap> XFA_LoadImageData(CXFA_FFDoc* pDoc,
       DataVector<uint8_t> buffer = XFA_Base64Decode(wsImage.ToUTF8());
       if (!buffer.empty()) {
         pImageFileRead =
-            pdfium::MakeRetain<CFX_ReadOnlyVectorStream>(std::move(buffer));
+            pdfium::MakeRetain<CFX_ReadOnlyDataVectorStream>(std::move(buffer));
       }
     } else {
       pImageFileRead =
-          pdfium::MakeRetain<CFX_ReadOnlyStringStream>(wsImage.ToDefANSI());
+          pdfium::MakeRetain<CFX_ReadOnlyByteStringStream>(wsImage.ToDefANSI());
     }
   } else {
     WideString wsURL = wsHref;
     if (!(wsURL.First(7).EqualsASCII("http://") ||
           wsURL.First(6).EqualsASCII("ftp://"))) {
       RetainPtr<CFX_DIBitmap> pBitmap =
-          pDoc->GetPDFNamedImage(wsURL.AsStringView(), iImageXDpi, iImageYDpi);
+          doc->GetPDFNamedImage(wsURL.AsStringView(), iImageXDpi, iImageYDpi);
       if (pBitmap) {
         bNameImage = true;
         return pBitmap;
       }
     }
-    pImageFileRead = pDoc->OpenLinkedFile(wsURL);
+    pImageFileRead = doc->OpenLinkedFile(wsURL);
   }
   if (!pImageFileRead) {
     return nullptr;
@@ -584,14 +583,14 @@ NodeVector NodesSortedByDocumentIdx(const NodeSet& rgNodeSet) {
   return rgNodeArray;
 }
 
-NodeSetPair* NodeSetPairForNode(CXFA_Node* pNode, NodeSetPairMapMap* pMap) {
+NodeSetPair* NodeSetPairForNode(CXFA_Node* pNode, NodeSetPairMapMap* map) {
   CXFA_Node* pParentNode = pNode->GetParent();
   uint32_t dwNameHash = pNode->GetNameHash();
   if (!pParentNode || !dwNameHash) {
     return nullptr;
   }
 
-  return &((*pMap)[pParentNode][dwNameHash]);
+  return &((*map)[pParentNode][dwNameHash]);
 }
 
 void ReorderDataNodes(const NodeSet& sSet1,
@@ -1029,7 +1028,7 @@ class CXFA_ImageEditData final : public CXFA_FieldLayoutData {
   RetainPtr<CFX_DIBitmap> dibitmap_;
 };
 
-CXFA_Node::CXFA_Node(CXFA_Document* pDoc,
+CXFA_Node::CXFA_Node(CXFA_Document* doc,
                      XFA_PacketType ePacket,
                      Mask<XFA_XDPPACKET> validPackets,
                      XFA_ObjectType oType,
@@ -1037,7 +1036,7 @@ CXFA_Node::CXFA_Node(CXFA_Document* pDoc,
                      pdfium::span<const PropertyData> properties,
                      pdfium::span<const AttributeData> attributes,
                      CJX_Object* js_object)
-    : CXFA_Object(pDoc, oType, eType, js_object),
+    : CXFA_Object(doc, oType, eType, js_object),
       properties_(properties),
       attributes_(attributes),
       valid_packets_(validPackets),
@@ -1972,7 +1971,7 @@ bool CXFA_Node::IsNeedSavingXMLNode() const {
                        GetElementType() == XFA_Element::Xfa);
 }
 
-CXFA_Node* CXFA_Node::GetItemIfExists(int32_t iIndex) {
+CXFA_Node* CXFA_Node::GetItemIfExists(int32_t index) {
   int32_t iCount = 0;
   uint32_t dwNameHash = 0;
   for (CXFA_Node* pNode = GetNextSibling(); pNode;
@@ -1999,7 +1998,7 @@ CXFA_Node* CXFA_Node::GetItemIfExists(int32_t iIndex) {
     }
 
     iCount++;
-    if (iCount > iIndex) {
+    if (iCount > index) {
       return pNode;
     }
   }
@@ -2950,16 +2949,16 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
     return {XFA_EventError::kSuccess, false};
   }
 
-  CXFA_FFDoc* pDoc = pDocView->GetDoc();
-  CFXJSE_Engine* pContext = pDoc->GetXFADoc()->GetScriptContext();
+  CXFA_FFDoc* doc = pDocView->GetDoc();
+  CFXJSE_Engine* context = doc->GetXFADoc()->GetScriptContext();
   CFXJSE_Engine::EventParamScope paramScope(
-      pContext, pEventParam->targeted_ ? this : nullptr, pEventParam);
-  pContext->SetRunAtType(script->GetRunAt());
+      context, pEventParam->targeted_ ? this : nullptr, pEventParam);
+  context->SetRunAtType(script->GetRunAt());
 
   std::vector<cppgc::Persistent<CXFA_Node>> refNodes;
   if (pEventParam->type_ == XFA_EVENT_InitCalculate ||
       pEventParam->type_ == XFA_EVENT_Calculate) {
-    pContext->SetNodesOfRunScript(&refNodes);
+    context->SetNodesOfRunScript(&refNodes);
   }
 
   CFXJSE_Context::ExecutionResult exec_result;
@@ -2967,7 +2966,7 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
     AutoRestorer<uint8_t> restorer(&execute_recursion_depth_);
     ++execute_recursion_depth_;
     exec_result =
-        pContext->RunScript(eScriptType, wsExpression.AsStringView(), this);
+        context->RunScript(eScriptType, wsExpression.AsStringView(), this);
   }
 
   XFA_EventError iRet = XFA_EventError::kError;
@@ -2975,10 +2974,10 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
     iRet = XFA_EventError::kSuccess;
     if (pEventParam->type_ == XFA_EVENT_Calculate ||
         pEventParam->type_ == XFA_EVENT_InitCalculate) {
-      if (!exec_result.value->IsUndefined(pContext->GetIsolate())) {
-        if (!exec_result.value->IsNull(pContext->GetIsolate())) {
+      if (!exec_result.value->IsUndefined(context->GetIsolate())) {
+        if (!exec_result.value->IsNull(context->GetIsolate())) {
           pEventParam->result_ =
-              exec_result.value->ToWideString(pContext->GetIsolate());
+              exec_result.value->ToWideString(context->GetIsolate());
         }
 
         iRet = XFA_EventError::kSuccess;
@@ -2998,17 +2997,17 @@ CXFA_Node::BoolScriptResult CXFA_Node::ExecuteBoolScript(
         }
 
         CJX_Object::CalcData* pGlobalData =
-            pRefNode->JSObject()->GetOrCreateCalcData(pDoc->GetHeap());
+            pRefNode->JSObject()->GetOrCreateCalcData(doc->GetHeap());
         if (!pdfium::Contains(pGlobalData->globals_, this)) {
           pGlobalData->globals_.push_back(this);
         }
       }
     }
   }
-  pContext->SetNodesOfRunScript(nullptr);
+  context->SetNodesOfRunScript(nullptr);
 
-  return {iRet, exec_result.value->IsBoolean(pContext->GetIsolate()) &&
-                    exec_result.value->ToBoolean(pContext->GetIsolate())};
+  return {iRet, exec_result.value->IsBoolean(context->GetIsolate()) &&
+                    exec_result.value->ToBoolean(context->GetIsolate())};
 }
 
 std::pair<XFA_FFWidgetType, CXFA_Ui*>

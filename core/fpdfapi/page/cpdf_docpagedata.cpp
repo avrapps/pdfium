@@ -149,7 +149,7 @@ void ProcessNonbCJK(RetainPtr<CPDF_Dictionary> pBaseDict,
   pBaseDict->SetFor("Widths", pWidths);
 }
 
-RetainPtr<CPDF_Dictionary> CalculateFontDesc(CPDF_Document* pDoc,
+RetainPtr<CPDF_Dictionary> CalculateFontDesc(CPDF_Document* doc,
                                              ByteString basefont,
                                              int flags,
                                              int italicangle,
@@ -157,7 +157,7 @@ RetainPtr<CPDF_Dictionary> CalculateFontDesc(CPDF_Document* pDoc,
                                              int descend,
                                              RetainPtr<CPDF_Array> bbox,
                                              int32_t stemV) {
-  auto font_desc = pDoc->New<CPDF_Dictionary>();
+  auto font_desc = doc->New<CPDF_Dictionary>();
   font_desc->SetNewFor<CPDF_Name>("Type", "FontDescriptor");
   font_desc->SetNewFor<CPDF_Name>("FontName", basefont);
   font_desc->SetNewFor<CPDF_Number>("Flags", flags);
@@ -172,8 +172,8 @@ RetainPtr<CPDF_Dictionary> CalculateFontDesc(CPDF_Document* pDoc,
 }  // namespace
 
 // static
-CPDF_DocPageData* CPDF_DocPageData::FromDocument(const CPDF_Document* pDoc) {
-  return static_cast<CPDF_DocPageData*>(pDoc->GetPageData());
+CPDF_DocPageData* CPDF_DocPageData::FromDocument(const CPDF_Document* doc) {
+  return static_cast<CPDF_DocPageData*>(doc->GetPageData());
 }
 
 CPDF_DocPageData::CPDF_DocPageData() = default;
@@ -505,17 +505,17 @@ RetainPtr<CPDF_StreamAcc> CPDF_DocPageData::GetFontFileStreamAcc(
 }
 
 void CPDF_DocPageData::MaybePurgeFontFileStreamAcc(
-    RetainPtr<CPDF_StreamAcc>&& pStreamAcc) {
-  if (!pStreamAcc) {
+    RetainPtr<CPDF_StreamAcc>&& stream_acc) {
+  if (!stream_acc) {
     return;
   }
 
-  RetainPtr<const CPDF_Stream> font_stream = pStreamAcc->GetStream();
+  RetainPtr<const CPDF_Stream> font_stream = stream_acc->GetStream();
   if (!font_stream) {
     return;
   }
 
-  pStreamAcc.Reset();  // Drop moved caller's reference.
+  stream_acc.Reset();  // Drop moved caller's reference.
   auto it = font_file_map_.find(font_stream);
   if (it != font_file_map_.end() && it->second->HasOneRef()) {
     font_file_map_.erase(it);

@@ -34,6 +34,7 @@
 #include "core/fxge/cfx_fontmapper.h"
 #include "core/fxge/cfx_substfont.h"
 #include "core/fxge/fx_font.h"
+#include "core/fxge/fx_fontencoding.h"
 
 namespace {
 
@@ -279,7 +280,7 @@ int CPDF_Font::GetStringWidth(ByteStringView pString) {
 }
 
 // static
-RetainPtr<CPDF_Font> CPDF_Font::GetStockFont(CPDF_Document* pDoc,
+RetainPtr<CPDF_Font> CPDF_Font::GetStockFont(CPDF_Document* doc,
                                              ByteStringView name) {
   ByteString fontname(name);
   std::optional<CFX_FontMapper::StandardFont> font_id =
@@ -289,24 +290,24 @@ RetainPtr<CPDF_Font> CPDF_Font::GetStockFont(CPDF_Document* pDoc,
   }
 
   auto* font_globals = CPDF_FontGlobals::GetInstance();
-  RetainPtr<CPDF_Font> font = font_globals->Find(pDoc, font_id.value());
+  RetainPtr<CPDF_Font> font = font_globals->Find(doc, font_id.value());
   if (font) {
     return font;
   }
 
-  auto dict = pDoc->New<CPDF_Dictionary>();
+  auto dict = doc->New<CPDF_Dictionary>();
   dict->SetNewFor<CPDF_Name>("Type", "Font");
   dict->SetNewFor<CPDF_Name>("Subtype", "Type1");
   dict->SetNewFor<CPDF_Name>("BaseFont", fontname);
   dict->SetNewFor<CPDF_Name>("Encoding",
                              pdfium::font_encodings::kWinAnsiEncoding);
   font = CPDF_Font::Create(nullptr, std::move(dict), nullptr);
-  font_globals->Set(pDoc, font_id.value(), font);
+  font_globals->Set(doc, font_id.value(), font);
   return font;
 }
 
 // static
-RetainPtr<CPDF_Font> CPDF_Font::Create(CPDF_Document* pDoc,
+RetainPtr<CPDF_Font> CPDF_Font::Create(CPDF_Document* doc,
                                        RetainPtr<CPDF_Dictionary> font_dict,
                                        FormFactoryIface* pFactory) {
   ByteString type = font_dict->GetByteStringFor("Subtype");
@@ -318,21 +319,21 @@ RetainPtr<CPDF_Font> CPDF_Font::Create(CPDF_Document* pDoc,
         RetainPtr<const CPDF_Dictionary> font_desc =
             font_dict->GetDictFor("FontDescriptor");
         if (!font_desc || !font_desc->KeyExist("FontFile2")) {
-          font = pdfium::MakeRetain<CPDF_CIDFont>(pDoc, std::move(font_dict));
+          font = pdfium::MakeRetain<CPDF_CIDFont>(doc, std::move(font_dict));
         }
         break;
       }
     }
     if (!font) {
-      font = pdfium::MakeRetain<CPDF_TrueTypeFont>(pDoc, std::move(font_dict));
+      font = pdfium::MakeRetain<CPDF_TrueTypeFont>(doc, std::move(font_dict));
     }
   } else if (type == "Type3") {
-    font = pdfium::MakeRetain<CPDF_Type3Font>(pDoc, std::move(font_dict),
-                                              pFactory);
+    font =
+        pdfium::MakeRetain<CPDF_Type3Font>(doc, std::move(font_dict), pFactory);
   } else if (type == "Type0") {
-    font = pdfium::MakeRetain<CPDF_CIDFont>(pDoc, std::move(font_dict));
+    font = pdfium::MakeRetain<CPDF_CIDFont>(doc, std::move(font_dict));
   } else {
-    font = pdfium::MakeRetain<CPDF_Type1Font>(pDoc, std::move(font_dict));
+    font = pdfium::MakeRetain<CPDF_Type1Font>(doc, std::move(font_dict));
   }
   if (!font->Load()) {
     return nullptr;
@@ -429,22 +430,37 @@ CFX_Font* CPDF_Font::GetFontFallback(int position) {
 }
 
 bool CPDF_Font::UseTTCharmapUnicode(const RetainPtr<CFX_Face>& face) {
+  size_t charmap_unicode_index = 0;
+  bool charmap_unicode_found = false;
+  bool charmap_mssymbol_found = false;
   for (size_t i = 0; i < face->GetCharMapCount(); i++) {
-    if (face->GetCharMapEncodingByIndex(i) == fxge::FontEncoding::kUnicode) {
+    const CFX_Face::CharMapId charmap_id = face->GetCharMapIdByIndex(i);
+    if (charmap_id == CFX_Face::kWindowsUnicodeCmapId) {
       face->SetCharMapByIndex(i);
       return true;
     }
+    if (charmap_id == CFX_Face::kWindowsSymbolCmapId) {
+      charmap_mssymbol_found = true;
+      continue;
+    }
+    const fxge::FontEncoding encoding = face->GetCharMapEncodingByIndex(i);
+    if (!charmap_unicode_found && encoding == fxge::FontEncoding::kUnicode) {
+      charmap_unicode_found = true;
+      charmap_unicode_index = i;
+    }
+  }
+  if (charmap_unicode_found && !charmap_mssymbol_found) {
+    face->SetCharMapByIndex(charmap_unicode_index);
+    return true;
   }
   return false;
 }
 
 // static
 bool CPDF_Font::UseTTCharmap(const RetainPtr<CFX_Face>& face,
-                             int platform_id,
-                             int encoding_id) {
+                             const CFX_Face::CharMapId& cmap_id) {
   for (size_t i = 0; i < face->GetCharMapCount(); i++) {
-    if (face->GetCharMapPlatformIdByIndex(i) == platform_id &&
-        face->GetCharMapEncodingIdByIndex(i) == encoding_id) {
+    if (face->GetCharMapIdByIndex(i) == cmap_id) {
       face->SetCharMapByIndex(i);
       return true;
     }

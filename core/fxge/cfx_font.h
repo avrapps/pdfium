@@ -11,9 +11,11 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "build/build_config.h"
 #include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_codepage_forward.h"
 #include "core/fxcrt/fx_coordinates.h"
@@ -22,18 +24,17 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr_exclusion.h"
 #include "core/fxge/cfx_face.h"
-#include "core/fxge/freetype/fx_freetype.h"
-
-#if defined(PDF_USE_SKIA)
 #include "core/fxge/fx_font.h"
-#endif
 
 class CFX_GlyphBitmap;
 class CFX_GlyphCache;
 class CFX_Path;
 class CFX_SubstFont;
-class IFX_SeekableReadStream;
 struct CFX_TextRenderOptions;
+
+#if defined(PDF_USE_SKIA)
+class SkTypeface;
+#endif
 
 class CFX_Font {
  public:
@@ -73,15 +74,18 @@ class CFX_Font {
                     bool force_vertical,
                     uint64_t object_tag);
   RetainPtr<CFX_Face> GetFace() const { return face_; }
-  FXFT_FaceRec* GetFaceRec() const { return face_ ? face_->GetRec() : nullptr; }
+  bool HasFace() const { return !!face_; }
+  bool HasFaceRec() const { return face_ && face_->HasFaceRec(); }
   CFX_SubstFont* GetSubstFont() const { return subst_font_.get(); }
   int GetSubstFontItalicAngle() const;
+  std::vector<CharCodeAndIndex> GetCharCodesAndIndices(char32_t max_char);
 
 #if defined(PDF_ENABLE_XFA)
-  bool LoadFile(RetainPtr<IFX_SeekableReadStream> pFile, int nFaceIndex);
+  bool LoadFromSpanStream(const RetainPtr<CFX_ReadOnlySpanStream>& stream,
+                          int face_index);
 
 #if !BUILDFLAG(IS_WIN)
-  void SetFace(RetainPtr<CFX_Face> face);
+  void SetFaceFromFont(const CFX_Font& that);
   void SetFontSpan(pdfium::span<uint8_t> pSpan) { font_data_ = pSpan; }
   void SetSubstFont(std::unique_ptr<CFX_SubstFont> subst);
 #endif  // !BUILDFLAG(IS_WIN)
@@ -92,9 +96,11 @@ class CFX_Font {
       bool bFontStyle,
       const CFX_Matrix& matrix,
       int dest_width,
-      int anti_alias,
+      FontAntiAliasingMode anti_alias,
       CFX_TextRenderOptions* text_options) const;
   const CFX_Path* LoadGlyphPath(uint32_t glyph_index, int dest_width) const;
+
+  bool HasAnyGlyphs() const;
   int GetGlyphWidth(uint32_t glyph_index) const;
   int GetGlyphWidth(uint32_t glyph_index, int dest_width, int weight) const;
   int GetAscent() const;
@@ -124,7 +130,7 @@ class CFX_Font {
   int GetGlyphWidthImpl(uint32_t glyph_index, int dest_width, int weight) const;
 
 #if defined(PDF_USE_SKIA)
-  CFX_TypeFace* GetDeviceCache() const;
+  SkTypeface* GetDeviceCache() const;
   bool IsSubstFontBold() const;
 #endif
 
@@ -140,12 +146,6 @@ class CFX_Font {
   void ReleasePlatformResource();
 #endif
   ByteString GetFamilyNameOrUntitled() const;
-
-#if defined(PDF_ENABLE_XFA)
-  // |owned_file_| must outlive |owned_stream_rec_|.
-  RetainPtr<IFX_SeekableReadStream> owned_file_;
-  std::unique_ptr<FXFT_StreamRec> owned_stream_rec_;  // Must outlive |face_|.
-#endif
 
   mutable RetainPtr<CFX_Face> face_;
   mutable RetainPtr<CFX_GlyphCache> glyph_cache_;

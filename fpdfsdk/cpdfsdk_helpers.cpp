@@ -22,7 +22,6 @@
 #include "core/fpdfdoc/cpdf_metadata.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/compiler_specific.h"
-#include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span_util.h"
@@ -415,8 +414,8 @@ void SetPDFUnsupportInfo(UNSUPPORT_INFO* unsp_info) {
   g_unsupport_info = unsp_info;
 }
 
-void ReportUnsupportedFeatures(const CPDF_Document* pDoc) {
-  const CPDF_Dictionary* pRootDict = pDoc->GetRoot();
+void ReportUnsupportedFeatures(const CPDF_Document* doc) {
+  const CPDF_Dictionary* pRootDict = doc->GetRoot();
   if (!pRootDict) {
     return;
   }
@@ -458,8 +457,8 @@ void ReportUnsupportedFeatures(const CPDF_Document* pDoc) {
   }
 }
 
-void ReportUnsupportedXFA(const CPDF_Document* pDoc) {
-  if (!pDoc->GetExtension() && DocHasXFA(pDoc)) {
+void ReportUnsupportedXFA(const CPDF_Document* doc) {
+  if (!doc->GetExtension() && DocHasXFA(doc)) {
     RaiseUnsupportedError(FPDF_UNSP_DOC_XFAFORM);
   }
 }
@@ -556,23 +555,18 @@ std::vector<uint32_t> ParsePageRangeString(const ByteString& bsPageRange,
   for (const auto& entry : fxcrt::Split(bsStrippedPageRange, ',')) {
     std::vector<ByteString> args = fxcrt::Split(entry, '-');
     if (args.size() == 1) {
-      // SAFETY: ByteStrings are always NUL-terminated.
-      uint32_t page_num =
-          pdfium::checked_cast<uint32_t>(UNSAFE_BUFFERS(atoi(args[0].c_str())));
+      uint32_t page_num = pdfium::checked_cast<uint32_t>(atoi(args[0].c_str()));
       if (page_num == 0 || page_num > nCount) {
         return std::vector<uint32_t>();
       }
       results.push_back(page_num - 1);
     } else if (args.size() == 2) {
-      // SAFETY: ByteStrings are always NUL-terminated.
       uint32_t first_num =
-          pdfium::checked_cast<uint32_t>(UNSAFE_BUFFERS(atoi(args[0].c_str())));
+          pdfium::checked_cast<uint32_t>(atoi(args[0].c_str()));
       if (first_num == 0) {
         return std::vector<uint32_t>();
       }
-      // SAFETY: ByteStrings are always NUL-terminated.
-      uint32_t last_num =
-          pdfium::checked_cast<uint32_t>(UNSAFE_BUFFERS(atoi(args[1].c_str())));
+      uint32_t last_num = pdfium::checked_cast<uint32_t>(atoi(args[1].c_str()));
       if (last_num == 0 || first_num > last_num || last_num > nCount) {
         return std::vector<uint32_t>();
       }

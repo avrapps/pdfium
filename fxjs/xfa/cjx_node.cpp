@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "core/fxcrt/cfx_memorystream.h"
-#include "core/fxcrt/cfx_read_only_string_stream.h"
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/xml/cfx_xmldocument.h"
@@ -195,13 +195,13 @@ CJS_Result CJX_Node::isPropertySpecified(
   }
 
   bool bParent = params.size() < 2 || runtime->ToBoolean(params[1]);
-  int32_t iIndex = params.size() == 3 ? runtime->ToInt32(params[2]) : 0;
-  bool bHas = !!GetOrCreateProperty<CXFA_Node>(iIndex, eType);
+  int32_t index = params.size() == 3 ? runtime->ToInt32(params[2]) : 0;
+  bool bHas = !!GetOrCreateProperty<CXFA_Node>(index, eType);
   if (!bHas && bParent && GetXFANode()->GetParent()) {
     // Also check on the parent.
     auto* jsnode = GetXFANode()->GetParent()->JSObject();
     bHas = jsnode->HasAttribute(attr.value().attribute) ||
-           !!jsnode->GetOrCreateProperty<CXFA_Node>(iIndex, eType);
+           !!jsnode->GetOrCreateProperty<CXFA_Node>(index, eType);
   }
   return CJS_Result::Success(runtime->NewBoolean(bHas));
 }
@@ -228,7 +228,7 @@ CJS_Result CJX_Node::loadXML(CFXJSE_Engine* runtime,
   }
 
   auto stream =
-      pdfium::MakeRetain<CFX_ReadOnlyStringStream>(std::move(expression));
+      pdfium::MakeRetain<CFX_ReadOnlyByteStringStream>(std::move(expression));
 
   CFX_XMLParser parser(stream);
   std::unique_ptr<CFX_XMLDocument> xml_doc = parser.Parse();

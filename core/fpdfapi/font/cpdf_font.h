@@ -62,10 +62,10 @@ class CPDF_Font : public Retainable, public Observable {
   static constexpr uint32_t kInvalidCharCode = static_cast<uint32_t>(-1);
 
   // |pFactory| only required for Type3 fonts.
-  static RetainPtr<CPDF_Font> Create(CPDF_Document* pDoc,
+  static RetainPtr<CPDF_Font> Create(CPDF_Document* doc,
                                      RetainPtr<CPDF_Dictionary> font_dict,
                                      FormFactoryIface* pFactory);
-  static RetainPtr<CPDF_Font> GetStockFont(CPDF_Document* pDoc,
+  static RetainPtr<CPDF_Font> GetStockFont(CPDF_Document* doc,
                                            ByteStringView fontname);
 
   virtual bool IsType1Font() const;
@@ -143,16 +143,8 @@ class CPDF_Font : public Retainable, public Observable {
   // Tries to select any Unicode character map.
   static bool UseTTCharmapUnicode(const RetainPtr<CFX_Face>& face);
 
-  // Commonly used wrappers for UseTTCharmap().
-  static bool UseTTCharmapMSSymbol(const RetainPtr<CFX_Face>& face) {
-    return UseTTCharmap(face, 3, 0);
-  }
-  static bool UseTTCharmapMacRoman(const RetainPtr<CFX_Face>& face) {
-    return UseTTCharmap(face, 1, 0);
-  }
   static bool UseTTCharmap(const RetainPtr<CFX_Face>& face,
-                           int platform_id,
-                           int encoding_id);
+                           const CFX_Face::CharMapId& cmap_id);
 
   static const char* GetAdobeCharName(FontEncoding base_encoding,
                                       const std::vector<ByteString>& charnames,

@@ -260,8 +260,8 @@ void CFXJSE_Engine::GlobalPropertySetter(v8::Isolate* pIsolate,
                                          ByteStringView szPropName,
                                          v8::Local<v8::Value> pValue) {
   CXFA_Object* pOriginalNode = ToObject(pIsolate, pObject);
-  CXFA_Document* pDoc = pOriginalNode->GetDocument();
-  CFXJSE_Engine* pScriptContext = pDoc->GetScriptContext();
+  CXFA_Document* doc = pOriginalNode->GetDocument();
+  CFXJSE_Engine* pScriptContext = doc->GetScriptContext();
   CXFA_Node* pRefNode = ToNode(pScriptContext->GetThisObject());
   if (pOriginalNode->IsThisProxy()) {
     pRefNode = ToNode(pScriptContext->GetVariablesThis(pOriginalNode));
@@ -281,7 +281,7 @@ void CFXJSE_Engine::GlobalPropertySetter(v8::Isolate* pIsolate,
                                               pObject, szPropName);
     return;
   }
-  CXFA_FFNotify* pNotify = pDoc->GetNotify();
+  CXFA_FFNotify* pNotify = doc->GetNotify();
   if (!pNotify) {
     return;
   }
@@ -292,7 +292,7 @@ void CFXJSE_Engine::GlobalPropertySetter(v8::Isolate* pIsolate,
     return;
   }
 
-  IJS_Runtime::ScopedEventContext pContext(pCJSRuntime);
+  IJS_Runtime::ScopedEventContext context(pCJSRuntime);
   pCJSRuntime->SetValueByNameInGlobalObject(szPropName, pValue);
 }
 
@@ -302,8 +302,8 @@ v8::Local<v8::Value> CFXJSE_Engine::GlobalPropertyGetter(
     v8::Local<v8::Object> pObject,
     ByteStringView szPropName) {
   CXFA_Object* pOriginalObject = ToObject(pIsolate, pObject);
-  CXFA_Document* pDoc = pOriginalObject->GetDocument();
-  CFXJSE_Engine* pScriptContext = pDoc->GetScriptContext();
+  CXFA_Document* doc = pOriginalObject->GetDocument();
+  CFXJSE_Engine* pScriptContext = doc->GetScriptContext();
   WideString wsPropName = WideString::FromUTF8(szPropName);
 
   // Assume failure.
@@ -352,7 +352,7 @@ v8::Local<v8::Value> CFXJSE_Engine::GlobalPropertyGetter(
     return pValue;
   }
 
-  CXFA_FFNotify* pNotify = pDoc->GetNotify();
+  CXFA_FFNotify* pNotify = doc->GetNotify();
   if (!pNotify) {
     return pValue;
   }
@@ -363,7 +363,7 @@ v8::Local<v8::Value> CFXJSE_Engine::GlobalPropertyGetter(
     return pValue;
   }
 
-  IJS_Runtime::ScopedEventContext pContext(pCJSRuntime);
+  IJS_Runtime::ScopedEventContext context(pCJSRuntime);
   v8::Local<v8::Value> temp_value =
       pCJSRuntime->GetValueByNameFromGlobalObject(szPropName);
 
@@ -460,7 +460,7 @@ v8::Local<v8::Value> CFXJSE_Engine::NormalPropertyGetter(
     return pReturnValue;
   }
 
-  IJS_Runtime::ScopedEventContext pContext(pCJSRuntime);
+  IJS_Runtime::ScopedEventContext context(pCJSRuntime);
   v8::Local<v8::Value> temp_local =
       pCJSRuntime->GetValueByNameFromGlobalObject(szPropName);
 
@@ -712,9 +712,9 @@ bool CFXJSE_Engine::UpdateVariableValue(CXFA_Script* pScriptNode,
   return true;
 }
 
-void CFXJSE_Engine::RemoveBuiltInObjs(CFXJSE_Context* pContext) {
+void CFXJSE_Engine::RemoveBuiltInObjs(CFXJSE_Context* context) {
   CFXJSE_ScopeUtil_IsolateHandleContext scope(GetJseContext());
-  v8::Local<v8::Object> pObject = pContext->GetGlobalObject();
+  v8::Local<v8::Object> pObject = context->GetGlobalObject();
   fxv8::ReentrantDeleteObjectPropertyHelper(GetIsolate(), pObject, "Number");
   fxv8::ReentrantDeleteObjectPropertyHelper(GetIsolate(), pObject, "Date");
 }

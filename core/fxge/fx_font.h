@@ -49,6 +49,17 @@ enum FontWeight {
 
 }  // namespace pdfium
 
+struct CharCodeAndIndex {
+  uint32_t char_code;
+  uint32_t glyph_index;
+};
+
+enum class FontAntiAliasingMode : int {
+  kNormal,
+  kMono,
+  kLcd,
+};
+
 /* Other font flags */
 #define FXFONT_USEEXTERNATTR 0x80000
 
@@ -57,18 +68,13 @@ constexpr uint16_t kNamePlatformAppleUnicode = 0;
 constexpr uint16_t kNamePlatformMac = 1;
 constexpr uint16_t kNamePlatformWindows = 3;
 
-#if defined(PDF_USE_SKIA)
-class SkTypeface;
-
-using CFX_TypeFace = SkTypeface;
-#endif
-
 class TextGlyphPos;
 
-FX_RECT GetGlyphsBBox(const std::vector<TextGlyphPos>& glyphs, int anti_alias);
+FX_RECT GetGlyphsBBox(const std::vector<TextGlyphPos>& glyphs,
+                      bool anti_alias_is_lcd);
 
 ByteString GetNameFromTT(pdfium::span<const uint8_t> name_table, uint32_t name);
-size_t GetTTCIndex(pdfium::span<const uint8_t> font_data, size_t font_offset);
+uint32_t GetTTCIndex(pdfium::span<const uint8_t> font_data, size_t font_offset);
 
 inline bool FontStyleIsForceBold(uint32_t style) {
   return !!(style & pdfium::kFontStyleForceBold);

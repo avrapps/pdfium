@@ -1,15 +1,16 @@
 Name: OpenJPEG
-URL: http://www.openjpeg.org/
-Version: 2.5.3 (also update in opj_config*)
-Revision: 210a8a5690d0da66f02d49420d7176a21ef409dc
+URL: https://github.com/uclouvain/openjpeg
+Version: 2.5.4
+Revision: 6c4a29b00211eb0430fa0e5e890f1ce5c80f409f
+Update Mechanism: Manual
 Security Critical: yes
 Shipped: yes
-License: 2-clause BSD
+License: BSD-2-Clause
 License File: LICENSE
-CPEPrefix: cpe:/a:uclouvain:openjpeg:2.5.3
+CPEPrefix: cpe:/a:uclouvain:openjpeg:2.5.4
 
 Description:
-JPEG 2000 library.
+JPEG 2000 library. See http://www.openjpeg.org/
 
 Local Modifications:
 
@@ -32,3 +33,8 @@ Local Modifications:
 0039-opj_mqc_renorme.patch: Remove unused opj_mqc_renorme().
 0041-remove_opj_clock.patch: Remove unused opj_clock.h include.
 0046-func-ptr-mixup.patch: Prevent mixing up function pointer types.
+0047-opj_j2k_read_sod.patch: Fix out of bounds read.
+
+Note:
+
+Also update the version numbers in opj_config*.

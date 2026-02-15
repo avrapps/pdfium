@@ -51,9 +51,9 @@ class CPDF_Action {
   const CPDF_Dictionary* GetDict() const { return dict_.Get(); }
 
   Type GetType() const;
-  CPDF_Dest GetDest(CPDF_Document* pDoc) const;
+  CPDF_Dest GetDest(CPDF_Document* doc) const;
   WideString GetFilePath() const;
-  ByteString GetURI(const CPDF_Document* pDoc) const;
+  ByteString GetURI(const CPDF_Document* doc) const;
   bool GetHideStatus() const;
   ByteString GetNamedAction() const;
   uint32_t GetFlags() const;
@@ -68,7 +68,7 @@ class CPDF_Action {
   WideString GetJavaScript() const;
 
   size_t GetSubActionsCount() const;
-  CPDF_Action GetSubAction(size_t iIndex) const;
+  CPDF_Action GetSubAction(size_t index) const;
 
  private:
   RetainPtr<const CPDF_Object> GetJavaScriptObject() const;

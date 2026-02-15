@@ -12,15 +12,17 @@
 #include <iterator>
 #include <utility>
 
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/adapters.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_folder.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/mapped_data_bytes.h"
 #include "core/fxge/android/cfpf_skiafont.h"
 #include "core/fxge/android/cfpf_skiapathfont.h"
-#include "core/fxge/freetype/fx_freetype.h"
+#include "core/fxge/cfx_fontmgr.h"
 #include "core/fxge/fx_font.h"
 
 namespace {
@@ -216,24 +218,10 @@ uint32_t SkiaGetFaceCharset(uint32_t code_range) {
 
 }  // namespace
 
-CFPF_SkiaFontMgr::CFPF_SkiaFontMgr() = default;
+CFPF_SkiaFontMgr::CFPF_SkiaFontMgr(CFX_FontMgr* font_mgr)
+    : font_mgr_(font_mgr) {}
 
 CFPF_SkiaFontMgr::~CFPF_SkiaFontMgr() = default;
-
-bool CFPF_SkiaFontMgr::InitFTLibrary() {
-  if (ft_library_) {
-    return true;
-  }
-
-  FXFT_LibraryRec* library = nullptr;
-  FT_Init_FreeType(&library);
-  if (!library) {
-    return false;
-  }
-
-  ft_library_.reset(library);
-  return true;
-}
 
 void CFPF_SkiaFontMgr::LoadFonts(const char** user_paths) {
   if (loaded_fonts_) {
@@ -343,27 +331,17 @@ CFPF_SkiaFont* CFPF_SkiaFontMgr::CreateFont(ByteStringView family_name,
   return ret;
 }
 
-RetainPtr<CFX_Face> CFPF_SkiaFontMgr::GetFontFace(ByteStringView path,
+RetainPtr<CFX_Face> CFPF_SkiaFontMgr::GetFontFace(const ByteString& path,
                                                   int32_t face_index) {
-  if (path.IsEmpty()) {
+  auto mapped_bytes = fxcrt::MappedDataBytes::Create(path);
+  if (!mapped_bytes) {
     return nullptr;
   }
-
-  if (face_index < 0) {
-    return nullptr;
-  }
-
-  FT_Open_Args args;
-  args.flags = FT_OPEN_PATHNAME;
-  args.pathname = const_cast<FT_String*>(path.unterminated_c_str());
-  RetainPtr<CFX_Face> face =
-      CFX_Face::Open(ft_library_.get(), &args, face_index);
-  if (!face) {
-    return nullptr;
-  }
-
-  face->SetPixelSize(0, 64);
-  return face;
+  return CFX_Face::NewFromSpanStream(
+      font_mgr_,
+      pdfium::MakeRetain<CFX_ReadOnlyMappedDataBytesStream>(
+          std::move(mapped_bytes)),
+      face_index);
 }
 
 void CFPF_SkiaFontMgr::ScanPath(const ByteString& path) {
@@ -398,47 +376,24 @@ void CFPF_SkiaFontMgr::ScanPath(const ByteString& path) {
 }
 
 void CFPF_SkiaFontMgr::ScanFile(const ByteString& file) {
-  RetainPtr<CFX_Face> face = GetFontFace(file.AsStringView(), 0);
+  constexpr int kFaceIndex = 0;
+  RetainPtr<CFX_Face> face = GetFontFace(file, kFaceIndex);
   if (!face) {
     return;
   }
-
-  font_faces_.push_back(ReportFace(face, file));
+  font_faces_.push_back(ReportFace(face, file, kFaceIndex));
 }
 
 std::unique_ptr<CFPF_SkiaPathFont> CFPF_SkiaFontMgr::ReportFace(
     RetainPtr<CFX_Face> face,
-    const ByteString& file) {
-  uint32_t style = 0;
-  if (face->IsBold()) {
-    style |= pdfium::kFontStyleForceBold;
-  }
-  if (face->IsItalic()) {
-    style |= pdfium::kFontStyleItalic;
-  }
-  if (face->IsFixedWidth()) {
-    style |= pdfium::kFontStyleFixedPitch;
-  }
-
+    const ByteString& file,
+    int face_index) {
   uint32_t charset = SKIACHARSET_Default;
-  std::optional<std::array<uint32_t, 2>> code_page_range =
-      face->GetOs2CodePageRange();
-  if (code_page_range.has_value()) {
-    if (code_page_range.value()[0] & (1 << 31)) {
-      style |= pdfium::kFontStyleSymbolic;
-    }
-    charset |= SkiaGetFaceCharset(code_page_range.value()[0]);
+  std::optional<std::array<uint32_t, 2>> cp_range = face->GetOs2CodePageRange();
+  if (cp_range.has_value()) {
+    charset |= SkiaGetFaceCharset(cp_range.value()[0]);
   }
-
-  std::optional<std::array<uint8_t, 2>> panose = face->GetOs2Panose();
-  if (panose.has_value() && panose.value()[0] == 2) {
-    uint8_t serif = panose.value()[1];
-    if ((serif > 1 && serif < 10) || serif > 13) {
-      style |= pdfium::kFontStyleSerif;
-    }
-  }
-
-  return std::make_unique<CFPF_SkiaPathFont>(file, face->GetFamilyName(), style,
-                                             face->GetRec()->face_index,
+  return std::make_unique<CFPF_SkiaPathFont>(file, face->GetFamilyName(),
+                                             face->GetFontStyle(), face_index,
                                              charset, face->GetGlyphCount());
 }

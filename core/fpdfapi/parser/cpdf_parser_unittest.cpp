@@ -16,9 +16,9 @@
 #include "core/fpdfapi/parser/cpdf_linearized_header.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_syntax_parser.h"
+#include "core/fxcrt/cfx_fileaccess_stream.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/fx_extension.h"
-#include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -106,8 +106,8 @@ class CPDF_TestParser final : public CPDF_Parser {
 
   // Setup reading from a file and initial states.
   bool InitTestFromFile(const char* path) {
-    RetainPtr<IFX_SeekableReadStream> pFileAccess =
-        IFX_SeekableReadStream::CreateFromFilename(path);
+    RetainPtr<CFX_FileAccessStream> pFileAccess =
+        CFX_FileAccessStream::CreateFromFilename(path);
     if (!pFileAccess) {
       return false;
     }
@@ -349,8 +349,8 @@ TEST(ParserTest, ParseStartXRefWithHeaderOffset) {
   std::string test_file =
       PathService::GetTestFilePath("annotation_stamp_with_ap.pdf");
   ASSERT_FALSE(test_file.empty());
-  RetainPtr<IFX_SeekableReadStream> pFileAccess =
-      IFX_SeekableReadStream::CreateFromFilename(test_file.c_str());
+  RetainPtr<CFX_FileAccessStream> pFileAccess =
+      CFX_FileAccessStream::CreateFromFilename(test_file.c_str());
   ASSERT_TRUE(pFileAccess);
 
   std::vector<unsigned char> data(pFileAccess->GetSize() + kTestHeaderOffset);
@@ -370,8 +370,8 @@ TEST(ParserTest, ParseLinearizedWithHeaderOffset) {
   static constexpr FX_FILESIZE kTestHeaderOffset = 765;
   std::string test_file = PathService::GetTestFilePath("linearized.pdf");
   ASSERT_FALSE(test_file.empty());
-  RetainPtr<IFX_SeekableReadStream> pFileAccess =
-      IFX_SeekableReadStream::CreateFromFilename(test_file.c_str());
+  RetainPtr<CFX_FileAccessStream> pFileAccess =
+      CFX_FileAccessStream::CreateFromFilename(test_file.c_str());
   ASSERT_TRUE(pFileAccess);
 
   std::vector<unsigned char> data(pFileAccess->GetSize() + kTestHeaderOffset);
@@ -426,24 +426,21 @@ class ParserXRefTest : public testing::Test {
   CPDF_TestParser parser_;
 };
 
-TEST_F(ParserXRefTest, XrefObjectIndicesTooBig) {
-  // Since /Index starts at 4194303, the object number will go past
-  // `kMaxObjectNumber`.
-  static_assert(CPDF_Parser::kMaxObjectNumber == 4194304,
+TEST_F(ParserXRefTest, XrefObjectHighestIndex) {
+  // The object number will reach `kMaxObjectNumber`.
+  static_assert(CPDF_Parser::kMaxObjectNumber == 25165824,
                 "Unexpected kMaxObjectNumber");
   const unsigned char kData[] =
       "%PDF1-7\n%\xa0\xf2\xa4\xf4\n"
       "7 0 obj <<\n"
       "  /Filter /ASCIIHexDecode\n"
-      "  /Index [4194303 3]\n"
+      "  /Index [25165824 1]\n"
       "  /Root 1 0 R\n"
-      "  /Size 4194306\n"
+      "  /Size 25165825\n"
       "  /W [1 1 1]\n"
       ">>\n"
       "stream\n"
       "01 00 00\n"
-      "01 0F 00\n"
-      "01 12 00\n"
       "endstream\n"
       "endobj\n"
       "startxref\n"
@@ -456,19 +453,36 @@ TEST_F(ParserXRefTest, XrefObjectIndicesTooBig) {
   const auto& objects_info =
       parser().GetCrossRefTableForTesting()->objects_info();
 
-  // This should be the only object from table. Subsequent objects have object
-  // numbers that are too big.
-  CPDF_CrossRefTable::ObjectInfo only_valid_object = {
+  const CPDF_CrossRefTable::ObjectInfo only_valid_object = {
       .type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 0};
+  EXPECT_THAT(objects_info, ElementsAre(Pair(25165824, only_valid_object)));
+}
 
-  // TODO(thestig): Should the xref table contain object 4194305?
-  // Consider reworking CPDF_Parser's object representation to avoid having to
-  // store this placeholder object.
-  CPDF_CrossRefTable::ObjectInfo placeholder_object = {
-      .type = CPDF_CrossRefTable::ObjectType::kFree, .pos = 0};
-
-  EXPECT_THAT(objects_info, ElementsAre(Pair(4194303, only_valid_object),
-                                        Pair(4194305, placeholder_object)));
+TEST_F(ParserXRefTest, XrefObjectIndicesTooBig) {
+  // Since /Index starts at 25165824, the object number will go past
+  // `kMaxObjectNumber`.
+  static_assert(CPDF_Parser::kMaxObjectNumber == 25165824,
+                "Unexpected kMaxObjectNumber");
+  const unsigned char kData[] =
+      "%PDF1-7\n%\xa0\xf2\xa4\xf4\n"
+      "7 0 obj <<\n"
+      "  /Filter /ASCIIHexDecode\n"
+      "  /Index [25165824 2]\n"
+      "  /Root 1 0 R\n"
+      "  /Size 25165826\n"
+      "  /W [1 1 1]\n"
+      ">>\n"
+      "stream\n"
+      "01 00 00\n"
+      "01 0F 00\n"
+      "01 12 00\n"
+      "endstream\n"
+      "endobj\n"
+      "startxref\n"
+      "14\n"
+      "%%EOF\n";
+  ASSERT_TRUE(parser().InitTestFromBuffer(kData));
+  EXPECT_EQ(CPDF_Parser::FORMAT_ERROR, parser().StartParseInternal());
 }
 
 TEST_F(ParserXRefTest, XrefHasInvalidArchiveObjectNumber) {
@@ -503,7 +517,7 @@ TEST_F(ParserXRefTest, XrefHasInvalidArchiveObjectNumber) {
   // The expectation is for the parser to skip over the first object, and
   // continue parsing the remaining objects. So these are the second and third
   // objects.
-  CPDF_CrossRefTable::ObjectInfo expected_objects[2] = {
+  const CPDF_CrossRefTable::ObjectInfo expected_objects[2] = {
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 15},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 18}};
 
@@ -580,6 +594,35 @@ TEST_F(ParserXRefTest, XrefHasInvalidSizeValue) {
   EXPECT_EQ(CPDF_Parser::FORMAT_ERROR, parser().StartParseInternal());
 }
 
+TEST_F(ParserXRefTest, XrefHasZeroSizeValue) {
+  const unsigned char kData[] =
+      "%PDF1-7\n%\xa0\xf2\xa4\xf4\n"
+      "7 0 obj <<\n"
+      "  /Filter /ASCIIHexDecode\n"
+      "  /Root 1 0 R\n"
+      "  /Size 0\n"
+      "  /W [1 1 1]\n"
+      "  /Size 0\n"
+      ">>\n"
+      "stream\n"
+      "02 FF 00\n"
+      "01 0F 00\n"
+      "01 12 00\n"
+      "endstream\n"
+      "endobj\n"
+      "startxref\n"
+      "14\n"
+      "%%EOF\n";
+
+  ASSERT_TRUE(parser().InitTestFromBuffer(kData));
+  EXPECT_EQ(CPDF_Parser::SUCCESS, parser().StartParseInternal());
+  EXPECT_FALSE(parser().xref_table_rebuilt());
+  ASSERT_TRUE(parser().GetCrossRefTableForTesting());
+  const auto& objects_info =
+      parser().GetCrossRefTableForTesting()->objects_info();
+  EXPECT_TRUE(objects_info.empty());
+}
+
 TEST_F(ParserXRefTest, XrefHasInvalidWidth) {
   // The /W array needs to have at least 3 values.
   const unsigned char kData[] =
@@ -636,7 +679,7 @@ TEST_F(ParserXRefTest, XrefFirstWidthEntryIsZero) {
   const auto& objects_info =
       parser().GetCrossRefTableForTesting()->objects_info();
 
-  CPDF_CrossRefTable::ObjectInfo expected_result[2] = {
+  const CPDF_CrossRefTable::ObjectInfo expected_result[2] = {
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 15},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 18}};
 
@@ -675,7 +718,7 @@ TEST_F(ParserXRefTest, XrefWithValidIndex) {
   const auto& objects_info =
       parser().GetCrossRefTableForTesting()->objects_info();
 
-  CPDF_CrossRefTable::ObjectInfo expected_result[6] = {
+  const CPDF_CrossRefTable::ObjectInfo expected_result[6] = {
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 0},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 15},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 18},
@@ -718,7 +761,7 @@ TEST_F(ParserXRefTest, XrefIndexWithRepeatedObject) {
   const auto& objects_info =
       parser().GetCrossRefTableForTesting()->objects_info();
 
-  CPDF_CrossRefTable::ObjectInfo expected_result[2] = {
+  const CPDF_CrossRefTable::ObjectInfo expected_result[2] = {
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 0},
       // Since the /Index does not follow the spec, this is one of the 2
       // possible values that a parser can come up with.
@@ -757,7 +800,7 @@ TEST_F(ParserXRefTest, XrefIndexWithOutOfOrderObjects) {
       parser().GetCrossRefTableForTesting()->objects_info();
 
   // Although the /Index does not follow the spec, the parser tolerates it.
-  CPDF_CrossRefTable::ObjectInfo expected_result[3] = {
+  const CPDF_CrossRefTable::ObjectInfo expected_result[3] = {
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 18},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 0},
       {.type = CPDF_CrossRefTable::ObjectType::kNormal, .pos = 15}};

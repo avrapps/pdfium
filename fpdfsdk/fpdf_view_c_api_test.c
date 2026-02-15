@@ -122,6 +122,7 @@ int CheckPDFiumCApi() {
     CHK(FPDFDoc_GetAttachmentCount);
 
     // fpdf_catalog.h
+    CHK(FPDFCatalog_GetLanguage);
     CHK(FPDFCatalog_IsTagged);
     CHK(FPDFCatalog_SetLanguage);
 
@@ -198,12 +199,14 @@ int CheckPDFiumCApi() {
     CHK(FPDFPageObjMark_CountParams);
     CHK(FPDFPageObjMark_GetName);
     CHK(FPDFPageObjMark_GetParamBlobValue);
+    CHK(FPDFPageObjMark_GetParamFloatValue);
     CHK(FPDFPageObjMark_GetParamIntValue);
     CHK(FPDFPageObjMark_GetParamKey);
     CHK(FPDFPageObjMark_GetParamStringValue);
     CHK(FPDFPageObjMark_GetParamValueType);
     CHK(FPDFPageObjMark_RemoveParam);
     CHK(FPDFPageObjMark_SetBlobParam);
+    CHK(FPDFPageObjMark_SetFloatParam);
     CHK(FPDFPageObjMark_SetIntParam);
     CHK(FPDFPageObjMark_SetStringParam);
     CHK(FPDFPageObj_AddMark);

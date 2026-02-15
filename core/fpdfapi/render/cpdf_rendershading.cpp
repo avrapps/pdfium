@@ -784,10 +784,19 @@ struct PatchDrawer {
         fill_options.aliased_path = true;
       }
 
-      FX_ARGB color = shading_steps ? (*shading_steps)[div_colors[0].comp[0]]
-                                    : ArgbEncode(alpha, div_colors[0].comp[0],
-                                                 div_colors[0].comp[1],
-                                                 div_colors[0].comp[2]);
+      FX_ARGB color;
+      if (shading_steps) {
+        // Statically check that shading_steps->size() is > 0
+        // (which it is because it has size kShadingSteps).
+        // `shading_steps->size()` directly isn't constexpr.
+        static_assert(decltype(*shading_steps){}.size() > 0);
+        int index = std::clamp(div_colors[0].comp[0], 0,
+                               static_cast<int>(shading_steps->size()) - 1);
+        color = (*shading_steps)[index];
+      } else {
+        color = ArgbEncode(alpha, div_colors[0].comp[0], div_colors[0].comp[1],
+                           div_colors[0].comp[2]);
+      }
       pDevice->DrawPath(path, nullptr, nullptr, color, 0, fill_options);
     } else {
       if (d_bottom < kCoonColorThreshold && d_top < kCoonColorThreshold) {
@@ -992,7 +1001,7 @@ void DrawCoonPatchMeshes(
 
 // static
 void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
-                              CPDF_RenderContext* pContext,
+                              CPDF_RenderContext* context,
                               const CPDF_PageObject* pCurObj,
                               const CPDF_ShadingPattern* pPattern,
                               const CFX_Matrix& mtMatrix,
@@ -1030,7 +1039,7 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
     return;
   }
 #endif  // defined(PDF_USE_SKIA)
-  CPDF_DeviceBuffer buffer(pContext, pDevice, clip_rect_bbox, pCurObj, 150);
+  CPDF_DeviceBuffer buffer(context, pDevice, clip_rect_bbox, pCurObj, 150);
   RetainPtr<CFX_DIBitmap> pBitmap = buffer.Initialize();
   if (!pBitmap) {
     return;

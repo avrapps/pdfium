@@ -7,6 +7,7 @@
 #include "core/fpdfapi/font/cpdf_truetypefont.h"
 
 #include <algorithm>
+#include <numeric>
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -118,7 +119,7 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
     }
     return;
   }
-  if (UseTTCharmapMSSymbol(face)) {
+  if (UseTTCharmap(face, CFX_Face::kWindowsSymbolCmapId)) {
     for (uint32_t charcode = 0; charcode < 256; charcode++) {
       glyph_index_[charcode] = GetGlyphIndexForMSSymbol(face, charcode);
     }
@@ -131,7 +132,7 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
             encoding_.SetUnicode(charcode, UnicodeFromAdobeName(name));
           }
         }
-      } else if (UseTTCharmapMacRoman(face)) {
+      } else if (UseTTCharmap(face, CFX_Face::kMacRomanCmapId)) {
         for (uint32_t charcode = 0; charcode < 256; charcode++) {
           encoding_.SetUnicode(charcode,
                                UnicodeFromAppleRomanCharCode(charcode));
@@ -140,7 +141,7 @@ void CPDF_TrueTypeFont::LoadGlyphMap() {
       return;
     }
   }
-  if (UseTTCharmapMacRoman(face)) {
+  if (UseTTCharmap(face, CFX_Face::kMacRomanCmapId)) {
     for (uint32_t charcode = 0; charcode < 256; charcode++) {
       glyph_index_[charcode] = face->GetCharIndex(charcode);
       encoding_.SetUnicode(charcode, UnicodeFromAppleRomanCharCode(charcode));
@@ -191,17 +192,17 @@ CPDF_TrueTypeFont::CharmapType CPDF_TrueTypeFont::DetermineCharmapType() const {
   }
 
   if (FontStyleIsNonSymbolic(flags_)) {
-    if (UseTTCharmapMacRoman(font_.GetFace())) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCmapId)) {
       return CharmapType::kMacRoman;
     }
-    if (UseTTCharmapMSSymbol(font_.GetFace())) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCmapId)) {
       return CharmapType::kMSSymbol;
     }
   } else {
-    if (UseTTCharmapMSSymbol(font_.GetFace())) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kWindowsSymbolCmapId)) {
       return CharmapType::kMSSymbol;
     }
-    if (UseTTCharmapMacRoman(font_.GetFace())) {
+    if (UseTTCharmap(font_.GetFace(), CFX_Face::kMacRomanCmapId)) {
       return CharmapType::kMacRoman;
     }
   }
@@ -251,10 +252,8 @@ void CPDF_TrueTypeFont::SetGlyphIndicesFromFirstChar() {
     return;
   }
 
-  auto it = std::begin(glyph_index_);
-  std::fill(it, it + start_char, 0);
-  uint16_t glyph = 3;
-  for (int charcode = start_char; charcode < 256; charcode++, glyph++) {
-    glyph_index_[charcode] = glyph;
-  }
+  auto [zeroed_glyphs, set_glyphs] =
+      pdfium::span(glyph_index_).split_at(static_cast<size_t>(start_char));
+  std::ranges::fill(zeroed_glyphs, 0);
+  std::iota(set_glyphs.begin(), set_glyphs.end(), 3);
 }

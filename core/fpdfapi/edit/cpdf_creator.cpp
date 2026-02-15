@@ -31,6 +31,7 @@
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_random.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/mask.h"
 #include "core/fxcrt/raw_span.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
@@ -38,6 +39,15 @@
 namespace {
 
 const size_t kArchiveBufferSize = 32768;
+
+constexpr Mask<CPDF_Creator::CreateFlags> kAllValidFlags{
+    CPDF_Creator::CreateFlags::kIncremental,
+    CPDF_Creator::CreateFlags::kNoOriginal,
+    CPDF_Creator::CreateFlags::kRemoveSecurity,
+    CPDF_Creator::CreateFlags::kSubsetNewFonts};
+constexpr Mask<CPDF_Creator::CreateFlags> kConflictingFlags{
+    CPDF_Creator::CreateFlags::kIncremental,
+    CPDF_Creator::CreateFlags::kNoOriginal};
 
 class CFX_FileBufferArchive final : public IFX_ArchiveStream {
  public:
@@ -100,13 +110,13 @@ bool CFX_FileBufferArchive::WriteBlock(pdfium::span<const uint8_t> buffer) {
 }
 
 std::array<uint32_t, 4> GenerateFileID(uint32_t dwSeed1, uint32_t dwSeed2) {
-  void* pContext1 = FX_Random_MT_Start(dwSeed1);
-  void* pContext2 = FX_Random_MT_Start(dwSeed2);
+  void* context1 = FX_Random_MT_Start(dwSeed1);
+  void* context2 = FX_Random_MT_Start(dwSeed2);
   std::array<uint32_t, 4> buffer = {
-      FX_Random_MT_Generate(pContext1), FX_Random_MT_Generate(pContext1),
-      FX_Random_MT_Generate(pContext2), FX_Random_MT_Generate(pContext2)};
-  FX_Random_MT_Close(pContext1);
-  FX_Random_MT_Close(pContext2);
+      FX_Random_MT_Generate(context1), FX_Random_MT_Generate(context1),
+      FX_Random_MT_Generate(context2), FX_Random_MT_Generate(context2)};
+  FX_Random_MT_Close(context1);
+  FX_Random_MT_Close(context2);
   return buffer;
 }
 
@@ -120,10 +130,10 @@ bool OutputIndex(IFX_ArchiveStream* archive, FX_FILESIZE offset) {
 
 }  // namespace
 
-CPDF_Creator::CPDF_Creator(CPDF_Document* pDoc,
+CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
                            RetainPtr<IFX_RetainableWriteStream> archive)
-    : document_(pDoc),
-      parser_(pDoc->GetParser()),
+    : document_(doc),
+      parser_(doc->GetParser()),
       encrypt_dict_(parser_ ? parser_->GetEncryptDict() : nullptr),
       security_handler_(parser_ ? parser_->GetSecurityHandler() : nullptr),
       last_obj_num_(document_->GetLastObjNum()),
@@ -218,11 +228,11 @@ bool CPDF_Creator::WriteNewObjs() {
 void CPDF_Creator::InitNewObjNumOffsets() {
   for (const auto& pair : *document_) {
     const uint32_t objnum = pair.first;
-    if (is_incremental_ ||
-        pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum) {
+    if (pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum) {
       continue;
     }
-    if (parser_ && parser_->IsValidObjectNumber(objnum) &&
+
+    if (!is_incremental_ && parser_ && parser_->IsValidObjectNumber(objnum) &&
         !parser_->IsObjectFree(objnum)) {
       continue;
     }
@@ -592,9 +602,26 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
   return stage_;
 }
 
-bool CPDF_Creator::Create(uint32_t flags) {
-  is_incremental_ = !!(flags & FPDFCREATE_INCREMENTAL);
-  is_original_ = !(flags & FPDFCREATE_NO_ORIGINAL);
+bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
+  if (flags & ~kAllValidFlags) {
+    flags = CreateFlags::kNone;
+  }
+
+  if (flags == CreateFlags::kRemoveSecurityDeprecated ||
+      (flags & CreateFlags::kRemoveSecurity)) {
+    RemoveSecurity();
+  }
+
+  if (flags.TestAll(kConflictingFlags)) {
+    flags.Clear(kConflictingFlags);
+  }
+
+  is_incremental_ = !!(flags & CreateFlags::kIncremental);
+  is_original_ = !(flags & CreateFlags::kNoOriginal);
+
+  if (file_version >= 10 && file_version <= 17) {
+    file_version_ = file_version;
+  }
 
   stage_ = Stage::kInit0;
   last_obj_num_ = document_->GetLastObjNum();
@@ -679,14 +706,6 @@ bool CPDF_Creator::Continue() {
   }
 
   return stage_ > Stage::kInvalid;
-}
-
-bool CPDF_Creator::SetFileVersion(int32_t fileVersion) {
-  if (fileVersion < 10 || fileVersion > 17) {
-    return false;
-  }
-  file_version_ = fileVersion;
-  return true;
 }
 
 void CPDF_Creator::RemoveSecurity() {

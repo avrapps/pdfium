@@ -152,7 +152,7 @@ class CXFA_Node : public CXFA_Object, public GCedTreeNodeMixin<CXFA_Node> {
 
   CXFA_Node* CreateInstanceIfPossible(bool bDataMerge);
   int32_t GetCount();
-  CXFA_Node* GetItemIfExists(int32_t iIndex);
+  CXFA_Node* GetItemIfExists(int32_t index);
   void RemoveItem(CXFA_Node* pRemoveInstance, bool bRemoveDataBinding);
   void InsertItem(CXFA_Node* pNewInstance,
                   int32_t iPos,
@@ -424,7 +424,7 @@ class CXFA_Node : public CXFA_Object, public GCedTreeNodeMixin<CXFA_Node> {
   bool IsProperty() const;
 
  protected:
-  CXFA_Node(CXFA_Document* pDoc,
+  CXFA_Node(CXFA_Document* doc,
             XFA_PacketType ePacket,
             Mask<XFA_XDPPACKET> validPackets,
             XFA_ObjectType oType,

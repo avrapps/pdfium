@@ -31,8 +31,6 @@ source_set("fxge") {
     "cfx_folderfontinfo.h",
     "cfx_font.cpp",
     "cfx_font.h",
-    "cfx_fontcache.cpp",
-    "cfx_fontcache.h",
     "cfx_fontmapper.cpp",
     "cfx_fontmapper.h",
     "cfx_fontmgr.cpp",
@@ -102,8 +100,6 @@ source_set("fxge") {
     "render_defines.h",
     "renderdevicedriver_iface.cpp",
     "renderdevicedriver_iface.h",
-    "scoped_font_transform.cpp",
-    "scoped_font_transform.h",
     "systemfontinfo_iface.h",
     "text_char_pos.cpp",
     "text_char_pos.h",
@@ -122,11 +118,12 @@ source_set("fxge") {
   ]
 
   public_deps = []
+  defines = []
 
   if (is_component_build || use_system_freetype) {
     # ft_adobe_glyph_list is not exported from the Freetype shared library so we
     # need it defined in component builds and builds using system freetype.
-    defines = [ "DEFINE_PS_TABLES_DATA" ]
+    defines += [ "DEFINE_PS_TABLES_DATA" ]
   }
 
   if (pdf_enable_xfa) {
@@ -142,6 +139,11 @@ source_set("fxge") {
       "skia/fx_skia_device.cpp",
     ]
     public_deps += [ "//skia" ]
+
+    if (pdf_skia_font_manager_target != "") {
+      defines += [ "PDF_USE_SKIA_CUSTOM_FONT_MANAGER" ]
+      deps += [ pdf_skia_font_manager_target ]
+    }
   }
 
   if (is_android) {

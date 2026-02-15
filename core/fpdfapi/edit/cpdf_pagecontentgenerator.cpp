@@ -200,10 +200,9 @@ void RestoreUsedResources(
     const std::vector<ByteString>& keys_to_restore,
     CPDF_PageObjectHolder::RemovedResourceMap& saved_resource_map) {
   for (const ByteString& key : keys_to_restore) {
-    auto it = saved_resource_map.find(key);
-    CHECK(it != saved_resource_map.end());
-    resource_dict->SetFor(key, std::move(it->second));
-    saved_resource_map.erase(it);
+    auto node = saved_resource_map.extract(key);
+    CHECK(!node.empty());
+    resource_dict->SetFor(node.key(), std::move(node.mapped()));
   }
 }
 
@@ -913,10 +912,7 @@ void CPDF_PageContentGenerator::ProcessForm(fxcrt::ostringstream* buf,
   }
 
   RetainPtr<const CPDF_Stream> pStream = pFormObj->form()->GetStream();
-  if (!pStream) {
-    return;
-  }
-
+  CHECK(pStream);
   ByteString name = RealizeResource(pStream.Get(), "XObject");
   pFormObj->SetResourceName(name);
 

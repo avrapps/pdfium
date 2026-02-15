@@ -31,7 +31,7 @@ class CPDF_Pattern : public Retainable, public Observable {
   RetainPtr<CPDF_Object> pattern_obj() const { return pattern_obj_; }
 
  protected:
-  CPDF_Pattern(CPDF_Document* pDoc,
+  CPDF_Pattern(CPDF_Document* doc,
                RetainPtr<CPDF_Object> pObj,
                const CFX_Matrix& parentMatrix);
   ~CPDF_Pattern() override;

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include "core/fxcrt/fx_string.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -13,8 +14,11 @@
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
+#include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/utils/file_util.h"
+#include "testing/utils/path_service.h"
 
 using testing::HasSubstr;
 using testing::Not;
@@ -56,12 +60,21 @@ TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocIncremental) {
   // Version gets taken as-is from input document.
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\n%\xa0\xf2\xa4\xf4"));
   // Additional output produced vs. non incremental.
-  EXPECT_EQ(985u, GetString().size());
+  // Check that the size is larger than the old, broken incremental save size.
+  EXPECT_GT(GetString().size(), 985u);
 }
 
 TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocNoIncremental) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   EXPECT_TRUE(FPDF_SaveWithVersion(document(), this, FPDF_NO_INCREMENTAL, 14));
+  EXPECT_THAT(GetString(), StartsWith("%PDF-1.4\r\n"));
+  EXPECT_EQ(805u, GetString().size());
+}
+
+TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocRemoveSecurityDeprecated) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  EXPECT_TRUE(FPDF_SaveWithVersion(document(), this,
+                                   FPDF_REMOVE_SECURITY_DEPRECATED, 14));
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.4\r\n"));
   EXPECT_EQ(805u, GetString().size());
 }
@@ -108,12 +121,13 @@ TEST_F(FPDFSaveEmbedderTest, Bug42271133) {
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
   // Reload saved document.
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
 
   // Assert path fill color is not changed to black.
-  auto path_obj = FPDFPage_GetObject(saved_page, 0);
+  auto path_obj = FPDFPage_GetObject(saved_page.get(), 0);
   ASSERT_TRUE(path_obj);
   unsigned int r;
   unsigned int g;
@@ -123,9 +137,6 @@ TEST_F(FPDFSaveEmbedderTest, Bug42271133) {
   EXPECT_EQ(180u, r);
   EXPECT_EQ(180u, g);
   EXPECT_EQ(180u, b);
-
-  CloseSavedPage(saved_page);
-  CloseSavedDocument();
 }
 
 TEST_F(FPDFSaveEmbedderTest, SaveLinearizedDoc) {
@@ -154,15 +165,14 @@ TEST_F(FPDFSaveEmbedderTest, SaveLinearizedDoc) {
   EXPECT_EQ(7986u, GetString().size());
 
   // Make sure new document renders the same as the old one.
-  ASSERT_TRUE(OpenSavedDocument());
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
   for (int i = 0; i < kPageCount; ++i) {
-    FPDF_PAGE page = LoadSavedPage(i);
+    ScopedSavedPage page = LoadScopedSavedPage(i);
     ASSERT_TRUE(page);
-    ScopedFPDFBitmap bitmap = RenderSavedPage(page);
+    ScopedFPDFBitmap bitmap = RenderSavedPage(page.get());
     EXPECT_EQ(original_md5[i], HashBitmap(bitmap.get()));
-    CloseSavedPage(page);
   }
-  CloseSavedDocument();
 }
 
 TEST_F(FPDFSaveEmbedderTest, Bug1409) {
@@ -179,13 +189,12 @@ TEST_F(FPDFSaveEmbedderTest, Bug1409) {
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
   // The new document should render as empty.
-  ASSERT_TRUE(OpenSavedDocument());
-  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
-  ScopedFPDFBitmap bitmap = RenderSavedPage(saved_page);
-  EXPECT_EQ(pdfium::kBlankPage612By792Checksum, HashBitmap(bitmap.get()));
-  CloseSavedPage(saved_page);
-  CloseSavedDocument();
+  ScopedFPDFBitmap bitmap = RenderSavedPage(saved_page.get());
+  CompareBitmap(bitmap.get(), pdfium::kBlankPage612By792Png);
 
   EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
   EXPECT_THAT(GetString(), HasSubstr("/Root "));
@@ -223,4 +232,166 @@ TEST_F(FPDFSaveEmbedderTest, Bug1328389) {
   ASSERT_TRUE(OpenDocument("bug_1328389.pdf"));
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   EXPECT_THAT(GetString(), HasSubstr("/Foo/"));
+}
+
+TEST_F(FPDFSaveEmbedderTest, IncrementalSaveWithModifications) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  // Get the original bitmap for comparison
+  ScopedFPDFBitmap original_bitmap = RenderLoadedPage(page.get());
+  std::string original_md5 = HashBitmap(original_bitmap.get());
+
+  // Count text objects on a page
+  auto count_text_objects = [](FPDF_PAGE page) {
+    int object_count = FPDFPage_CountObjects(page);
+    int text_count = 0;
+    for (int i = 0; i < object_count; ++i) {
+      FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+      if (FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT) {
+        ++text_count;
+      }
+    }
+    return text_count;
+  };
+
+  // Verify the original PDF does not have any text objects
+  EXPECT_EQ(0, count_text_objects(page.get()));
+
+  // Add a new text object to modify the page.
+  ScopedFPDFPageObject text_object(
+      FPDFPageObj_NewTextObj(document(), "Arial", 12.0f));
+  ScopedFPDFWideString text = GetFPDFWideString(L"Test Incremental Save");
+  FPDFText_SetText(text_object.get(), text.get());
+  FPDFPageObj_Transform(text_object.get(), 1, 0, 0, 1, 100, 100);
+  FPDFPage_InsertObject(page.get(), text_object.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_INCREMENTAL));
+
+  // Verify the saved document
+  // Count occurrences of key markers
+  auto count_occurrences = [](const std::string& str,
+                              const std::string& substr) {
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = str.find(substr, pos)) != std::string::npos) {
+      ++count;
+      pos += substr.size();
+    }
+    return count;
+  };
+
+  // Should contain incremental save markers (original + incremental)
+  std::string saved_content = GetString();
+  EXPECT_EQ(2u, count_occurrences(saved_content, "trailer"));
+  // In incremental PDF saving, /Prev points to the previous xref table's
+  // offset. Since we're doing only one incremental save operation, there's only
+  // one /Prev entry pointing to the original PDF's xref table.
+  EXPECT_EQ(1u, count_occurrences(saved_content, "/Prev"));
+  EXPECT_EQ(2u, count_occurrences(saved_content, "startxref"));
+  EXPECT_EQ(2u, count_occurrences(saved_content, "%%EOF"));
+
+  // Load the saved document and verify the modification is visible
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+
+  // The rendered output should be different from the original
+  ScopedFPDFBitmap saved_bitmap = RenderSavedPage(saved_page.get());
+  std::string saved_md5 = HashBitmap(saved_bitmap.get());
+  EXPECT_NE(original_md5, saved_md5);
+
+  // Verify the text object exists after the save
+  EXPECT_EQ(1, count_text_objects(saved_page.get()));
+}
+
+class FPDFSaveWithFontSubsetEmbedderTest : public FPDFSaveEmbedderTest {
+ public:
+  static constexpr char kSaveNewTextFilename[] = "save_new_text";
+
+  ScopedFPDFFont LoadTestFont() {
+    std::string font_path = PathService::GetThirdPartyFilePath(
+        "NotoSansCJK/NotoSansSC-Regular.subset.otf");
+    if (font_path.empty()) {
+      return nullptr;
+    }
+
+    std::vector<uint8_t> font_data = GetFileContents(font_path.c_str());
+    if (font_data.empty()) {
+      return nullptr;
+    }
+
+    return ScopedFPDFFont(FPDFText_LoadFont(
+        document(), font_data.data(), font_data.size(), FPDF_FONT_TRUETYPE,
+        /*cid=*/true));
+  }
+
+  void InsertNewTextObject(const FPDF_PAGE& page) {
+    ScopedFPDFFont font = LoadTestFont();
+    ASSERT_TRUE(font);
+
+    FPDF_PAGEOBJECT text_obj =
+        FPDFPageObj_CreateTextObj(document(), font.get(), 24.0f);
+
+    // `text` only contains a subset of the characters in the test font.
+    ScopedFPDFWideString text = GetFPDFWideString(L"这是第一句。");
+    ASSERT_TRUE(FPDFText_SetText(text_obj, text.get()));
+
+    const FS_MATRIX matrix{1, 0, 0, 1, 10, 10};
+    ASSERT_TRUE(FPDFPageObj_TransformF(text_obj, &matrix));
+    FPDFPage_InsertObject(page, text_obj);
+    ASSERT_TRUE(FPDFPage_GenerateContent(page));
+  }
+};
+
+TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithSubsetWithoutNewText) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_SUBSET_NEW_FONTS));
+  EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
+  EXPECT_EQ(805u, GetString().size());
+}
+
+TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithoutSubsetWithNewText) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(page.get()));
+
+  ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
+  CompareBitmapWithExpectationSuffix(bitmap.get(), kSaveNewTextFilename);
+
+  // Verify the file size increase is larger when not subsetting the new text's
+  // font.
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
+  EXPECT_EQ(5001u, GetString().size());
+
+  // Verify the text is visible.
+  VerifySavedDocumentWithExpectationSuffix(kSaveNewTextFilename);
+}
+
+TEST_F(FPDFSaveWithFontSubsetEmbedderTest, SaveWithSubsetWithNewText) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ASSERT_NO_FATAL_FAILURE(InsertNewTextObject(page.get()));
+
+  ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
+  CompareBitmapWithExpectationSuffix(bitmap.get(), kSaveNewTextFilename);
+
+  // Verify the file size increase is smaller when subsetting the new text's
+  // font.
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_SUBSET_NEW_FONTS));
+  EXPECT_THAT(GetString(), StartsWith("%PDF-1.7\r\n"));
+  // TODO(crbug.com/476127152): File size increase should be smaller.
+  EXPECT_EQ(5001u, GetString().size());
+
+  // Verify the text is visible.
+  VerifySavedDocumentWithExpectationSuffix(kSaveNewTextFilename);
 }
