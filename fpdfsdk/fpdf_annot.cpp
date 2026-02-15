@@ -4001,6 +4001,20 @@ EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
+  if (!FPDFAnnot_GetRect(annot, rect))
+    return false;
+
+  // Normalize: upstream FPDFAnnot_GetRect does not normalize the rect read
+  // from the dictionary. PDFs may store Rect as [x1,y1,x2,y2] with y1>y2,
+  // resulting in inverted top/bottom. CFX_FloatRect::Normalize() fixes this.
+  CFX_FloatRect float_rect = CFXFloatRectFromFSRectF(*rect);
+  float_rect.Normalize();
+  *rect = FSRectFFromCFXFloatRect(float_rect);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAPMatrix(FPDF_ANNOTATION annot,
                       FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                       const FS_MATRIX* matrix) {

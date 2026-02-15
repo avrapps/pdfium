@@ -1808,6 +1808,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
 
 // Experimental EmbedPDF Extension API.
+// Get the annotation rectangle with normalization applied.
+// Wraps FPDFAnnot_GetRect and ensures the returned rect is normalized
+// (left <= right, bottom <= top in page coordinates).
+//
+//   annot - handle to an annotation.
+//   rect  - receives the normalized rectangle; must not be NULL.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
 // Set the Matrix on an annotation's appearance stream for the given mode.
 // This overwrites any existing Matrix entry on the AP stream.
 //
