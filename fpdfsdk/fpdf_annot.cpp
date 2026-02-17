@@ -4078,3 +4078,25 @@ EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
   *matrix = FSMatrixFromCFXMatrix(stream_dict->GetMatrixFor("Matrix"));
   return true;
 }
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return 0;
+
+  RetainPtr<const CPDF_Dictionary> pAP =
+      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
+  if (!pAP)
+    return 0;
+
+  int modes = 0;
+  if (pAP->KeyExist("N"))
+    modes |= 1;  // bit 0 = Normal
+  if (pAP->KeyExist("R"))
+    modes |= 2;  // bit 1 = Rollover
+  if (pAP->KeyExist("D"))
+    modes |= 4;  // bit 2 = Down
+  return modes;
+}

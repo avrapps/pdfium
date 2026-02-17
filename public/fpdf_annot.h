@@ -1851,6 +1851,19 @@ EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
                       FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                       FS_MATRIX* matrix);
 
+// Experimental EmbedPDF Extension API.
+// Get a bitmask of which appearance stream modes exist for an annotation.
+//
+//   annot - handle to an annotation.
+//
+// Returns an integer bitmask:
+//   bit 0 (1) = Normal  (/AP/N exists)
+//   bit 1 (2) = Rollover (/AP/R exists)
+//   bit 2 (4) = Down     (/AP/D exists)
+// Returns 0 if the annotation has no /AP dictionary or annot is invalid.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
