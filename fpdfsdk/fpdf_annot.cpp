@@ -4100,3 +4100,15 @@ EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
     modes |= 4;  // bit 2 = Down
   return modes;
 }
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
+                              FPDF_ANNOT_APPEARANCEMODE appearanceMode) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
+  return !!GetAnnotAP(pAnnotDict.Get(), mode);
+}

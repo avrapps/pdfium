@@ -1864,6 +1864,26 @@ EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot);
 
+// Experimental EmbedPDF Extension API.
+// Check whether an annotation has a renderable appearance stream for the
+// given mode, taking sub-appearance dictionaries and /AS into account.
+//
+// For simple annotations where /AP/<mode> is a stream, returns true if that
+// stream exists. For button widgets where /AP/<mode> is a dictionary of
+// sub-appearances (e.g. "Off", "Yes"), returns true only if a sub-appearance
+// matching the current /AS value exists.
+//
+//   annot          - handle to an annotation.
+//   appearanceMode - the appearance mode to check. One of:
+//                    FPDF_ANNOT_APPEARANCEMODE_NORMAL (0),
+//                    FPDF_ANNOT_APPEARANCEMODE_ROLLOVER (1),
+//                    FPDF_ANNOT_APPEARANCEMODE_DOWN (2).
+//
+// Returns true if a renderable appearance stream exists, false otherwise.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
+                              FPDF_ANNOT_APPEARANCEMODE appearanceMode);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
