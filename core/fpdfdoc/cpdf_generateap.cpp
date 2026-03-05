@@ -2361,6 +2361,59 @@ void CPDF_GenerateAP::GenerateEmptyAP(CPDF_Document* doc,
                        false);
 }
 
+bool GenerateCaretAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const ByteString& blend_name) {
+  fxcrt::ostringstream app_stream;
+  app_stream << "/" << kGSDictName << " gs ";
+
+  app_stream << GetColorStringWithDefault(
+      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
+      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kStroke);
+  app_stream << GetColorStringWithDefault(
+      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
+      CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kFill);
+
+  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
+
+  float draw_left = rect.left;
+  float draw_bottom = rect.bottom;
+  float draw_right = rect.right;
+  float draw_top = rect.top;
+
+  RetainPtr<const CPDF_Array> rd_array = annot_dict->GetArrayFor("RD");
+  if (rd_array && rd_array->size() == 4) {
+    draw_left += rd_array->GetFloatAt(0);
+    draw_bottom += rd_array->GetFloatAt(1);
+    draw_right -= rd_array->GetFloatAt(2);
+    draw_top -= rd_array->GetFloatAt(3);
+  }
+
+  float width = draw_right - draw_left;
+  float height = draw_top - draw_bottom;
+  float mid_x = (draw_left + draw_right) / 2.0f;
+
+  app_stream << "0.5 w\n";
+
+  // Left bezier: from (draw_left, draw_bottom) to (mid_x, draw_top)
+  app_stream << draw_left << " " << draw_bottom << " m\n";
+  app_stream << (draw_left + width * 0.27f) << " " << draw_bottom << " "
+             << mid_x << " " << (draw_bottom + height * 0.44f) << " "
+             << mid_x << " " << draw_top << " c\n";
+
+  // Right bezier: from (mid_x, draw_top) to (draw_right, draw_bottom)
+  app_stream << mid_x << " " << (draw_bottom + height * 0.44f) << " "
+             << (draw_right - width * 0.27f) << " " << draw_bottom << " "
+             << draw_right << " " << draw_bottom << " c\n";
+
+  app_stream << "B*\n";
+
+  auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+                       false /*IsTextMarkupAnnotation*/);
+  return true;
+}
+
 // static
 bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
                                       CPDF_Dictionary* annot_dict,
@@ -2406,6 +2459,8 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
       return GenerateLinkAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::REDACT:
       return GenerateRedactAP(doc, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::CARET:
+      return GenerateCaretAP(doc, annot_dict, blend_name);
     default:
       return false;
   }

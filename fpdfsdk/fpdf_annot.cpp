@@ -855,6 +855,7 @@ FPDFAnnot_IsSupportedSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
     case FPDF_ANNOT_POLYGON:
     case FPDF_ANNOT_POLYLINE:
     case FPDF_ANNOT_LINE:
+    case FPDF_ANNOT_CARET:
       return true;
     default:
       return false;
@@ -2432,9 +2433,10 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // RD is only valid for Square and Circle annotations.
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE) {
+  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
+      subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
+      subtype != FPDF_ANNOT_POLYGON) {
     return false;
   }
 
@@ -2443,10 +2445,8 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Retrieve the /RD array from the annotation dictionary.
   RetainPtr<const CPDF_Array> pRDArray = pAnnotDict->GetArrayFor("RD");
   if (!pRDArray || pRDArray->size() < 4) {
-    // If the array doesn't exist or is incomplete, there are no differences.
     *left = 0;
     *top = 0;
     *right = 0;
@@ -2454,12 +2454,56 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Populate the output parameters with values from the array.
   *left = pRDArray->GetFloatAt(0);
   *top = pRDArray->GetFloatAt(1);
   *right = pRDArray->GetFloatAt(2);
   *bottom = pRDArray->GetFloatAt(3);
 
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
+                                   float left,
+                                   float top,
+                                   float right,
+                                   float bottom) {
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
+      subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
+      subtype != FPDF_ANNOT_POLYGON) {
+    return false;
+  }
+
+  CPDF_Dictionary* pAnnotDict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Array> pRDArray = pAnnotDict->SetNewFor<CPDF_Array>("RD");
+  pRDArray->AppendNew<CPDF_Number>(left);
+  pRDArray->AppendNew<CPDF_Number>(top);
+  pRDArray->AppendNew<CPDF_Number>(right);
+  pRDArray->AppendNew<CPDF_Number>(bottom);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
+      subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
+      subtype != FPDF_ANNOT_POLYGON) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  pAnnotDict->RemoveFor("RD");
   return true;
 }
 

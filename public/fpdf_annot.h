@@ -1267,10 +1267,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetBorderEffect(FPDF_ANNOTATION annot, float* intensity);
 
 // Experimental EmbedPDF Extension API.
-// Get the rectangle differences (used for rounded corners or cloudy border
-// padding) for a square or circle annotation.
+// Get the rectangle differences (/RD) — the inset between an annotation's
+// /Rect and its drawn appearance — for a supported annotation.
 //
-//   annot         - handle to a square or circle annotation.
+//   annot         - handle to a square, circle, caret, free-text, or polygon
+//                   annotation.
 //   left, top,    - receive the difference values for each side.
 //   right, bottom
 //
@@ -1281,6 +1282,32 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
                                   float* top,
                                   float* right,
                                   float* bottom);
+
+// Experimental EmbedPDF Extension API.
+// Set the rectangle differences (/RD) for a supported annotation.
+//
+//   annot         - handle to a square, circle, caret, free-text, or polygon
+//                   annotation.
+//   left, top,    - the difference values for each side.
+//   right, bottom
+//
+// Returns true on success, false on failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
+                                   float left,
+                                   float top,
+                                   float right,
+                                   float bottom);
+
+// Experimental EmbedPDF Extension API.
+// Remove the rectangle differences (/RD) entry from a supported annotation.
+//
+//   annot  - handle to a square, circle, caret, free-text, or polygon
+//            annotation.
+//
+// Returns true on success, false on failure or unsupported subtype.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the number of entries in the dash pattern for a dashed border.
