@@ -917,12 +917,27 @@ ByteString GetPaintOperatorString(bool is_stroke_rect, bool is_fill_rect) {
   return is_fill_rect ? "f" : "n";
 }
 
-ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect) {
+ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
+                                const CPDF_Dictionary& annot_dict) {
   fxcrt::ostringstream app_stream;
-  app_stream << GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 1, 1, 0),
-                                PaintOperation::kFill);
-  app_stream << GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
-                                PaintOperation::kStroke);
+
+  // Read fill color from /C array; default to yellow.
+  CFX_Color fill_color(CFX_Color::Type::kRGB, 1, 1, 0);
+  RetainPtr<const CPDF_Array> color_array =
+      annot_dict.GetArrayFor(pdfium::annotation::kC);
+  if (color_array) {
+    fill_color = fpdfdoc::CFXColorFromArray(*color_array);
+  }
+
+  // Compute luminance-based contrast stroke (matches JS getContrastStrokeColor).
+  float luminance = 0.299f * fill_color.fColor1 + 0.587f * fill_color.fColor2 +
+                    0.114f * fill_color.fColor3;
+  CFX_Color stroke_color = luminance < 0.45f
+                               ? CFX_Color(CFX_Color::Type::kRGB, 1, 1, 1)
+                               : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
+
+  app_stream << GenerateColorAP(fill_color, PaintOperation::kFill);
+  app_stream << GenerateColorAP(stroke_color, PaintOperation::kStroke);
 
   static constexpr int kBorderWidth = 1;
   app_stream << kBorderWidth << " w\n";
@@ -1796,7 +1811,7 @@ bool GenerateTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const ByteS
                           rect.bottom + note_length);
   annot_dict->SetRectFor(pdfium::annotation::kRect, note_rect);
 
-  app_stream << GenerateTextSymbolAP(note_rect);
+  app_stream << GenerateTextSymbolAP(note_rect, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
