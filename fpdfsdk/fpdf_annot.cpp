@@ -3870,7 +3870,17 @@ EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot) {
   if (annot_index >= 0) {
     RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
     if (annots) {
+      RetainPtr<CPDF_Object> entry =
+          annots->GetMutableObjectAt(annot_index);
+      uint32_t objnum = 0;
+      if (entry && entry->IsReference()) {
+        objnum = entry->AsReference()->GetRefObjNum();
+      } else if (entry) {
+        objnum = entry->GetObjNum();
+      }
       annots->RemoveAt(annot_index);
+      if (objnum)
+        pPage->GetDocument()->DeleteIndirectObject(objnum);
     }
   }
 
@@ -3883,17 +3893,19 @@ EPDFPage_ApplyRedactions(FPDF_PAGE page) {
   if (!pPage)
     return false;
 
-  // First pass: collect all redaction areas, RO streams, and indices
+  // First pass: collect all redaction areas, RO streams, indices, and objnums
   std::vector<CFX_FloatRect> all_rects;
   std::vector<std::pair<RetainPtr<const CPDF_Stream>, CFX_FloatRect>> ro_streams;
-  std::vector<size_t> redact_indices;
+  std::vector<std::pair<size_t, uint32_t>> redact_index_objnums;
 
   RetainPtr<CPDF_Array> annot_list = pPage->GetMutableAnnotsArray();
   if (!annot_list || annot_list->IsEmpty())
     return false;
 
   for (size_t i = 0; i < annot_list->size(); ++i) {
-    RetainPtr<CPDF_Dictionary> annot_dict = annot_list->GetMutableDictAt(i);
+    RetainPtr<CPDF_Object> entry = annot_list->GetMutableObjectAt(i);
+    RetainPtr<CPDF_Dictionary> annot_dict =
+        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
     if (!annot_dict)
       continue;
 
@@ -3902,8 +3914,14 @@ EPDFPage_ApplyRedactions(FPDF_PAGE page) {
     if (subtype != "Redact")
       continue;
 
-    // Track index for later removal
-    redact_indices.push_back(i);
+    // Track index and indirect object number for later removal
+    uint32_t objnum = 0;
+    if (entry && entry->IsReference()) {
+      objnum = entry->AsReference()->GetRefObjNum();
+    } else if (annot_dict) {
+      objnum = annot_dict->GetObjNum();
+    }
+    redact_index_objnums.push_back({i, objnum});
 
     // Extract rectangles
     std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(annot_dict.Get());
@@ -3934,8 +3952,11 @@ EPDFPage_ApplyRedactions(FPDF_PAGE page) {
   }
 
   // Remove all REDACT annotations (in reverse order to maintain indices)
-  for (auto it = redact_indices.rbegin(); it != redact_indices.rend(); ++it) {
-    annot_list->RemoveAt(*it);
+  // and delete the underlying indirect objects to avoid orphans in the xref.
+  for (auto it = redact_index_objnums.rbegin(); it != redact_index_objnums.rend(); ++it) {
+    annot_list->RemoveAt(it->first);
+    if (it->second)
+      pPage->GetDocument()->DeleteIndirectObject(it->second);
   }
 
   return true;
