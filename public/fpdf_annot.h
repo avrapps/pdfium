@@ -1911,6 +1911,91 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode);
 
+// Experimental EmbedPDF Extension API.
+// Color types for the MK (appearance characteristics) dictionary on widget
+// annotations.  BC = border color, BG = background color.
+typedef enum {
+  EPDF_MK_COLOR_BC = 0,
+  EPDF_MK_COLOR_BG = 1,
+} EPDF_MK_COLORTYPE;
+
+// Experimental EmbedPDF Extension API.
+// Set a color in the widget annotation's /MK dictionary.
+//
+//   annot - handle to an annotation.
+//   type  - EPDF_MK_COLOR_BC (border) or EPDF_MK_COLOR_BG (background).
+//   R,G,B - color components in 0..255.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
+                     EPDF_MK_COLORTYPE type,
+                     unsigned int R,
+                     unsigned int G,
+                     unsigned int B);
+
+// Experimental EmbedPDF Extension API.
+// Get a color from the widget annotation's /MK dictionary.
+//
+//   annot - handle to an annotation.
+//   type  - EPDF_MK_COLOR_BC (border) or EPDF_MK_COLOR_BG (background).
+//   R,G,B - pointers to receive color components in 0..255.
+//
+// Returns true on success, false if no MK color is set or annot is invalid.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
+                     EPDF_MK_COLORTYPE type,
+                     unsigned int* R,
+                     unsigned int* G,
+                     unsigned int* B);
+
+// Experimental EmbedPDF Extension API.
+// Remove a color from the widget annotation's /MK dictionary.
+//
+//   annot - handle to an annotation.
+//   type  - EPDF_MK_COLOR_BC (border) or EPDF_MK_COLOR_BG (background).
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
+
+// Experimental EmbedPDF Extension API.
+// Create a form field widget annotation on a page.  This is the form-field
+// counterpart of FPDFPage_CreateAnnot -- it creates the /Widget annotation,
+// a parent field dictionary with /FT and base /Ff, wires /Parent//Kids,
+// registers the field in /AcroForm/Fields, and notifies the interactive form
+// model so that subsequent FPDFAnnot_SetFormFieldFlags etc. calls work.
+//
+//   page       - handle to the page.
+//   handle     - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
+//   field_type - one of FPDF_FORMFIELD_TEXTFIELD, FPDF_FORMFIELD_CHECKBOX,
+//                FPDF_FORMFIELD_RADIOBUTTON, FPDF_FORMFIELD_COMBOBOX,
+//                FPDF_FORMFIELD_LISTBOX, FPDF_FORMFIELD_PUSHBUTTON.
+//   field_name - the partial field name (/T).  May be NULL for unnamed fields.
+//
+// Returns a handle to the new annotation, or NULL on failure.
+// Caller must call FPDFPage_CloseAnnot() when done.
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_CreateFormField(FPDF_PAGE page,
+                         FPDF_FORMHANDLE handle,
+                         int field_type,
+                         FPDF_WIDESTRING field_name);
+
+// Experimental EmbedPDF Extension API.
+// Generate the appearance stream for a form field widget annotation.
+// The standard EPDFAnnot_GenerateAppearance does NOT handle Widget subtypes.
+// This function reads /FT (from the annotation dict or its /Parent) and
+// dispatches to the appropriate form AP generator:
+//   - /Tx  -> text field appearance
+//   - /Ch  -> combo box or list box appearance (based on /Ff flags)
+//   - /Btn -> returns true (buttons use custom AP/N state-based appearances)
+//
+//   annot - handle to a widget annotation.
+//
+// Returns true on success, false if the annotation is not a form field.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
