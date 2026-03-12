@@ -7,9 +7,10 @@
 #include "core/fpdfdoc/cpdf_generateap.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <sstream>
 #include <utility>
-#include <cmath> 
 
 #include "constants/annotation_common.h"
 #include "constants/appearance.h"
@@ -2226,6 +2227,235 @@ bool GenerateRedactAP(CPDF_Document* doc,
   return true;
 } 
 
+void GenerateTextFieldFormAP(
+    fxcrt::ostringstream& app_stream,
+    const CPDF_Dictionary* annot_dict,
+    const CFX_FloatRect& bbox,
+    const DefaultAppearanceInfo& da_info,
+    CPVT_VariableText::Provider& provider) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const bool has_bg =
+      mk.background_color.nColorType != CFX_Color::Type::kTransparent;
+  const bool has_bc =
+      mk.border_color.nColorType != CFX_Color::Type::kTransparent;
+
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const float bw = bs.width;
+  const float half_bw = bw / 2.0f;
+
+  CFX_FloatRect stroke_rect = bbox;
+  if (bw > 0) {
+    stroke_rect.Deflate(half_bw, half_bw);
+  }
+
+  CFX_FloatRect body_rect = bbox;
+  body_rect.Deflate(bw, bw);
+
+  if (has_bg) {
+    app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
+    WriteRect(app_stream, stroke_rect) << " re f*\n";
+  }
+
+  if (has_bc && bw > 0) {
+    app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+    WriteFloat(app_stream, bw) << " w\n";
+    WriteRect(app_stream, stroke_rect) << " re B*\n";
+  }
+
+  CFX_FloatRect clip_rect(bw, 0, bw + bbox.right, bbox.top);
+  WriteRect(app_stream, clip_rect) << " re W* n\n";
+
+  CPVT_VariableText vt(&provider);
+  ByteString body =
+      GenerateTextFieldAP(annot_dict, body_rect, da_info.font_size, vt);
+
+  app_stream << "/Tx BMC\n";
+  app_stream << "0 G 0 g 1 w\n";
+  app_stream << "BT\n";
+  app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kStroke);
+  app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kFill);
+
+  if (body.GetLength() > 0) {
+    app_stream << body;
+  }
+
+  app_stream << "0 G 0 g\n";
+  app_stream << "ET\n";
+
+  if (has_bc) {
+    app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+  }
+  if (has_bg) {
+    app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
+  }
+  if (bw > 0) {
+    WriteFloat(app_stream, bw) << " w\n";
+  }
+
+  app_stream << "EMC\n";
+}
+
+void GenerateComboBoxFormAP(
+    fxcrt::ostringstream& app_stream,
+    const CPDF_Dictionary* annot_dict,
+    const CFX_FloatRect& bbox,
+    const DefaultAppearanceInfo& da_info,
+    CPVT_VariableText::Provider& provider) {
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+  const BorderStyleInfo border_info =
+      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+
+  const ByteString background = GenerateColorAP(
+      dims.background_color, PaintOperation::kFill);
+  if (background.GetLength() > 0) {
+    app_stream << "q\n" << background;
+    WriteRect(app_stream, bbox) << " re f\nQ\n";
+  }
+
+  const ByteString border_stream =
+      GenerateBorderAP(bbox, border_info, dims.border_color);
+  if (border_stream.GetLength() > 0) {
+    app_stream << "q\n" << border_stream << "Q\n";
+  }
+
+  CFX_FloatRect body_rect = bbox;
+  body_rect.Deflate(border_info.width, border_info.width);
+
+  app_stream << GenerateComboBoxAP(annot_dict, body_rect, da_info.text_color,
+                                   da_info.font_size, provider);
+}
+
+void GenerateListBoxFormAP(
+    fxcrt::ostringstream& app_stream,
+    const CPDF_Dictionary* annot_dict,
+    const CFX_FloatRect& bbox,
+    const DefaultAppearanceInfo& da_info,
+    CPVT_VariableText::Provider& provider) {
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+  const BorderStyleInfo border_info =
+      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+
+  const ByteString background = GenerateColorAP(
+      dims.background_color, PaintOperation::kFill);
+  if (background.GetLength() > 0) {
+    app_stream << "q\n" << background;
+    WriteRect(app_stream, bbox) << " re f\nQ\n";
+  }
+
+  const ByteString border_stream =
+      GenerateBorderAP(bbox, border_info, dims.border_color);
+  if (border_stream.GetLength() > 0) {
+    app_stream << "q\n" << border_stream << "Q\n";
+  }
+
+  CFX_FloatRect body_rect = bbox;
+  body_rect.Deflate(border_info.width, border_info.width);
+
+  const ByteString body = GenerateListBoxAP(
+      annot_dict, body_rect, da_info.text_color, da_info.font_size, provider);
+  if (body.GetLength() > 0) {
+    app_stream << "/Tx BMC\nq\n";
+    WriteRect(app_stream, body_rect) << " re\nW\nn\n" << body << "Q\nEMC\n";
+  }
+}
+
+void GenerateCheckmarkPath(fxcrt::ostringstream& stream,
+                           const CFX_FloatRect& bbox) {
+  const float w = bbox.Width();
+  const float h = bbox.Height();
+
+  using PointRow = std::array<CFX_PointF, 3>;
+  std::array<PointRow, 8> pts = {{
+      {{CFX_PointF(0.28f, 0.52f), CFX_PointF(0.27f, 0.48f),
+        CFX_PointF(0.29f, 0.40f)}},
+      {{CFX_PointF(0.30f, 0.33f), CFX_PointF(0.31f, 0.29f),
+        CFX_PointF(0.31f, 0.28f)}},
+      {{CFX_PointF(0.39f, 0.28f), CFX_PointF(0.49f, 0.29f),
+        CFX_PointF(0.77f, 0.67f)}},
+      {{CFX_PointF(0.76f, 0.68f), CFX_PointF(0.78f, 0.69f),
+        CFX_PointF(0.76f, 0.75f)}},
+      {{CFX_PointF(0.76f, 0.75f), CFX_PointF(0.73f, 0.80f),
+        CFX_PointF(0.68f, 0.75f)}},
+      {{CFX_PointF(0.68f, 0.74f), CFX_PointF(0.68f, 0.74f),
+        CFX_PointF(0.44f, 0.47f)}},
+      {{CFX_PointF(0.43f, 0.47f), CFX_PointF(0.40f, 0.47f),
+        CFX_PointF(0.41f, 0.58f)}},
+      {{CFX_PointF(0.40f, 0.60f), CFX_PointF(0.28f, 0.66f),
+        CFX_PointF(0.30f, 0.56f)}},
+  }};
+
+  for (auto& row : pts) {
+    for (auto& pt : row) {
+      pt.x = pt.x * w + bbox.left;
+      pt.y = pt.y * h + bbox.bottom;
+    }
+  }
+
+  WritePoint(stream, pts[0][0]) << " m\n";
+  for (size_t i = 0; i < pts.size(); ++i) {
+    const size_t next = (i + 1) % pts.size();
+    const CFX_PointF& pt_next = pts[next][0];
+    const float px1 = pts[i][1].x - pts[i][0].x;
+    const float py1 = pts[i][1].y - pts[i][0].y;
+    const float px2 = pts[i][2].x - pt_next.x;
+    const float py2 = pts[i][2].y - pt_next.y;
+    WritePoint(stream, {pts[i][0].x + px1 * FXSYS_BEZIER,
+                        pts[i][0].y + py1 * FXSYS_BEZIER})
+        << " ";
+    WritePoint(stream, {pt_next.x + px2 * FXSYS_BEZIER,
+                        pt_next.y + py2 * FXSYS_BEZIER})
+        << " ";
+    WritePoint(stream, pt_next) << " c\n";
+  }
+}
+
+void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
+                            const AppearanceCharacteristics& mk,
+                            const BorderStyleInfo& bs,
+                            const CFX_FloatRect& bbox) {
+  const bool has_bg =
+      mk.background_color.nColorType != CFX_Color::Type::kTransparent;
+  const bool has_bc =
+      mk.border_color.nColorType != CFX_Color::Type::kTransparent;
+  const float bw = bs.width;
+  const float half_bw = bw / 2.0f;
+
+  CFX_FloatRect stroke_rect = bbox;
+  if (bw > 0) {
+    stroke_rect.Deflate(half_bw, half_bw);
+  }
+
+  if (has_bg) {
+    stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
+    WriteRect(stream, stroke_rect) << " re f*\n";
+  }
+
+  if (has_bc && bw > 0) {
+    stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+    WriteFloat(stream, bw) << " w\n";
+    WriteRect(stream, stroke_rect) << " re B*\n";
+  }
+}
+
+uint32_t CreateFormXObjectStream(CPDF_Document* doc,
+                                 fxcrt::ostringstream& content,
+                                 const CFX_FloatRect& bbox,
+                                 const CFX_Matrix& matrix) {
+  auto stream_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  stream_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  stream_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  stream_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  stream_dict->SetMatrixFor("Matrix", matrix);
+  stream_dict->SetRectFor("BBox", bbox);
+
+  auto stream = doc->NewIndirect<CPDF_Stream>(std::move(stream_dict));
+  stream->SetDataFromStringstreamAndRemoveFilter(&content);
+  return stream->GetObjNum();
+}
+ 
 }  // namespace
 
 // static
@@ -2268,27 +2498,8 @@ void CPDF_GenerateAP::GenerateFormAP(CPDF_Document* doc,
     return;
   }
 
-  const AnnotationDimensionsAndColor annot_dimensions_and_color =
+  const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
-  fxcrt::ostringstream app_stream;
-  const ByteString background = GenerateColorAP(
-      annot_dimensions_and_color.background_color, PaintOperation::kFill);
-  if (background.GetLength() > 0) {
-    app_stream << "q\n" << background;
-    WriteRect(app_stream, annot_dimensions_and_color.bbox) << " re f\nQ\n";
-  }
-
-  const BorderStyleInfo border_style_info =
-      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
-  const ByteString border_stream =
-      GenerateBorderAP(annot_dimensions_and_color.bbox, border_style_info,
-                       annot_dimensions_and_color.border_color);
-  if (border_stream.GetLength() > 0) {
-    app_stream << "q\n" << border_stream << "Q\n";
-  }
-
-  CFX_FloatRect body_rect = annot_dimensions_and_color.bbox;
-  body_rect.Deflate(border_style_info.width, border_style_info.width);
 
   RetainPtr<CPDF_Dictionary> ap_dict =
       annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
@@ -2311,51 +2522,31 @@ void CPDF_GenerateAP::GenerateFormAP(CPDF_Document* doc,
     ap_dict->SetNewFor<CPDF_Reference>("N", doc, normal_stream->GetObjNum());
   }
 
-  const float font_size = default_appearance_info.value().font_size;
-  const CFX_Color& text_color = default_appearance_info.value().text_color;
   CPVT_FontMap map(doc, std::move(resources_dict), std::move(default_font),
                    font_name);
   CPVT_VariableText::Provider provider(&map);
+
+  fxcrt::ostringstream app_stream;
   switch (type) {
-    case CPDF_GenerateAP::kTextField: {
-      CPVT_VariableText vt(&provider);
-      ByteString body =
-          GenerateTextFieldAP(annot_dict, body_rect, font_size, vt);
-      if (body.GetLength() > 0) {
-        const CFX_FloatRect content_rect = vt.GetContentRect();
-        app_stream << "/Tx BMC\n" << "q\n";
-        if (content_rect.Width() > body_rect.Width() ||
-            content_rect.Height() > body_rect.Height()) {
-          WriteRect(app_stream, body_rect) << " re\nW\nn\n";
-        }
-        app_stream << "BT\n"
-                   << GenerateColorAP(text_color, PaintOperation::kFill) << body
-                   << "ET\n"
-                   << "Q\nEMC\n";
-      }
+    case CPDF_GenerateAP::kTextField:
+      GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
+                              default_appearance_info.value(), provider);
       break;
-    }
-    case CPDF_GenerateAP::kComboBox: {
-      app_stream << GenerateComboBoxAP(annot_dict, body_rect, text_color,
-                                       font_size, provider);
+    case CPDF_GenerateAP::kComboBox:
+      GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
+                             default_appearance_info.value(), provider);
       break;
-    }
-    case CPDF_GenerateAP::kListBox: {
-      const ByteString body = GenerateListBoxAP(
-          annot_dict, body_rect, text_color, font_size, provider);
-      if (body.GetLength() > 0) {
-        app_stream << "/Tx BMC\nq\n";
-        WriteRect(app_stream, body_rect) << " re\nW\nn\n" << body << "Q\nEMC\n";
-      }
+    case CPDF_GenerateAP::kListBox:
+      GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
+                            default_appearance_info.value(), provider);
       break;
-    }
   }
 
   normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
   RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
-  stream_dict->SetMatrixFor("Matrix", annot_dimensions_and_color.matrix);
-  stream_dict->SetRectFor("BBox", annot_dimensions_and_color.bbox);
-
+  stream_dict->SetMatrixFor("Matrix", dims.matrix);
+  stream_dict->SetRectFor("BBox", dims.bbox);
+ 
   const bool cloned =
       CloneResourcesDictIfMissingFromStream(stream_dict, dr_dict);
   if (cloned) {
@@ -2363,6 +2554,48 @@ void CPDF_GenerateAP::GenerateFormAP(CPDF_Document* doc,
   }
 
   ValidateOrCreateFontResources(doc, stream_dict, font_dict, font_name);
+}
+
+// static
+void CPDF_GenerateAP::GenerateCheckboxFormAP(CPDF_Document* doc,
+                                             CPDF_Dictionary* annot_dict) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+
+  CFX_FloatRect body_rect = dims.bbox;
+  body_rect.Deflate(bs.width, bs.width);
+  CFX_FloatRect check_rect = body_rect.GetCenterSquare();
+
+  // Off state: box only (background fill + border stroke).
+  fxcrt::ostringstream off_content;
+  BuildCheckboxBoxStream(off_content, mk, bs, dims.bbox);
+
+  // Yes state: same box + checkmark path.
+  fxcrt::ostringstream yes_content;
+  BuildCheckboxBoxStream(yes_content, mk, bs, dims.bbox);
+  yes_content << "q\n";
+  yes_content << "0 0 0 rg\n";
+  GenerateCheckmarkPath(yes_content, check_rect);
+  yes_content << "f\nQ\n";
+
+  const uint32_t off_obj_num =
+      CreateFormXObjectStream(doc, off_content, dims.bbox, dims.matrix);
+  const uint32_t yes_obj_num =
+      CreateFormXObjectStream(doc, yes_content, dims.bbox, dims.matrix);
+
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  RetainPtr<CPDF_Dictionary> n_dict =
+      ap_dict->SetNewFor<CPDF_Dictionary>("N");
+  n_dict->SetNewFor<CPDF_Reference>("Off", doc, off_obj_num);
+  n_dict->SetNewFor<CPDF_Reference>("Yes", doc, yes_obj_num);
+
+  if (!annot_dict->KeyExist("AS")) {
+    annot_dict->SetNewFor<CPDF_Name>("AS", "Off");
+  }
 }
 
 // static

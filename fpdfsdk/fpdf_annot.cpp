@@ -4423,9 +4423,44 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
     return true;
   }
   if (ft == "Btn") {
-    // Buttons use AP/N state-based appearances; no auto-generation needed.
+    const bool is_pushbutton = ff & (1 << 16);
+    const bool is_radio = ff & (1 << 15);
+    if (!is_pushbutton && !is_radio) {
+      CPDF_GenerateAP::GenerateCheckboxFormAP(pDoc, pAnnotDict.Get());
+    }
     return true;
   }
 
   return false;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
+                            FPDF_ANNOTATION annot,
+                            FPDF_WIDESTRING value) {
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  return pFormField->SetValue(WideStringFromFPDFWideString(value),
+                              NotificationOption::kDoNotNotify);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
+                           FPDF_ANNOTATION annot,
+                           FPDF_WIDESTRING name) {
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pFieldDict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          pFormField->GetFieldDict().Get()));
+  if (!pFieldDict)
+    return false;
+
+  WideString ws_name = WideStringFromFPDFWideString(name);
+  pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
+  return true;
 }

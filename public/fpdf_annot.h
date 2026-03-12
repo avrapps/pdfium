@@ -1982,6 +1982,34 @@ EPDFPage_CreateFormField(FPDF_PAGE page,
                          FPDF_WIDESTRING field_name);
 
 // Experimental EmbedPDF Extension API.
+// Set the value (/V) of a form field associated with a widget annotation.
+//
+//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
+//   annot  - handle to a widget annotation.
+//   value  - the new value as a UTF-16LE string.
+//
+// Returns true on success, false if the annotation is not a form field
+// or the value could not be set.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
+                            FPDF_ANNOTATION annot,
+                            FPDF_WIDESTRING value);
+
+// Experimental EmbedPDF Extension API.
+// Set the partial field name (/T) of a form field associated with a widget
+// annotation.
+//
+//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
+//   annot  - handle to a widget annotation.
+//   name   - the new partial field name as a UTF-16LE string.
+//
+// Returns true on success, false if the annotation is not a form field.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
+                           FPDF_ANNOTATION annot,
+                           FPDF_WIDESTRING name);
+
+// Experimental EmbedPDF Extension API.
 // Generate the appearance stream for a form field widget annotation.
 // The standard EPDFAnnot_GenerateAppearance does NOT handle Widget subtypes.
 // This function reads /FT (from the annotation dict or its /Parent) and
