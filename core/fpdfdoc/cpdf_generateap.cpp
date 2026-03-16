@@ -2588,10 +2588,25 @@ void CPDF_GenerateAP::GenerateCheckboxFormAP(CPDF_Document* doc,
 
   RetainPtr<CPDF_Dictionary> ap_dict =
       annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+
+  ByteString on_state;
+  RetainPtr<const CPDF_Dictionary> old_n = ap_dict->GetDictFor("N");
+  if (old_n) {
+    CPDF_DictionaryLocker locker(old_n);
+    for (const auto& it : locker) {
+      if (it.first != "Off") {
+        on_state = it.first;
+        break;
+      }
+    }
+  }
+  if (on_state.IsEmpty())
+    on_state = "Yes";
+
   RetainPtr<CPDF_Dictionary> n_dict =
       ap_dict->SetNewFor<CPDF_Dictionary>("N");
   n_dict->SetNewFor<CPDF_Reference>("Off", doc, off_obj_num);
-  n_dict->SetNewFor<CPDF_Reference>("Yes", doc, yes_obj_num);
+  n_dict->SetNewFor<CPDF_Reference>(on_state, doc, yes_obj_num);
 
   if (!annot_dict->KeyExist("AS")) {
     annot_dict->SetNewFor<CPDF_Name>("AS", "Off");
