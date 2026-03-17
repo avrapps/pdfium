@@ -2424,6 +2424,43 @@ EPDFAnnot_GetBorderEffect(FPDF_ANNOTATION annot, float* intensity) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBorderEffect(FPDF_ANNOTATION annot, float intensity) {
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
+      subtype != FPDF_ANNOT_POLYGON && subtype != FPDF_ANNOT_FREETEXT) {
+    return false;
+  }
+
+  CPDF_Dictionary* pAnnotDict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pBEDict = pAnnotDict->SetNewFor<CPDF_Dictionary>("BE");
+  pBEDict->SetNewFor<CPDF_Name>("S", "C");
+  pBEDict->SetNewFor<CPDF_Number>("I", intensity);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearBorderEffect(FPDF_ANNOTATION annot) {
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
+      subtype != FPDF_ANNOT_POLYGON && subtype != FPDF_ANNOT_FREETEXT) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  pAnnotDict->RemoveFor("BE");
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
                                   float* left,
                                   float* top,

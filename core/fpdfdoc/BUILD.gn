@@ -23,6 +23,8 @@ source_set("fpdfdoc") {
     "cpdf_bookmark.h",
     "cpdf_bookmarktree.cpp",
     "cpdf_bookmarktree.h",
+    "cpdf_cloudy_border.cpp",
+    "cpdf_cloudy_border.h",
     "cpdf_color_utils.cpp",
     "cpdf_color_utils.h",
     "cpdf_defaultappearance.cpp",
