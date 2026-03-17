@@ -1267,6 +1267,26 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetBorderEffect(FPDF_ANNOTATION annot, float* intensity);
 
 // Experimental EmbedPDF Extension API.
+// Set a cloudy border effect (/BE dictionary with S=/C) on a supported
+// annotation.
+//
+//   annot     - handle to a square, circle, polygon, or free-text annotation.
+//   intensity - the cloudy effect intensity, typically 1.0 or 2.0.
+//
+// Returns true on success, false on failure or unsupported subtype.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBorderEffect(FPDF_ANNOTATION annot, float intensity);
+
+// Experimental EmbedPDF Extension API.
+// Remove the border effect (/BE dictionary) from a supported annotation.
+//
+//   annot  - handle to a square, circle, polygon, or free-text annotation.
+//
+// Returns true on success, false on failure or unsupported subtype.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearBorderEffect(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
 // Get the rectangle differences (/RD) — the inset between an annotation's
 // /Rect and its drawn appearance — for a supported annotation.
 //
