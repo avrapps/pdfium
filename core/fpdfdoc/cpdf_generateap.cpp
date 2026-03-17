@@ -2250,28 +2250,32 @@ void GenerateTextFieldFormAP(
   }
 
   CFX_FloatRect body_rect = bbox;
-  body_rect.Deflate(bw, bw);
+  body_rect.Deflate(2.0f * bw, bw);
 
+  // Background + border in isolated graphics state
+  app_stream << "q\n";
   if (has_bg) {
     app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
-    WriteRect(app_stream, stroke_rect) << " re f*\n";
+    WriteRect(app_stream, bbox) << " re f*\n";
   }
-
   if (has_bc && bw > 0) {
     app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
     WriteFloat(app_stream, bw) << " w\n";
-    WriteRect(app_stream, stroke_rect) << " re B*\n";
+    WriteRect(app_stream, stroke_rect) << " re s\n";
   }
+  app_stream << "Q\n";
 
-  CFX_FloatRect clip_rect(bw, 0, bw + bbox.right, bbox.top);
-  WriteRect(app_stream, clip_rect) << " re W* n\n";
+  // Text content in isolated graphics state with proper clipping
+  app_stream << "/Tx BMC\nq\n";
+
+  CFX_FloatRect clip_rect = bbox;
+  clip_rect.Deflate(bw, bw);
+  WriteRect(app_stream, clip_rect) << " re W n\n";
 
   CPVT_VariableText vt(&provider);
   ByteString body =
       GenerateTextFieldAP(annot_dict, body_rect, da_info.font_size, vt);
 
-  app_stream << "/Tx BMC\n";
-  app_stream << "0 G 0 g 1 w\n";
   app_stream << "BT\n";
   app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kStroke);
   app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kFill);
@@ -2282,18 +2286,7 @@ void GenerateTextFieldFormAP(
 
   app_stream << "0 G 0 g\n";
   app_stream << "ET\n";
-
-  if (has_bc) {
-    app_stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
-  }
-  if (has_bg) {
-    app_stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
-  }
-  if (bw > 0) {
-    WriteFloat(app_stream, bw) << " w\n";
-  }
-
-  app_stream << "EMC\n";
+  app_stream << "Q\nEMC\n";
 }
 
 void GenerateComboBoxFormAP(
@@ -2776,27 +2769,41 @@ bool CPDF_GenerateAP::UpdateDefaultAppearance(
     CPDF_Annot::StandardFont font,
     float font_size,
     const CFX_Color& color) {
-  RetainPtr<CPDF_Dictionary> root_dict = doc->GetMutableRoot();
-  if (!root_dict) {
-    return false;
-  }
+  ByteString resource_key;
 
-  RetainPtr<CPDF_Dictionary> acroform_dict =
-      root_dict->GetMutableDictFor("AcroForm");
-  if (!acroform_dict) {
-    acroform_dict = CPDF_InteractiveForm::InitAcroFormDict(doc);
-    CHECK(acroform_dict);
-  }
+  // When font is kUnknown, preserve the existing non-standard font resource
+  // key from the current DA string instead of failing. This allows updating
+  // fontSize and fontColor without replacing the original font.
+  if (font == CPDF_Annot::StandardFont::kUnknown) {
+    ByteString existing_da = annot_dict->GetByteStringFor("DA");
+    CPDF_DefaultAppearance current_da(existing_da);
+    auto font_info = current_da.GetFont();
+    if (!font_info.has_value() || font_info->name.IsEmpty())
+      return false;
+    resource_key = font_info->name;
+  } else {
+    RetainPtr<CPDF_Dictionary> root_dict = doc->GetMutableRoot();
+    if (!root_dict) {
+      return false;
+    }
 
-  ByteString base_font_name = CPDF_Annot::StandardFontToString(font);
-  if (base_font_name.IsEmpty()) {
-    return false;
-  }
+    RetainPtr<CPDF_Dictionary> acroform_dict =
+        root_dict->GetMutableDictFor("AcroForm");
+    if (!acroform_dict) {
+      acroform_dict = CPDF_InteractiveForm::InitAcroFormDict(doc);
+      CHECK(acroform_dict);
+    }
 
-  ByteString resource_key =
-      EnsureFontInAcroFormDR(doc, acroform_dict.Get(), base_font_name);
-  if (resource_key.IsEmpty()) {
-    return false;
+    ByteString base_font_name = CPDF_Annot::StandardFontToString(font);
+    if (base_font_name.IsEmpty()) {
+      return false;
+    }
+
+    resource_key =
+        EnsureFontInAcroFormDR(doc, acroform_dict.Get(), base_font_name);
+    if (resource_key.IsEmpty()) {
+      return false;
+    }
   }
 
   ByteString da_font_part = StringFromFontNameAndSize(resource_key, font_size);

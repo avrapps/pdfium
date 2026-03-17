@@ -2989,23 +2989,18 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Validate parameters.
-  if (font < FPDF_FONT_COURIER || font > FPDF_FONT_ZAPFDINGBATS ||
-      font_size < 0 || R > 255 || G > 255 || B > 255) {
+  // Validate parameters. Allow FPDF_FONT_UNKNOWN to preserve non-standard fonts.
+  if (font != FPDF_FONT_UNKNOWN &&
+      (font < FPDF_FONT_COURIER || font > FPDF_FONT_ZAPFDINGBATS)) {
+    return false;
+  }
+  if (font_size < 0 || R > 255 || G > 255 || B > 255) {
     return false;
   }
 
   auto internal_font = static_cast<CPDF_Annot::StandardFont>(font);
-
-  // The type-safe enum is passed to the helper.
-  bool success = CPDF_GenerateAP::UpdateDefaultAppearance(
+  return CPDF_GenerateAP::UpdateDefaultAppearance(
       doc, annot_dict.Get(), internal_font, font_size, CFX_Color(R, G, B));
-
-  if (success) {
-    annot_dict->RemoveFor(pdfium::annotation::kAP);
-  }
-
-  return success;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3103,11 +3098,6 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot, FPDF_TEXT_ALIGNMENT alignment)
 
   // Set the /Q key in the annotation dictionary to the integer value of the enum.
   annot_dict->SetNewFor<CPDF_Number>("Q", static_cast<int>(alignment));
-
-  // The change to /Q directly affects the visual layout of the text.
-  // We MUST remove the old appearance stream to signal that it is now
-  // invalid and needs to be regenerated.
-  annot_dict->RemoveFor(pdfium::annotation::kAP);
 
   return true;
 }
@@ -4462,5 +4452,31 @@ EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
 
   WideString ws_name = WideStringFromFPDFWideString(name);
   pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
+                              FPDF_ANNOTATION annot,
+                              const FPDF_WIDESTRING* labels,
+                              int count) {
+  if (count < 0 || (count > 0 && !labels))
+    return false;
+
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pFieldDict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          pFormField->GetFieldDict().Get()));
+  if (!pFieldDict)
+    return false;
+
+  RetainPtr<CPDF_Array> pOpt = pFieldDict->SetNewFor<CPDF_Array>("Opt");
+  for (int i = 0; i < count; i++) {
+    WideString ws_label = WideStringFromFPDFWideString(labels[i]);
+    pOpt->AppendNew<CPDF_String>(ws_label.AsStringView());
+  }
   return true;
 }

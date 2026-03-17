@@ -2010,6 +2010,23 @@ EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
                            FPDF_WIDESTRING name);
 
 // Experimental EmbedPDF Extension API.
+// Set the options (/Opt array) for a Choice form field (ComboBox or ListBox).
+// Replaces any existing options with the provided labels.
+//
+//   handle - handle to the form fill environment.
+//   annot  - handle to a widget annotation backed by a Choice field.
+//   labels - array of |count| UTF-16LE option label strings.
+//   count  - number of entries in |labels|.  Pass 0 to clear all options.
+//
+// Returns true on success, false if the annotation is not a form field
+// or if |labels| is NULL when |count| > 0.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
+                              FPDF_ANNOTATION annot,
+                              const FPDF_WIDESTRING* labels,
+                              int count);
+
+// Experimental EmbedPDF Extension API.
 // Generate the appearance stream for a form field widget annotation.
 // The standard EPDFAnnot_GenerateAppearance does NOT handle Widget subtypes.
 // This function reads /FT (from the annotation dict or its /Parent) and
