@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1493,6 +1494,29 @@ EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
   return page->GetPageRotation();
 }
 
+// Walk the page tree (/Parent chain) to resolve an inherited rectangle
+// attribute. Mirrors the logic of CPDF_Page::GetPageAttr + GetBox but works
+// directly on a dictionary pointer so we can avoid constructing a CPDF_Page.
+static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* pPageDict,
+                                      ByteStringView name) {
+  std::set<const CPDF_Dictionary*> visited;
+  const CPDF_Dictionary* pDict = pPageDict;
+  while (pDict && !visited.contains(pDict)) {
+    RetainPtr<const CPDF_Object> pObj = pDict->GetDirectObjectFor(name);
+    if (pObj) {
+      RetainPtr<const CPDF_Array> pArray = ToArray(std::move(pObj));
+      if (pArray) {
+        CFX_FloatRect rect = pArray->GetRect();
+        rect.Normalize();
+        return rect;
+      }
+    }
+    visited.insert(pDict);
+    pDict = pDict->GetDictFor(pdfium::page_object::kParent).Get();
+  }
+  return CFX_FloatRect();
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
                                    int page_index,
@@ -1511,12 +1535,14 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
   if (!dict)
     return false;
 
-  // Get bbox WITHOUT rotation adjustment
-  CFX_FloatRect mediabox = dict->GetRectFor(pdfium::page_object::kMediaBox);
+  // Resolve MediaBox/CropBox via page tree inheritance (not just the page dict)
+  CFX_FloatRect mediabox =
+      GetInheritedRect(dict.Get(), pdfium::page_object::kMediaBox);
   if (mediabox.IsEmpty())
     mediabox = CFX_FloatRect(0, 0, 612, 792);
 
-  CFX_FloatRect cropbox = dict->GetRectFor(pdfium::page_object::kCropBox);
+  CFX_FloatRect cropbox =
+      GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
   CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
   bbox.Intersect(mediabox);
 

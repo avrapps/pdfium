@@ -32,6 +32,7 @@
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
@@ -918,6 +919,29 @@ ByteString GetPaintOperatorString(bool is_stroke_rect, bool is_fill_rect) {
   return is_fill_rect ? "f" : "n";
 }
 
+struct CloudyBorderInfo {
+  bool is_cloudy = false;
+  float intensity = 0;
+};
+
+CloudyBorderInfo GetCloudyBorderInfo(const CPDF_Dictionary* annot_dict) {
+  CloudyBorderInfo info;
+  RetainPtr<const CPDF_Dictionary> be = annot_dict->GetDictFor("BE");
+  if (!be || be->GetNameFor("S") != "C")
+    return info;
+  info.is_cloudy = true;
+  info.intensity = be->KeyExist("I") ? be->GetFloatFor("I") : 1.0f;
+  return info;
+}
+
+CFX_FloatRect GetRectDifferences(const CPDF_Dictionary* annot_dict) {
+  RetainPtr<const CPDF_Array> rd = annot_dict->GetArrayFor("RD");
+  if (!rd || rd->size() < 4)
+    return CFX_FloatRect();
+  return CFX_FloatRect(rd->GetFloatAt(0), rd->GetFloatAt(1),
+                       rd->GetFloatAt(2), rd->GetFloatAt(3));
+}
+
 ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
                                 const CPDF_Dictionary& annot_dict) {
   fxcrt::ostringstream app_stream;
@@ -1379,52 +1403,50 @@ bool GenerateCircleAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const Byt
 
   float border_width = GetBorderWidth(annot_dict);
   bool is_stroke_rect = border_width > 0;
+  CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
 
   if (is_stroke_rect) {
     app_stream << border_width << " w ";
-    app_stream << GetDashPatternString(annot_dict);
+    if (cloudy_info.is_cloudy) {
+      app_stream << "1 j ";
+    } else {
+      app_stream << GetDashPatternString(annot_dict);
+    }
   }
 
-  // Get rotation info -- if rotated, draws in local unrotated space
   const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
   CFX_FloatRect draw_rect = rot_info.bbox;
   draw_rect.Normalize();
 
-  if (is_stroke_rect) {
-    // Deflating rect because stroking a path entails painting all points
-    // whose perpendicular distance from the path in user space is less than
-    // or equal to half the line width.
-    draw_rect.Deflate(border_width / 2, border_width / 2);
+  if (cloudy_info.is_cloudy) {
+    CFX_FloatRect rd = GetRectDifferences(annot_dict);
+    GenerateCloudyEllipsePath(app_stream, draw_rect, rd,
+                              cloudy_info.intensity, border_width);
+  } else {
+    if (is_stroke_rect)
+      draw_rect.Deflate(border_width / 2, border_width / 2);
+
+    const float middle_x = (draw_rect.left + draw_rect.right) / 2;
+    const float middle_y = (draw_rect.top + draw_rect.bottom) / 2;
+
+    static constexpr float kL = 0.5523f;
+    const float delta_x = kL * draw_rect.Width() / 2.0;
+    const float delta_y = kL * draw_rect.Height() / 2.0;
+
+    app_stream << middle_x << " " << draw_rect.top << " m\n";
+    app_stream << middle_x + delta_x << " " << draw_rect.top << " "
+               << draw_rect.right << " " << middle_y + delta_y << " "
+               << draw_rect.right << " " << middle_y << " c\n";
+    app_stream << draw_rect.right << " " << middle_y - delta_y << " "
+               << middle_x + delta_x << " " << draw_rect.bottom << " "
+               << middle_x << " " << draw_rect.bottom << " c\n";
+    app_stream << middle_x - delta_x << " " << draw_rect.bottom << " "
+               << draw_rect.left << " " << middle_y - delta_y << " "
+               << draw_rect.left << " " << middle_y << " c\n";
+    app_stream << draw_rect.left << " " << middle_y + delta_y << " "
+               << middle_x - delta_x << " " << draw_rect.top << " "
+               << middle_x << " " << draw_rect.top << " c\n";
   }
-
-  const float middle_x = (draw_rect.left + draw_rect.right) / 2;
-  const float middle_y = (draw_rect.top + draw_rect.bottom) / 2;
-
-  // `kL` is precalculated approximate value of 4 * tan((3.14 / 2) / 4) / 3,
-  // where `kL` * radius is a good approximation of control points for
-  // arc with 90 degrees.
-  static constexpr float kL = 0.5523f;
-  const float delta_x = kL * draw_rect.Width() / 2.0;
-  const float delta_y = kL * draw_rect.Height() / 2.0;
-
-  // Starting point
-  app_stream << middle_x << " " << draw_rect.top << " m\n";
-  // First Bezier Curve
-  app_stream << middle_x + delta_x << " " << draw_rect.top << " "
-             << draw_rect.right << " " << middle_y + delta_y << " "
-             << draw_rect.right << " " << middle_y << " c\n";
-  // Second Bezier Curve
-  app_stream << draw_rect.right << " " << middle_y - delta_y << " "
-             << middle_x + delta_x << " " << draw_rect.bottom << " "
-             << middle_x << " " << draw_rect.bottom << " c\n";
-  // Third Bezier Curve
-  app_stream << middle_x - delta_x << " " << draw_rect.bottom << " "
-             << draw_rect.left << " " << middle_y - delta_y << " "
-             << draw_rect.left << " " << middle_y << " c\n";
-  // Fourth Bezier Curve
-  app_stream << draw_rect.left << " " << middle_y + delta_y << " "
-             << middle_x - delta_x << " " << draw_rect.top << " " << middle_x
-             << " " << draw_rect.top << " c\n";
 
   bool is_fill_rect = interior_color && !interior_color->IsEmpty();
   app_stream << GetPaintOperatorString(is_stroke_rect, is_fill_rect) << "\n";
@@ -1611,39 +1633,48 @@ bool GeneratePolygonAP(CPDF_Document* doc,
   if (!verts || verts->size() < 6)
     return false;
 
-  // ── colours & graphics state ------------------------------------------------
   fxcrt::ostringstream app;
   app << "/" << kGSDictName << " gs ";
 
   RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
   app << GetColorStringWithDefault(
             interior_color.Get(),
-            CFX_Color(CFX_Color::Type::kTransparent),  // default: no fill
+            CFX_Color(CFX_Color::Type::kTransparent),
             PaintOperation::kFill);
 
   app << GetColorStringWithDefault(
             annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
-            CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),  // default stroke: black
+            CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0),
             PaintOperation::kStroke);
 
   const float border_w = GetBorderWidth(annot_dict);
-  const bool  do_stroke = border_w > 0;
+  const bool do_stroke = border_w > 0;
+  CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
+
   if (do_stroke) {
     app << border_w << " w ";
-    app << GetDashPatternString(annot_dict);
+    if (cloudy_info.is_cloudy) {
+      app << "1 j ";
+    } else {
+      app << GetDashPatternString(annot_dict);
+    }
   }
 
-  // ── path -------------------------------------------------------------------
-  // Move to first point
-  app << verts->GetFloatAt(0) << " " << verts->GetFloatAt(1) << " m ";
-  for (size_t i = 2; i + 1 < verts->size(); i += 2)
-    app << verts->GetFloatAt(i) << " " << verts->GetFloatAt(i + 1) << " l ";
-  app << "h ";  // close path
+  if (cloudy_info.is_cloudy) {
+    std::vector<CFX_PointF> points;
+    for (size_t i = 0; i + 1 < verts->size(); i += 2)
+      points.push_back({verts->GetFloatAt(i), verts->GetFloatAt(i + 1)});
+    GenerateCloudyPolygonPath(app, points, cloudy_info.intensity, border_w);
+  } else {
+    app << verts->GetFloatAt(0) << " " << verts->GetFloatAt(1) << " m ";
+    for (size_t i = 2; i + 1 < verts->size(); i += 2)
+      app << verts->GetFloatAt(i) << " " << verts->GetFloatAt(i + 1) << " l ";
+    app << "h ";
+  }
 
   const bool do_fill = interior_color && !interior_color->IsEmpty();
   app << GetPaintOperatorString(do_stroke, do_fill) << "\n";
 
-  // ── resources / stream dict -------------------------------------------------
   auto gs_dict  = GenerateExtGStateDict(*annot_dict, blend_name);
   auto res_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
   GenerateAndSetAPDict(doc, annot_dict, &app, std::move(res_dict),
@@ -1907,27 +1938,34 @@ bool GenerateSquareAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const Byt
 
   float border_width = GetBorderWidth(annot_dict);
   const bool is_stroke_rect = border_width > 0;
+  CloudyBorderInfo cloudy_info = GetCloudyBorderInfo(annot_dict);
+
   if (is_stroke_rect) {
     app_stream << border_width << " w ";
-    app_stream << GetDashPatternString(annot_dict);
+    if (cloudy_info.is_cloudy) {
+      app_stream << "1 j ";
+    } else {
+      app_stream << GetDashPatternString(annot_dict);
+    }
   }
 
-  // Get rotation info -- if rotated, draws in local unrotated space
   const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
   CFX_FloatRect draw_rect = rot_info.bbox;
   draw_rect.Normalize();
 
-  if (is_stroke_rect) {
-    // Deflating rect because stroking a path entails painting all points
-    // whose perpendicular distance from the path in user space is less than
-    // or equal to half the line width.
-    draw_rect.Deflate(border_width / 2, border_width / 2);
+  if (cloudy_info.is_cloudy) {
+    CFX_FloatRect rd = GetRectDifferences(annot_dict);
+    GenerateCloudyRectanglePath(app_stream, draw_rect, rd,
+                                cloudy_info.intensity, border_width);
+  } else {
+    if (is_stroke_rect)
+      draw_rect.Deflate(border_width / 2, border_width / 2);
+    app_stream << draw_rect.left << " " << draw_rect.bottom << " "
+               << draw_rect.Width() << " " << draw_rect.Height() << " re ";
   }
 
   const bool is_fill_rect = interior_color && (interior_color->size() > 0);
-  app_stream << draw_rect.left << " " << draw_rect.bottom << " "
-             << draw_rect.Width() << " " << draw_rect.Height() << " re "
-             << GetPaintOperatorString(is_stroke_rect, is_fill_rect) << "\n";
+  app_stream << GetPaintOperatorString(is_stroke_rect, is_fill_rect) << "\n";
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
