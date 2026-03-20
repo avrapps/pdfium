@@ -4488,7 +4488,9 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   if (ft == "Btn") {
     const bool is_pushbutton = ff & (1 << 16);
     const bool is_radio = ff & (1 << 15);
-    if (!is_pushbutton && !is_radio) {
+    if (is_radio) {
+      CPDF_GenerateAP::GenerateRadioButtonFormAP(pDoc, pAnnotDict.Get());
+    } else if (!is_pushbutton) {
       CPDF_GenerateAP::GenerateCheckboxFormAP(pDoc, pAnnotDict.Get());
     }
     return true;

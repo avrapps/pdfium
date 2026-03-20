@@ -2644,6 +2644,164 @@ void CPDF_GenerateAP::GenerateCheckboxFormAP(CPDF_Document* doc,
   }
 }
 
+void BuildRadioCircleStream(fxcrt::ostringstream& stream,
+                            const AppearanceCharacteristics& mk,
+                            const BorderStyleInfo& bs,
+                            const CFX_FloatRect& bbox) {
+  const bool has_bg =
+      mk.background_color.nColorType != CFX_Color::Type::kTransparent;
+  const bool has_bc =
+      mk.border_color.nColorType != CFX_Color::Type::kTransparent;
+  const float bw = bs.width;
+  const float half_bw = bw / 2.0f;
+
+  const float cx = (bbox.left + bbox.right) / 2.0f;
+  const float cy = (bbox.bottom + bbox.top) / 2.0f;
+  const float rx = (bbox.right - bbox.left) / 2.0f;
+  const float ry = (bbox.top - bbox.bottom) / 2.0f;
+
+  constexpr float kKappa = 0.5523f;
+
+  auto WriteEllipse = [&](fxcrt::ostringstream& s, float erx, float ery) {
+    const float dx = kKappa * erx;
+    const float dy = kKappa * ery;
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy + ery) << " m\n";
+    WriteFloat(s, cx + dx) << " ";
+    WriteFloat(s, cy + ery) << " ";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy + dy) << " ";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy) << " c\n";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy - dy) << " ";
+    WriteFloat(s, cx + dx) << " ";
+    WriteFloat(s, cy - ery) << " ";
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy - ery) << " c\n";
+    WriteFloat(s, cx - dx) << " ";
+    WriteFloat(s, cy - ery) << " ";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy - dy) << " ";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy) << " c\n";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy + dy) << " ";
+    WriteFloat(s, cx - dx) << " ";
+    WriteFloat(s, cy + ery) << " ";
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy + ery) << " c\n";
+    s << "h\n";
+  };
+
+  if (has_bg) {
+    stream << GenerateColorAP(mk.background_color, PaintOperation::kFill);
+    WriteEllipse(stream, rx - half_bw, ry - half_bw);
+    stream << "f*\n";
+  }
+
+  if (has_bc && bw > 0) {
+    stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
+    WriteFloat(stream, bw) << " w\n";
+    WriteEllipse(stream, rx - half_bw, ry - half_bw);
+    stream << "S\n";
+  }
+}
+
+// static
+void CPDF_GenerateAP::GenerateRadioButtonFormAP(CPDF_Document* doc,
+                                                CPDF_Dictionary* annot_dict) {
+  const AppearanceCharacteristics mk =
+      GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
+  const BorderStyleInfo bs = GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+  const AnnotationDimensionsAndColor dims =
+      GetAnnotationDimensionsAndColor(annot_dict);
+
+  const float cx = (dims.bbox.left + dims.bbox.right) / 2.0f;
+  const float cy = (dims.bbox.bottom + dims.bbox.top) / 2.0f;
+  const float rx = (dims.bbox.right - dims.bbox.left) / 2.0f;
+  const float ry = (dims.bbox.top - dims.bbox.bottom) / 2.0f;
+  const float inner_rx = (rx - bs.width) * 0.5f;
+  const float inner_ry = (ry - bs.width) * 0.5f;
+
+  constexpr float kKappa = 0.5523f;
+
+  auto WriteEllipse = [&](fxcrt::ostringstream& s, float erx, float ery) {
+    const float dx = kKappa * erx;
+    const float dy = kKappa * ery;
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy + ery) << " m\n";
+    WriteFloat(s, cx + dx) << " ";
+    WriteFloat(s, cy + ery) << " ";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy + dy) << " ";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy) << " c\n";
+    WriteFloat(s, cx + erx) << " ";
+    WriteFloat(s, cy - dy) << " ";
+    WriteFloat(s, cx + dx) << " ";
+    WriteFloat(s, cy - ery) << " ";
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy - ery) << " c\n";
+    WriteFloat(s, cx - dx) << " ";
+    WriteFloat(s, cy - ery) << " ";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy - dy) << " ";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy) << " c\n";
+    WriteFloat(s, cx - erx) << " ";
+    WriteFloat(s, cy + dy) << " ";
+    WriteFloat(s, cx - dx) << " ";
+    WriteFloat(s, cy + ery) << " ";
+    WriteFloat(s, cx) << " ";
+    WriteFloat(s, cy + ery) << " c\n";
+    s << "h\n";
+  };
+
+  // Off state: circle only (background fill + border stroke).
+  fxcrt::ostringstream off_content;
+  BuildRadioCircleStream(off_content, mk, bs, dims.bbox);
+
+  // Yes state: same circle + filled inner dot.
+  fxcrt::ostringstream yes_content;
+  BuildRadioCircleStream(yes_content, mk, bs, dims.bbox);
+  yes_content << "q\n";
+  yes_content << "0 0 0 rg\n";
+  WriteEllipse(yes_content, inner_rx, inner_ry);
+  yes_content << "f*\nQ\n";
+
+  const uint32_t off_obj_num =
+      CreateFormXObjectStream(doc, off_content, dims.bbox, dims.matrix);
+  const uint32_t yes_obj_num =
+      CreateFormXObjectStream(doc, yes_content, dims.bbox, dims.matrix);
+
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+
+  ByteString on_state;
+  RetainPtr<const CPDF_Dictionary> old_n = ap_dict->GetDictFor("N");
+  if (old_n) {
+    CPDF_DictionaryLocker locker(old_n);
+    for (const auto& it : locker) {
+      if (it.first != "Off") {
+        on_state = it.first;
+        break;
+      }
+    }
+  }
+  if (on_state.IsEmpty())
+    on_state = "Yes";
+
+  RetainPtr<CPDF_Dictionary> n_dict =
+      ap_dict->SetNewFor<CPDF_Dictionary>("N");
+  n_dict->SetNewFor<CPDF_Reference>("Off", doc, off_obj_num);
+  n_dict->SetNewFor<CPDF_Reference>(on_state, doc, yes_obj_num);
+
+  if (!annot_dict->KeyExist("AS")) {
+    annot_dict->SetNewFor<CPDF_Name>("AS", "Off");
+  }
+}
+
 // static
 void CPDF_GenerateAP::GenerateEmptyAP(CPDF_Document* doc,
                                       CPDF_Dictionary* annot_dict) {

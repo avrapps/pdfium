@@ -25,6 +25,9 @@ class CPDF_GenerateAP {
   static void GenerateCheckboxFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict);
 
+  static void GenerateRadioButtonFormAP(CPDF_Document* doc,
+                                        CPDF_Dictionary* annot_dict);
+
   static void GenerateEmptyAP(CPDF_Document* doc, CPDF_Dictionary* pAnnotDict);
 
   static bool GenerateAnnotAP(CPDF_Document* doc,
