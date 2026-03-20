@@ -2467,7 +2467,7 @@ void BuildCheckboxBoxStream(fxcrt::ostringstream& stream,
   if (has_bc && bw > 0) {
     stream << GenerateColorAP(mk.border_color, PaintOperation::kStroke);
     WriteFloat(stream, bw) << " w\n";
-    WriteRect(stream, stroke_rect) << " re B*\n";
+    WriteRect(stream, stroke_rect) << " re S\n";
   }
 }
 
