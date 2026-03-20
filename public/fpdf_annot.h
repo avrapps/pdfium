@@ -2030,6 +2030,34 @@ EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
                            FPDF_WIDESTRING name);
 
 // Experimental EmbedPDF Extension API.
+// Returns the object number of the logical form field dictionary associated
+// with a widget annotation.
+//
+//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
+//   annot  - handle to a widget annotation.
+//
+// Returns the field dictionary object number on success, or 0 if the
+// annotation is not a form field or has no indirect field dictionary.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle,
+                                   FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Re-parent the source widget field into the target widget field so both
+// widgets share the same logical AcroForm field.
+//
+//   handle       - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
+//   source_annot - handle to the widget annotation whose field should be merged.
+//   target_annot - handle to the widget annotation whose field should be reused.
+//
+// Returns true on success, false if the annotations are not compatible form
+// fields or the share operation could not be completed.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
+                         FPDF_ANNOTATION source_annot,
+                         FPDF_ANNOTATION target_annot);
+
+// Experimental EmbedPDF Extension API.
 // Set the options (/Opt array) for a Choice form field (ComboBox or ListBox).
 // Replaces any existing options with the provided labels.
 //

@@ -680,6 +680,42 @@ CPDF_FormField* GetFormField(FPDF_FORMHANDLE hHandle, FPDF_ANNOTATION annot) {
   return pPDFForm->GetFieldByDict(pAnnotDict);
 }
 
+RetainPtr<CPDF_Dictionary> GetMutableFieldDict(CPDF_FormField* pFormField) {
+  if (!pFormField) {
+    return nullptr;
+  }
+
+  return pdfium::WrapRetain(
+      const_cast<CPDF_Dictionary*>(pFormField->GetFieldDict().Get()));
+}
+
+bool ArrayContainsDictWithObjNum(const CPDF_Array* pArray, uint32_t obj_num) {
+  if (!pArray || obj_num == 0) {
+    return false;
+  }
+
+  for (size_t i = 0; i < pArray->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i);
+    if (pDict && pDict->GetObjNum() == obj_num) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void RemoveDictWithObjNumFromArray(CPDF_Array* pArray, uint32_t obj_num) {
+  if (!pArray || obj_num == 0) {
+    return;
+  }
+
+  for (size_t i = pArray->size(); i > 0; --i) {
+    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i - 1);
+    if (pDict && pDict->GetObjNum() == obj_num) {
+      pArray->RemoveAt(i - 1);
+    }
+  }
+}
+
 // If `allowed_types` is empty, then match all types.
 const CPDFSDK_Widget* GetWidgetOfTypes(
     FPDF_FORMHANDLE hHandle,
@@ -4489,6 +4525,107 @@ EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
 
   WideString ws_name = WideStringFromFPDFWideString(name);
   pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
+  return true;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> pFieldDict = GetMutableFieldDict(GetFormField(handle, annot));
+  if (!pFieldDict) {
+    return 0;
+  }
+
+  return static_cast<int>(pFieldDict->GetObjNum());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
+                         FPDF_ANNOTATION source_annot,
+                         FPDF_ANNOTATION target_annot) {
+  CPDFSDK_InteractiveForm* pSDKForm = FormHandleToInteractiveForm(handle);
+  if (!pSDKForm) {
+    return false;
+  }
+
+  CPDF_FormField* pSourceField = GetFormField(handle, source_annot);
+  CPDF_FormField* pTargetField = GetFormField(handle, target_annot);
+  if (!pSourceField || !pTargetField) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pSourceFieldDict = GetMutableFieldDict(pSourceField);
+  RetainPtr<CPDF_Dictionary> pTargetFieldDict = GetMutableFieldDict(pTargetField);
+  if (!pSourceFieldDict || !pTargetFieldDict) {
+    return false;
+  }
+
+  if (pSourceFieldDict->GetObjNum() == pTargetFieldDict->GetObjNum()) {
+    return true;
+  }
+
+  if (pSourceField->GetType() != pTargetField->GetType()) {
+    return false;
+  }
+
+  CPDF_AnnotContext* pSourceContext = CPDFAnnotContextFromFPDFAnnotation(source_annot);
+  CPDF_AnnotContext* pTargetContext = CPDFAnnotContextFromFPDFAnnotation(target_annot);
+  if (!pSourceContext || !pTargetContext) {
+    return false;
+  }
+
+  IPDF_Page* pSourcePage = pSourceContext->GetPage();
+  IPDF_Page* pTargetPage = pTargetContext->GetPage();
+  if (!pSourcePage || !pTargetPage) {
+    return false;
+  }
+
+  CPDF_Document* pDoc = pSourcePage->GetDocument();
+  if (!pDoc || pDoc != pTargetPage->GetDocument()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Array> pSourceKids = pSourceFieldDict->GetMutableArrayFor("Kids");
+  RetainPtr<CPDF_Array> pTargetKids = pTargetFieldDict->GetOrCreateArrayFor("Kids");
+  if (!pSourceKids || !pTargetKids) {
+    return false;
+  }
+
+  for (size_t i = 0; i < pSourceKids->size(); ++i) {
+    RetainPtr<CPDF_Dictionary> pKidDict = pSourceKids->GetMutableDictAt(i);
+    if (!pKidDict) {
+      continue;
+    }
+
+    pKidDict->SetNewFor<CPDF_Reference>("Parent", pDoc, pTargetFieldDict->GetObjNum());
+
+    if (!ArrayContainsDictWithObjNum(pTargetKids.Get(), pKidDict->GetObjNum())) {
+      pTargetKids->AppendNew<CPDF_Reference>(pDoc, pKidDict->GetObjNum());
+    }
+  }
+
+  pSourceFieldDict->RemoveFor("Kids");
+
+  RetainPtr<CPDF_Dictionary> pRoot = pDoc->GetMutableRoot();
+  if (pRoot) {
+    RetainPtr<CPDF_Dictionary> pAcroForm = pRoot->GetMutableDictFor("AcroForm");
+    if (pAcroForm) {
+      RetainPtr<CPDF_Array> pFields = pAcroForm->GetMutableArrayFor("Fields");
+      if (pFields) {
+        RemoveDictWithObjNumFromArray(pFields.Get(), pSourceFieldDict->GetObjNum());
+      }
+    }
+  }
+
+  CPDF_InteractiveForm* pPDFForm = pSDKForm->GetInteractiveForm();
+  if (CPDF_Page* pSourcePdfPage = ToPDFPage(pSourcePage)) {
+    pPDFForm->FixPageFields(pSourcePdfPage);
+  }
+  if (pTargetPage != pSourcePage) {
+    if (CPDF_Page* pTargetPdfPage = ToPDFPage(pTargetPage)) {
+      pPDFForm->FixPageFields(pTargetPdfPage);
+    }
+  }
+
   return true;
 }
 
