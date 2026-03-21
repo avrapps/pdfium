@@ -2789,8 +2789,13 @@ void CPDF_GenerateAP::GenerateRadioButtonFormAP(CPDF_Document* doc,
       }
     }
   }
-  if (on_state.IsEmpty())
-    on_state = "Yes";
+  if (on_state.IsEmpty()) {
+    WideString nm = annot_dict->GetUnicodeTextFor("NM");
+    if (!nm.IsEmpty())
+      on_state = nm.ToUTF8();
+    else
+      on_state = "Yes";
+  }
 
   RetainPtr<CPDF_Dictionary> n_dict =
       ap_dict->SetNewFor<CPDF_Dictionary>("N");
