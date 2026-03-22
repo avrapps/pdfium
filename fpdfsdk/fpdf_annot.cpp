@@ -1663,6 +1663,19 @@ FPDFAnnot_GetNumberValue(FPDF_ANNOTATION annot,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
+                         FPDF_BYTESTRING key,
+                         float value) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+  pAnnotDict->SetNewFor<CPDF_Number>(key, static_cast<int>(value));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFAnnot_SetAP(FPDF_ANNOTATION annot,
                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                 FPDF_WIDESTRING value) {

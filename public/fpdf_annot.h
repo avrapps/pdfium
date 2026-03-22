@@ -735,6 +735,11 @@ FPDFAnnot_GetNumberValue(FPDF_ANNOTATION annot,
                          FPDF_BYTESTRING key,
                          float* value);
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
+                         FPDF_BYTESTRING key,
+                         float value);
+
 // Experimental API.
 // Set the AP (appearance string) in |annot|'s dictionary for a given
 // |appearanceMode|.
