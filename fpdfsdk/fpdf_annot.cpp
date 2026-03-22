@@ -4546,6 +4546,21 @@ EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
+                               FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  const CPDF_FormField* pFormField = GetFormField(hHandle, annot);
+  if (!pFormField) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      pFormField->GetRawValue(),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
                             FPDF_ANNOTATION annot,

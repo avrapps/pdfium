@@ -2110,6 +2110,26 @@ EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
                                FPDF_WCHAR* buffer,
                                unsigned long buflen);
 
+// Experimental EmbedPDF Extension API.
+// Get the raw /V value of a form field without Opt-array translation.
+// For checkbox/radio fields, FPDFAnnot_GetFormFieldValue translates /V
+// through the Opt array; this function returns the raw Name/String instead.
+// For other field types, behaves identically to FPDFAnnot_GetFormFieldValue.
+//
+//   hHandle - handle to the form fill module, returned by
+//             FPDFDOC_InitFormFillEnvironment().
+//   annot   - handle to a widget annotation.
+//   buffer  - buffer for holding the value string, encoded in UTF-16LE.
+//   buflen  - length of the buffer in bytes.
+//
+// Returns the length of the string value in bytes (including the trailing
+// NUL pair), or 0 on error.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
+                               FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
