@@ -2094,6 +2094,22 @@ EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot);
 
+// Experimental EmbedPDF Extension API.
+// Get the "export value" of a checkbox or radio button widget — the
+// non-"Off" key in its /AP/N (Normal Appearance) dictionary.
+//
+//   annot  - handle to a widget annotation.
+//   buffer - buffer for holding the value string, encoded in UTF-16LE.
+//   buflen - length of the buffer in bytes.
+//
+// Returns the length of the string value in bytes (including the trailing
+// NUL pair), or 0 when the annotation has no /AP/N dictionary or contains
+// only an "Off" entry.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

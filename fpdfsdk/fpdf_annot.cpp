@@ -4512,6 +4512,40 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   return false;
 }
 
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return 0;
+
+  RetainPtr<const CPDF_Dictionary> pAP =
+      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
+  if (!pAP)
+    return 0;
+
+  RetainPtr<const CPDF_Dictionary> pN = pAP->GetDictFor("N");
+  if (!pN)
+    return 0;
+
+  ByteString on_state;
+  CPDF_DictionaryLocker locker(pN);
+  for (const auto& it : locker) {
+    if (it.first != "Off") {
+      on_state = it.first;
+      break;
+    }
+  }
+
+  if (on_state.IsEmpty())
+    return 0;
+
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      WideString::FromUTF8(on_state.AsStringView()),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
                             FPDF_ANNOTATION annot,
