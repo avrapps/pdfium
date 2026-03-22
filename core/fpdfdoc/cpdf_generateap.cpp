@@ -1256,6 +1256,7 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
   CFX_FloatRect edit_rect = body_rect;
   edit_rect.right = button_rect.left;
   edit_rect.Normalize();
+  edit_rect.Deflate(4.0f, 0);
   vt.SetPlateRect(edit_rect);
   SetVtFontSize(font_size, vt);
 
