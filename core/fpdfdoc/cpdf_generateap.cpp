@@ -1276,23 +1276,7 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
                 << "ET\n"
                 << "Q\nEMC\n";
   }
-  ByteString button =
-      GenerateColorAP(CFX_Color(CFX_Color::Type::kRGB, 220.0f / 255.0f,
-                                220.0f / 255.0f, 220.0f / 255.0f),
-                      PaintOperation::kFill);
-  if (button.GetLength() > 0 && !button_rect.IsEmpty()) {
-    body_stream << "q\n" << button;
-    WriteRect(body_stream, button_rect) << " re f\n";
-    body_stream << "Q\n";
-    static const BorderStyleInfo kButtonBorderStyleInfo{
-        .width = 2, .style = BorderStyle::kBeveled, .dash_pattern{3, 0, 0}};
-    ByteString button_border =
-        GenerateBorderAP(button_rect, kButtonBorderStyleInfo,
-                         CFX_Color(CFX_Color::Type::kGray, 0));
-    if (button_border.GetLength() > 0) {
-      body_stream << "q\n" << button_border << "Q\n";
-    }
-
+  if (!button_rect.IsEmpty()) {
     CFX_PointF center((button_rect.left + button_rect.right) / 2,
                       (button_rect.top + button_rect.bottom) / 2);
     if (FXSYS_IsFloatBigger(button_rect.Width(), 6) &&
@@ -1302,7 +1286,7 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
       WritePoint(body_stream, {center.x + 3, center.y + 1.5f}) << " l\n";
       WritePoint(body_stream, {center.x, center.y - 1.5f}) << " l\n";
       WritePoint(body_stream, {center.x - 3, center.y + 1.5f}) << " l f\n";
-      body_stream << button << "Q\n";
+      body_stream << "Q\n";
     }
   }
   return ByteString(body_stream);
