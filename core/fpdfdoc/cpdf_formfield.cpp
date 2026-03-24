@@ -330,11 +330,7 @@ void CPDF_FormField::SetFieldFlags(uint32_t dwFlags) {
                                 static_cast<int>(dwFlags));
 }
 
-WideString CPDF_FormField::GetValue(bool bDefault) const {
-  if (GetType() == kCheckBox || GetType() == kRadioButton) {
-    return GetCheckValue(bDefault);
-  }
-
+WideString CPDF_FormField::GetRawValue(bool bDefault) const {
   RetainPtr<const CPDF_Object> pValue =
       bDefault ? GetDefaultValueObject() : GetValueObject();
   if (!pValue) {
@@ -349,6 +345,7 @@ WideString CPDF_FormField::GetValue(bool bDefault) const {
   switch (pValue->GetType()) {
     case CPDF_Object::kString:
     case CPDF_Object::kStream:
+    case CPDF_Object::kName:
       return pValue->GetUnicodeText();
     case CPDF_Object::kArray: {
       RetainPtr<const CPDF_Object> pNewValue =
@@ -362,6 +359,17 @@ WideString CPDF_FormField::GetValue(bool bDefault) const {
       break;
   }
   return WideString();
+}
+
+WideString CPDF_FormField::GetRawValue() const {
+  return GetRawValue(false);
+}
+
+WideString CPDF_FormField::GetValue(bool bDefault) const {
+  if (GetType() == kCheckBox || GetType() == kRadioButton) {
+    return GetCheckValue(bDefault);
+  }
+  return GetRawValue(bDefault);
 }
 
 WideString CPDF_FormField::GetValue() const {

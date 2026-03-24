@@ -680,6 +680,42 @@ CPDF_FormField* GetFormField(FPDF_FORMHANDLE hHandle, FPDF_ANNOTATION annot) {
   return pPDFForm->GetFieldByDict(pAnnotDict);
 }
 
+RetainPtr<CPDF_Dictionary> GetMutableFieldDict(CPDF_FormField* pFormField) {
+  if (!pFormField) {
+    return nullptr;
+  }
+
+  return pdfium::WrapRetain(
+      const_cast<CPDF_Dictionary*>(pFormField->GetFieldDict().Get()));
+}
+
+bool ArrayContainsDictWithObjNum(const CPDF_Array* pArray, uint32_t obj_num) {
+  if (!pArray || obj_num == 0) {
+    return false;
+  }
+
+  for (size_t i = 0; i < pArray->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i);
+    if (pDict && pDict->GetObjNum() == obj_num) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void RemoveDictWithObjNumFromArray(CPDF_Array* pArray, uint32_t obj_num) {
+  if (!pArray || obj_num == 0) {
+    return;
+  }
+
+  for (size_t i = pArray->size(); i > 0; --i) {
+    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i - 1);
+    if (pDict && pDict->GetObjNum() == obj_num) {
+      pArray->RemoveAt(i - 1);
+    }
+  }
+}
+
 // If `allowed_types` is empty, then match all types.
 const CPDFSDK_Widget* GetWidgetOfTypes(
     FPDF_FORMHANDLE hHandle,
@@ -1623,6 +1659,19 @@ FPDFAnnot_GetNumberValue(FPDF_ANNOTATION annot,
   }
 
   *value = p->GetNumber();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
+                         FPDF_BYTESTRING key,
+                         float value) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+  pAnnotDict->SetNewFor<CPDF_Number>(key, static_cast<int>(value));
   return true;
 }
 
@@ -3026,23 +3075,18 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Validate parameters.
-  if (font < FPDF_FONT_COURIER || font > FPDF_FONT_ZAPFDINGBATS ||
-      font_size < 0 || R > 255 || G > 255 || B > 255) {
+  // Validate parameters. Allow FPDF_FONT_UNKNOWN to preserve non-standard fonts.
+  if (font != FPDF_FONT_UNKNOWN &&
+      (font < FPDF_FONT_COURIER || font > FPDF_FONT_ZAPFDINGBATS)) {
+    return false;
+  }
+  if (font_size < 0 || R > 255 || G > 255 || B > 255) {
     return false;
   }
 
   auto internal_font = static_cast<CPDF_Annot::StandardFont>(font);
-
-  // The type-safe enum is passed to the helper.
-  bool success = CPDF_GenerateAP::UpdateDefaultAppearance(
+  return CPDF_GenerateAP::UpdateDefaultAppearance(
       doc, annot_dict.Get(), internal_font, font_size, CFX_Color(R, G, B));
-
-  if (success) {
-    annot_dict->RemoveFor(pdfium::annotation::kAP);
-  }
-
-  return success;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3140,11 +3184,6 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot, FPDF_TEXT_ALIGNMENT alignment)
 
   // Set the /Q key in the annotation dictionary to the integer value of the enum.
   annot_dict->SetNewFor<CPDF_Number>("Q", static_cast<int>(alignment));
-
-  // The change to /Q directly affects the visual layout of the text.
-  // We MUST remove the old appearance stream to signal that it is now
-  // invalid and needs to be regenerated.
-  annot_dict->RemoveFor(pdfium::annotation::kAP);
 
   return true;
 }
@@ -4213,4 +4252,469 @@ EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
 
   auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
   return !!GetAnnotAP(pAnnotDict.Get(), mode);
+}
+
+static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
+  switch (type) {
+    case EPDF_MK_COLOR_BG:
+      return "BG";
+    case EPDF_MK_COLOR_BC:
+    default:
+      return "BC";
+  }
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
+                     EPDF_MK_COLORTYPE type,
+                     unsigned int R,
+                     unsigned int G,
+                     unsigned int B) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict || R > 255 || G > 255 || B > 255)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pMK = pAnnotDict->GetOrCreateDictFor("MK");
+  ByteString key = GetMKColorKey(type);
+
+  RetainPtr<CPDF_Array> pColor = pMK->GetMutableArrayFor(key.AsStringView());
+  if (pColor) {
+    pColor->Clear();
+  } else {
+    pColor = pMK->SetNewFor<CPDF_Array>(key);
+  }
+
+  pColor->AppendNew<CPDF_Number>(R / 255.f);
+  pColor->AppendNew<CPDF_Number>(G / 255.f);
+  pColor->AppendNew<CPDF_Number>(B / 255.f);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
+                     EPDF_MK_COLORTYPE type,
+                     unsigned int* R,
+                     unsigned int* G,
+                     unsigned int* B) {
+  if (!R || !G || !B)
+    return false;
+
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  RetainPtr<const CPDF_Dictionary> pMK = pAnnotDict->GetDictFor("MK");
+  if (!pMK)
+    return false;
+
+  ByteString key = GetMKColorKey(type);
+  RetainPtr<const CPDF_Array> pColor = pMK->GetArrayFor(key.AsStringView());
+  if (!pColor || pColor->size() < 3)
+    return false;
+
+  *R = static_cast<unsigned int>(pColor->GetFloatAt(0) * 255.f + 0.5f);
+  *G = static_cast<unsigned int>(pColor->GetFloatAt(1) * 255.f + 0.5f);
+  *B = static_cast<unsigned int>(pColor->GetFloatAt(2) * 255.f + 0.5f);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pMK = pAnnotDict->GetMutableDictFor("MK");
+  if (!pMK)
+    return true;
+
+  ByteString key = GetMKColorKey(type);
+  pMK->RemoveFor(key.AsStringView());
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_CreateFormField(FPDF_PAGE page,
+                         FPDF_FORMHANDLE handle,
+                         int field_type,
+                         FPDF_WIDESTRING field_name) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return nullptr;
+
+  CPDFSDK_InteractiveForm* pSDKForm = FormHandleToInteractiveForm(handle);
+  if (!pSDKForm)
+    return nullptr;
+
+  // Validate field_type
+  switch (field_type) {
+    case FPDF_FORMFIELD_TEXTFIELD:
+    case FPDF_FORMFIELD_CHECKBOX:
+    case FPDF_FORMFIELD_RADIOBUTTON:
+    case FPDF_FORMFIELD_COMBOBOX:
+    case FPDF_FORMFIELD_LISTBOX:
+    case FPDF_FORMFIELD_PUSHBUTTON:
+      break;
+    default:
+      return nullptr;
+  }
+
+  CPDF_Document* pDoc = pPage->GetDocument();
+
+  // Determine /FT and base /Ff from the field_type
+  ByteString ft_value;
+  uint32_t base_flags = 0;
+  switch (field_type) {
+    case FPDF_FORMFIELD_TEXTFIELD:
+      ft_value = "Tx";
+      break;
+    case FPDF_FORMFIELD_CHECKBOX:
+      ft_value = "Btn";
+      break;
+    case FPDF_FORMFIELD_RADIOBUTTON:
+      ft_value = "Btn";
+      base_flags = (1 << 15);  // kRadio
+      break;
+    case FPDF_FORMFIELD_PUSHBUTTON:
+      ft_value = "Btn";
+      base_flags = (1 << 16);  // kPushbutton
+      break;
+    case FPDF_FORMFIELD_COMBOBOX:
+      ft_value = "Ch";
+      base_flags = (1 << 17);  // kCombo
+      break;
+    case FPDF_FORMFIELD_LISTBOX:
+      ft_value = "Ch";
+      break;
+  }
+
+  // Create the parent field dictionary (indirect)
+  RetainPtr<CPDF_Dictionary> pFieldDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  pFieldDict->SetNewFor<CPDF_Name>("FT", ft_value);
+  if (base_flags != 0)
+    pFieldDict->SetNewFor<CPDF_Number>("Ff", static_cast<int>(base_flags));
+
+  // Set field name /T
+  if (field_name) {
+    WideString ws_name = WideStringFromFPDFWideString(field_name);
+    if (!ws_name.IsEmpty())
+      pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
+  }
+
+  // Create the widget annotation dictionary (indirect)
+  RetainPtr<CPDF_Dictionary> pAnnotDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  pAnnotDict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "Annot");
+  pAnnotDict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Widget");
+
+  // Link widget -> parent via /Parent
+  pAnnotDict->SetNewFor<CPDF_Reference>("Parent", pDoc, pFieldDict->GetObjNum());
+
+  // Link parent -> widget via /Kids
+  RetainPtr<CPDF_Array> pKids = pFieldDict->SetNewFor<CPDF_Array>("Kids");
+  pKids->AppendNew<CPDF_Reference>(pDoc, pAnnotDict->GetObjNum());
+
+  // Ensure /AcroForm exists on document root
+  RetainPtr<CPDF_Dictionary> pRoot = pDoc->GetMutableRoot();
+  if (!pRoot)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> pAcroForm = pRoot->GetOrCreateDictFor("AcroForm");
+
+  // Append field to /AcroForm/Fields
+  RetainPtr<CPDF_Array> pFields = pAcroForm->GetOrCreateArrayFor("Fields");
+  pFields->AppendNew<CPDF_Reference>(pDoc, pFieldDict->GetObjNum());
+
+  // Append widget annotation to page /Annots
+  RetainPtr<CPDF_Array> pAnnots = pPage->GetOrCreateAnnotsArray();
+  pAnnots->AppendNew<CPDF_Reference>(pDoc, pAnnotDict->GetObjNum());
+
+  // Register the new field with the interactive form
+  CPDF_InteractiveForm* pPDFForm = pSDKForm->GetInteractiveForm();
+  pPDFForm->FixPageFields(pPage);
+
+  // Build and return the annotation handle
+  auto pContext = std::make_unique<CPDF_AnnotContext>(
+      pAnnotDict, IPDFPageFromFPDFPage(page));
+  return FPDFAnnotationFromCPDFAnnotContext(pContext.release());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* pContext = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!pContext)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pAnnotDict = pContext->GetMutableAnnotDict();
+  if (!pAnnotDict)
+    return false;
+
+  CPDF_Document* pDoc = pContext->GetPage()->GetDocument();
+  if (!pDoc)
+    return false;
+
+  // Look for /FT on this dict or on /Parent
+  ByteString ft;
+  RetainPtr<const CPDF_Dictionary> pLookup = pAnnotDict;
+  for (int depth = 0; depth < 32 && pLookup; depth++) {
+    ByteString val = pLookup->GetNameFor("FT");
+    if (!val.IsEmpty()) {
+      ft = val;
+      break;
+    }
+    pLookup = pLookup->GetDictFor("Parent");
+  }
+
+  if (ft.IsEmpty())
+    return false;
+
+  uint32_t ff = 0;
+  RetainPtr<const CPDF_Dictionary> pFfLookup = pAnnotDict;
+  for (int depth = 0; depth < 32 && pFfLookup; depth++) {
+    const CPDF_Object* pFfObj = pFfLookup->GetObjectFor("Ff");
+    if (pFfObj) {
+      ff = pFfObj->GetInteger();
+      break;
+    }
+    pFfLookup = pFfLookup->GetDictFor("Parent");
+  }
+
+  if (ft == "Tx") {
+    CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict.Get(),
+                                    CPDF_GenerateAP::kTextField);
+    return true;
+  }
+  if (ft == "Ch") {
+    if (ff & (1 << 17)) {  // kCombo
+      CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict.Get(),
+                                      CPDF_GenerateAP::kComboBox);
+    } else {
+      CPDF_GenerateAP::GenerateFormAP(pDoc, pAnnotDict.Get(),
+                                      CPDF_GenerateAP::kListBox);
+    }
+    return true;
+  }
+  if (ft == "Btn") {
+    const bool is_pushbutton = ff & (1 << 16);
+    const bool is_radio = ff & (1 << 15);
+    if (is_radio) {
+      CPDF_GenerateAP::GenerateRadioButtonFormAP(pDoc, pAnnotDict.Get());
+    } else if (!is_pushbutton) {
+      CPDF_GenerateAP::GenerateCheckboxFormAP(pDoc, pAnnotDict.Get());
+    }
+    return true;
+  }
+
+  return false;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return 0;
+
+  RetainPtr<const CPDF_Dictionary> pAP =
+      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
+  if (!pAP)
+    return 0;
+
+  RetainPtr<const CPDF_Dictionary> pN = pAP->GetDictFor("N");
+  if (!pN)
+    return 0;
+
+  ByteString on_state;
+  CPDF_DictionaryLocker locker(pN);
+  for (const auto& it : locker) {
+    if (it.first != "Off") {
+      on_state = it.first;
+      break;
+    }
+  }
+
+  if (on_state.IsEmpty())
+    return 0;
+
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      WideString::FromUTF8(on_state.AsStringView()),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
+                               FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  const CPDF_FormField* pFormField = GetFormField(hHandle, annot);
+  if (!pFormField) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      pFormField->GetRawValue(),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
+                            FPDF_ANNOTATION annot,
+                            FPDF_WIDESTRING value) {
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  return pFormField->SetValue(WideStringFromFPDFWideString(value),
+                              NotificationOption::kDoNotNotify);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
+                           FPDF_ANNOTATION annot,
+                           FPDF_WIDESTRING name) {
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pFieldDict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          pFormField->GetFieldDict().Get()));
+  if (!pFieldDict)
+    return false;
+
+  WideString ws_name = WideStringFromFPDFWideString(name);
+  pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
+  return true;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> pFieldDict = GetMutableFieldDict(GetFormField(handle, annot));
+  if (!pFieldDict) {
+    return 0;
+  }
+
+  return static_cast<int>(pFieldDict->GetObjNum());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
+                         FPDF_ANNOTATION source_annot,
+                         FPDF_ANNOTATION target_annot) {
+  CPDFSDK_InteractiveForm* pSDKForm = FormHandleToInteractiveForm(handle);
+  if (!pSDKForm) {
+    return false;
+  }
+
+  CPDF_FormField* pSourceField = GetFormField(handle, source_annot);
+  CPDF_FormField* pTargetField = GetFormField(handle, target_annot);
+  if (!pSourceField || !pTargetField) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pSourceFieldDict = GetMutableFieldDict(pSourceField);
+  RetainPtr<CPDF_Dictionary> pTargetFieldDict = GetMutableFieldDict(pTargetField);
+  if (!pSourceFieldDict || !pTargetFieldDict) {
+    return false;
+  }
+
+  if (pSourceFieldDict->GetObjNum() == pTargetFieldDict->GetObjNum()) {
+    return true;
+  }
+
+  if (pSourceField->GetType() != pTargetField->GetType()) {
+    return false;
+  }
+
+  CPDF_AnnotContext* pSourceContext = CPDFAnnotContextFromFPDFAnnotation(source_annot);
+  CPDF_AnnotContext* pTargetContext = CPDFAnnotContextFromFPDFAnnotation(target_annot);
+  if (!pSourceContext || !pTargetContext) {
+    return false;
+  }
+
+  IPDF_Page* pSourcePage = pSourceContext->GetPage();
+  IPDF_Page* pTargetPage = pTargetContext->GetPage();
+  if (!pSourcePage || !pTargetPage) {
+    return false;
+  }
+
+  CPDF_Document* pDoc = pSourcePage->GetDocument();
+  if (!pDoc || pDoc != pTargetPage->GetDocument()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Array> pSourceKids = pSourceFieldDict->GetMutableArrayFor("Kids");
+  RetainPtr<CPDF_Array> pTargetKids = pTargetFieldDict->GetOrCreateArrayFor("Kids");
+  if (!pSourceKids || !pTargetKids) {
+    return false;
+  }
+
+  for (size_t i = 0; i < pSourceKids->size(); ++i) {
+    RetainPtr<CPDF_Dictionary> pKidDict = pSourceKids->GetMutableDictAt(i);
+    if (!pKidDict) {
+      continue;
+    }
+
+    pKidDict->SetNewFor<CPDF_Reference>("Parent", pDoc, pTargetFieldDict->GetObjNum());
+
+    if (!ArrayContainsDictWithObjNum(pTargetKids.Get(), pKidDict->GetObjNum())) {
+      pTargetKids->AppendNew<CPDF_Reference>(pDoc, pKidDict->GetObjNum());
+    }
+  }
+
+  pSourceFieldDict->RemoveFor("Kids");
+
+  RetainPtr<CPDF_Dictionary> pRoot = pDoc->GetMutableRoot();
+  if (pRoot) {
+    RetainPtr<CPDF_Dictionary> pAcroForm = pRoot->GetMutableDictFor("AcroForm");
+    if (pAcroForm) {
+      RetainPtr<CPDF_Array> pFields = pAcroForm->GetMutableArrayFor("Fields");
+      if (pFields) {
+        RemoveDictWithObjNumFromArray(pFields.Get(), pSourceFieldDict->GetObjNum());
+      }
+    }
+  }
+
+  CPDF_InteractiveForm* pPDFForm = pSDKForm->GetInteractiveForm();
+  if (CPDF_Page* pSourcePdfPage = ToPDFPage(pSourcePage)) {
+    pPDFForm->FixPageFields(pSourcePdfPage);
+  }
+  if (pTargetPage != pSourcePage) {
+    if (CPDF_Page* pTargetPdfPage = ToPDFPage(pTargetPage)) {
+      pPDFForm->FixPageFields(pTargetPdfPage);
+    }
+  }
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
+                              FPDF_ANNOTATION annot,
+                              const FPDF_WIDESTRING* labels,
+                              int count) {
+  if (count < 0 || (count > 0 && !labels))
+    return false;
+
+  CPDF_FormField* pFormField = GetFormField(handle, annot);
+  if (!pFormField)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> pFieldDict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          pFormField->GetFieldDict().Get()));
+  if (!pFieldDict)
+    return false;
+
+  RetainPtr<CPDF_Array> pOpt = pFieldDict->SetNewFor<CPDF_Array>("Opt");
+  for (int i = 0; i < count; i++) {
+    WideString ws_label = WideStringFromFPDFWideString(labels[i]);
+    pOpt->AppendNew<CPDF_String>(ws_label.AsStringView());
+  }
+  return true;
 }

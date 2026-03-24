@@ -105,6 +105,7 @@ class CPDF_FormField {
   bool IsNoExport() const { return no_export_; }
 
   WideString GetValue() const;
+  WideString GetRawValue() const;
   WideString GetDefaultValue() const;
   bool SetValue(const WideString& value, NotificationOption notify);
 
@@ -145,6 +146,7 @@ class CPDF_FormField {
 
  private:
   WideString GetValue(bool bDefault) const;
+  WideString GetRawValue(bool bDefault) const;
   bool SetValue(const WideString& value,
                 bool bDefault,
                 NotificationOption notify);
