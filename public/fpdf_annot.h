@@ -1813,6 +1813,50 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
+// Set an annotation's normal appearance (AP/N) from a page of another document.
+// The page's content stream and resources are deep-cloned into the annotation's
+// document as a Form XObject and set as the AP/N entry.
+//
+//   annot         - handle to the target annotation.
+//   src_doc       - handle to the source document containing the page.
+//   page_index    - zero-based index of the source page.
+//
+// Returns TRUE on success, FALSE on error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
+                                FPDF_DOCUMENT src_doc,
+                                int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Export an annotation's normal appearance (AP/N) as a standalone single-page
+// PDF document. The new page is sized to the appearance stream's BBox, or the
+// annotation rect when the BBox is unavailable.
+//
+//   annot - handle to an annotation with an appearance stream.
+//
+// Returns a new document containing the exported appearance, or NULL on error.
+// The caller owns the returned document and must close it with
+// FPDF_CloseDocument().
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Export multiple annotations' normal appearances (AP/N) as a standalone
+// single-page PDF document. The annotations must all belong to the same page.
+// The new page is sized to the union of all annotation rects, and each
+// appearance is placed at the correct relative position within the page.
+//
+//   annots      - array of annotation handles with appearance streams.
+//   annot_count - number of annotations in the array. Must be > 0.
+//
+// Returns a new document containing the combined appearances, or NULL on error.
+// The caller owns the returned document and must close it with
+// FPDF_CloseDocument().
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
+                                              int annot_count);
+
+// Experimental EmbedPDF Extension API.
 // Set the EmbedPDF extended rotation on an annotation. This stores a custom
 // /EPDFRotate entry (not the standard /Rotate) for non-widget annotations.
 // A value of 0 removes the key to keep the PDF clean.

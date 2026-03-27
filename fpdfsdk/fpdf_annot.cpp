@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "public/fpdf_annot.h"
+#include "public/fpdf_edit.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #include "constants/annotation_common.h"
+#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fpdfapi/edit/cpdf_pageorganizer.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_text_redactor.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
@@ -30,6 +33,7 @@
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
+#include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
@@ -476,6 +480,32 @@ class RawAnnotContext final : public CPDF_AnnotContext {
     const RetainPtr<CPDF_Page> owned_page_;
   };
 
+class AnnotAppearanceExporter final : public CPDF_PageOrganizer {
+ public:
+  AnnotAppearanceExporter(CPDF_Document* dest_doc, CPDF_Document* src_doc)
+      : CPDF_PageOrganizer(dest_doc, src_doc) {}
+
+  RetainPtr<CPDF_Stream> ExportFormXObject(RetainPtr<const CPDF_Stream> src_stream) {
+    if (!src_stream || !Init())
+      return nullptr;
+
+    RetainPtr<CPDF_Object> cloned_object = src_stream->Clone();
+    RetainPtr<CPDF_Stream> cloned_stream = ToStream(cloned_object);
+    if (!cloned_stream)
+      return nullptr;
+
+    const uint32_t src_obj_num = src_stream->GetObjNum();
+    const uint32_t dest_obj_num = dest()->AddIndirectObject(cloned_object);
+    if (src_obj_num)
+      AddObjectMapping(src_obj_num, dest_obj_num);
+
+    if (!UpdateReference(cloned_object))
+      return nullptr;
+
+    return cloned_stream;
+  }
+};
+
 // Checks if an annotation subtype can have an icon name.
 bool IsIconSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
   return subtype == FPDF_ANNOT_TEXT || subtype == FPDF_ANNOT_FILEATTACHMENT ||
@@ -833,39 +863,112 @@ static bool FitImageIntoBox(float box_w, float box_h,
   return true;
 }
 
-static bool AccumulateSingleImageOnly(CPDF_Form* form,
-                                      CPDF_ImageObject** out,
-                                      int* image_count) {
-  for (const auto& obj : *form) {
-    if (!obj)
-      continue;
+// Returns the bounding rect of the actual painted page objects inside a Form
+// XObject.  CPDF_Form::ParseContent() (called with no parent matrix) reads the
+// stream's /Matrix and folds it into the CTM during content parsing, so
+// CalcBoundingBox() already returns bounds in the post-Matrix display space.
+// We therefore must NOT apply the Matrix again here.
+// Falls back to the raw /BBox if the form has no parseable page objects.
+static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc, CPDF_Stream* stream) {
+  if (!doc || !stream)
+    return CFX_FloatRect();
 
-    switch (obj->GetType()) {
-      case CPDF_PageObject::Type::kImage: {
-        if (++(*image_count) > 1)
-          return false;
-        *out = obj->AsImage();
-        break;
-      }
+  RetainPtr<CPDF_Dictionary> stream_dict = stream->GetMutableDict();
+  if (!stream_dict)
+    return CFX_FloatRect();
 
-      case CPDF_PageObject::Type::kForm: {
-        const CPDF_FormObject* fo = obj->AsForm();
-        const CPDF_Form* child = fo ? fo->form() : nullptr;
-        if (!child)
-          return false;
-        if (!AccumulateSingleImageOnly(const_cast<CPDF_Form*>(child), out, image_count))
-          return false;
-        break;
-      }
+  auto form = std::make_unique<CPDF_Form>(
+      doc, stream_dict->GetMutableDictFor("Resources"),
+      pdfium::WrapRetain(stream));
+  form->ParseContent();
 
-      // Any other content disqualifies the AP from being resized by us.
-      case CPDF_PageObject::Type::kText:
-      case CPDF_PageObject::Type::kPath:
-      case CPDF_PageObject::Type::kShading:
-      default:
-        return false;
-    }
+  CFX_FloatRect bounds = form->CalcBoundingBox();
+  bounds.Normalize();
+  if (bounds.IsEmpty()) {
+    bounds = stream_dict->GetRectFor("BBox");
+    bounds.Normalize();
   }
+  if (bounds.IsEmpty())
+    return CFX_FloatRect();
+  return bounds;
+}
+
+// Fallback for when GetPaintedFormBounds returns empty (e.g. the form stream
+// has no parseable page objects, or all objects are outside the BBox clip).
+// Computes the display box by applying the stream's /Matrix to its /BBox.
+static CFX_FloatRect GetFormDisplayBox(const CPDF_Dictionary* stream_dict) {
+  if (!stream_dict)
+    return CFX_FloatRect();
+
+  CFX_FloatRect bbox = stream_dict->GetRectFor("BBox");
+  bbox.Normalize();
+  if (bbox.IsEmpty())
+    return CFX_FloatRect();
+
+  CFX_Matrix matrix = stream_dict->GetMatrixFor("Matrix");
+  if (!matrix.IsIdentity()) {
+    bbox = matrix.TransformRect(bbox);
+    bbox.Normalize();
+  }
+  return bbox;
+}
+
+// Wraps the current AP stream content into a child Form XObject stored under
+// Resources/XObject/EPDFWRAP, so the outer AP content can be a simple
+// "q ... cm /EPDFWRAP Do Q" that handles all scaling.  Returns false on
+// failure; on success the caller must write the new wrapper content stream.
+static bool WrapAPContentIntoFormXObject(
+    CPDF_Stream* ap,
+    CPDF_Document* doc) {
+  RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
+  if (!ap_dict)
+    return false;
+
+  // Build the child Form XObject dictionary.
+  auto child_dict = doc->New<CPDF_Dictionary>();
+  child_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
+  child_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
+
+  // Preserve the original child form geometry exactly as imported/authored.
+  // The parent wrapper will align the painted bounds via its cm matrix.
+  // Fallback to Matrix-transformed BBox if the raw BBox is missing/empty.
+  CFX_FloatRect bbox = ap_dict->GetRectFor("BBox");
+  bbox.Normalize();
+  if (bbox.IsEmpty())
+    bbox = GetFormDisplayBox(ap_dict.Get());
+  if (bbox.IsEmpty())
+    return false;
+  child_dict->SetRectFor("BBox", bbox);
+
+  CFX_Matrix child_matrix = ap_dict->GetMatrixFor("Matrix");
+  if (!child_matrix.IsIdentity())
+    child_dict->SetMatrixFor("Matrix", child_matrix);
+  else
+    child_dict->RemoveFor("Matrix");
+
+  // Move Resources to the child (avoids deep-clone cost).
+  RetainPtr<CPDF_Dictionary> res = ap_dict->GetMutableDictFor("Resources");
+  if (res) {
+    child_dict->SetFor("Resources", res->Clone());
+    ap_dict->RemoveFor("Resources");
+  }
+
+  // Create the child stream with the original AP content bytes.
+  auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(ap));
+  acc->LoadAllDataFiltered();
+  auto span = acc->GetSpan();
+  DataVector<uint8_t> content_bytes(span.begin(), span.end());
+
+  auto child_stream = doc->NewIndirect<CPDF_Stream>(std::move(child_dict));
+  child_stream->SetData(content_bytes);
+
+  // Store child as Resources/XObject/EPDFWRAP on the AP stream.
+  RetainPtr<CPDF_Dictionary> new_res =
+      ap_dict->SetNewFor<CPDF_Dictionary>("Resources");
+  RetainPtr<CPDF_Dictionary> xobj =
+      new_res->SetNewFor<CPDF_Dictionary>("XObject");
+  xobj->SetNewFor<CPDF_Reference>("EPDFWRAP", doc,
+                                  child_stream->GetObjNum());
   return true;
 }
 }  // namespace
@@ -3557,72 +3660,72 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
       return false;
   }
 
-  // 3) Ensure CPDF_Form parsed.
-  if (!ctx->HasForm())
-    ctx->SetForm(ap);
-  CPDF_Form* form = ctx->GetForm();
-  if (!form)
-    return false;
-
-  // 4) Verify the AP tree is "exactly one image, nothing else".
-  int image_count = 0;
-  CPDF_ImageObject* image_obj = nullptr;
-  if (!AccumulateSingleImageOnly(form, &image_obj, &image_count) ||
-      image_count != 1 || !image_obj) {
-    // Mixed content, 0 images, or >1 image — leave AP untouched.
-    return true;
-  }
-
-  // 5) Update AP /BBox.
+  // 3) Get the AP dict.
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
-  if (use_rotation) {
-    // BBox = unrotated rect (page coordinates, not 0-based)
-    ap_dict->SetRectFor("BBox", unrotated);
-  } else {
-    ap_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, box_w, box_h));
+  if (!ap_dict)
+    return false;
+
+  CPDF_Document* doc = ctx->GetPage()->GetDocument();
+  if (!doc)
+    return false;
+
+  // 4) On first call, wrap the original AP content into a child Form XObject
+  //    and record the painted content rect in EPDFOrigContentRect.  This rect
+  //    captures where the visible content lives inside the child form's own
+  //    coordinate space; its Width()/Height() drive the scale factors and its
+  //    left/bottom drive the translation offset in the parent cm matrix.
+  CFX_FloatRect content_rect = ap_dict->GetRectFor("EPDFOrigContentRect");
+  if (content_rect.IsEmpty()) {
+    content_rect = GetFormDisplayBox(ap_dict.Get());
+    if (content_rect.IsEmpty())
+      content_rect = GetPaintedFormBounds(doc, ap.Get());
+    content_rect.Normalize();
+    if (content_rect.IsEmpty() ||
+        content_rect.Width() <= 0 || content_rect.Height() <= 0) {
+      return false;
+    }
+
+    ap_dict->SetRectFor("EPDFOrigContentRect", content_rect);
+
+    if (!WrapAPContentIntoFormXObject(ap.Get(), doc))
+      return false;
   }
 
-  // 6) Cleanup Resources/XObject *only when we will rewrite the content*.
-  // This prevents resource growth and also avoids nuking resources when we bail.
-  if (RetainPtr<CPDF_Dictionary> res = ap_dict->GetMutableDictFor("Resources"))
-    res->RemoveFor("XObject");
-
-  // 7) Intrinsic image size.
-  RetainPtr<CPDF_Image> img = image_obj->GetImage();
-  if (!img)
-    return false;
-  const float iw = static_cast<float>(img->GetPixelWidth());
-  const float ih = static_cast<float>(img->GetPixelHeight());
-  if (iw <= 0 || ih <= 0)
+  const float orig_w = content_rect.Width();
+  const float orig_h = content_rect.Height();
+  if (orig_w <= 0 || orig_h <= 0)
     return false;
 
-  // 8) Compute placement matrix.
+  // 5) Compute placement matrix using the same fit logic as before.
   float drawn_w, drawn_h, dx, dy;
-  if (!FitImageIntoBox(box_w, box_h, iw, ih, fit_cpp,
+  if (!FitImageIntoBox(box_w, box_h, orig_w, orig_h, fit_cpp,
                        &drawn_w, &drawn_h, &dx, &dy)) {
     return false;
   }
 
-  // Clear any lingering clip on the single image; prevents cumulative 'W n'.
-  image_obj->mutable_clip_path() = CPDF_ClipPath();
-
-  // Apply matrix and update bounds.
-  // When rotated, BBox is in page coordinates (unrotated rect), so offset
-  // the image placement by the unrotated rect's origin.
-  float img_dx = dx;
-  float img_dy = dy;
-  if (use_rotation) {
-    img_dx += unrotated.left;
-    img_dy += unrotated.bottom;
+  // 6) Write the wrapper content stream: q sx 0 0 sy tx ty cm /EPDFWRAP Do Q
+  //    Form XObjects render in their own coordinate space.  content_rect.left
+  //    and .bottom are the offset of the painted content within the child form,
+  //    so the translation compensates for that offset after scaling to align the
+  //    visible content's origin with the target placement box.
+  {
+    const float sx = drawn_w / orig_w;
+    const float sy = drawn_h / orig_h;
+    const float tx = std::max(0.f, dx) - content_rect.left * sx;
+    const float ty = std::max(0.f, dy) - content_rect.bottom * sy;
+    fxcrt::ostringstream buf;
+    buf << "q ";
+    WriteFloat(buf, sx) << " 0 0 ";
+    WriteFloat(buf, sy) << " ";
+    WriteFloat(buf, tx) << " ";
+    WriteFloat(buf, ty) << " cm /EPDFWRAP Do Q";
+    ap->SetDataFromStringstreamAndRemoveFilter(&buf);
   }
-  CFX_Matrix m(drawn_w, 0, 0, drawn_h, img_dx, img_dy);
-  image_obj->SetImageMatrix(m);
-  image_obj->CalcBoundingBox();
 
-  // 9) Rewrite content stream from objects.
-  UpdateContentStream(form, ap.Get());
+  // 7) Update BBox to match the target box dimensions.
+  ap_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, box_w, box_h));
 
-  // 10) If rotated, set the AP Matrix to rotate around unrotated rect center.
+  // 8) Handle rotation: set AP Matrix for rotation, or clear any stale one.
   if (use_rotation) {
     const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
     const float cos_t = cosf(theta);
@@ -3635,7 +3738,6 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
         cx * (1.0f - cos_t) + cy * sin_t,
         cy * (1.0f - cos_t) - cx * sin_t));
   } else {
-    // Remove any stale rotation matrix for non-rotated stamps.
     ap_dict->RemoveFor("Matrix");
   }
 
@@ -4073,6 +4175,346 @@ EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot) {
   }
 
   return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
+                                FPDF_DOCUMENT src_doc_handle,
+                                int page_index) {
+  CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!ctx)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
+  IPDF_Page* annot_page = ctx->GetPage();
+  CPDF_Document* dest_doc = annot_page ? annot_page->GetDocument() : nullptr;
+  if (!annot_dict || !dest_doc)
+    return false;
+
+  CPDF_Document* src_doc = CPDFDocumentFromFPDFDocument(src_doc_handle);
+  if (!src_doc)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> src_page_dict =
+      src_doc->GetMutablePageDictionary(page_index);
+  if (!src_page_dict)
+    return false;
+
+  CFX_FloatRect media_box = src_page_dict->GetRectFor("MediaBox");
+  media_box.Normalize();
+  if (media_box.IsEmpty())
+    return false;
+
+  // Collect page content bytes (Contents can be a stream or an array of
+  // streams).
+  RetainPtr<const CPDF_Object> contents_obj =
+      src_page_dict->GetObjectFor("Contents");
+  if (!contents_obj)
+    return false;
+
+  DataVector<uint8_t> content_data;
+  const CPDF_Object* direct = contents_obj->GetDirect();
+  if (!direct)
+    return false;
+
+  if (direct->IsStream()) {
+    auto acc =
+        pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(direct->AsStream()));
+    acc->LoadAllDataFiltered();
+    auto span = acc->GetSpan();
+    content_data.assign(span.begin(), span.end());
+  } else if (direct->IsArray()) {
+    const CPDF_Array* arr = direct->AsArray();
+    for (size_t i = 0; i < arr->size(); ++i) {
+      RetainPtr<const CPDF_Stream> stream = arr->GetStreamAt(i);
+      if (!stream)
+        continue;
+      auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(stream));
+      acc->LoadAllDataFiltered();
+      auto span = acc->GetSpan();
+      if (!content_data.empty())
+        content_data.push_back(' ');
+      content_data.insert(content_data.end(), span.begin(), span.end());
+    }
+  }
+  if (content_data.empty())
+    return false;
+
+  // Build a Form XObject stream in the source document so that
+  // AnnotAppearanceExporter can deep-clone it with all resource dependencies.
+  auto xobj_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  xobj_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "XObject");
+  xobj_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Form");
+  xobj_dict->SetRectFor("BBox", media_box);
+
+  RetainPtr<const CPDF_Dictionary> src_resources =
+      src_page_dict->GetDictFor("Resources");
+  if (src_resources)
+    xobj_dict->SetFor("Resources", src_resources->Clone());
+
+  auto src_stream =
+      src_doc->NewIndirect<CPDF_Stream>(std::move(xobj_dict));
+  src_stream->SetData(content_data);
+
+  // Clone the stream (and all its resource references) into dest_doc.
+  AnnotAppearanceExporter exporter(dest_doc, src_doc);
+  RetainPtr<CPDF_Stream> cloned_stream =
+      exporter.ExportFormXObject(src_stream);
+
+  // Clean up temporary object from source document.
+  src_doc->DeleteIndirectObject(src_stream->GetObjNum());
+
+  if (!cloned_stream)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> cloned_dict = cloned_stream->GetMutableDict();
+  if (!cloned_dict)
+    return false;
+
+  // Persist the imported appearance's painted content rect before any later
+  // annotation resize mutates /Rect.  This captures where the visible content
+  // lives inside the child form's coordinate space so the wrapper can align it.
+  CFX_FloatRect content_rect = GetFormDisplayBox(cloned_dict.Get());
+  if (content_rect.IsEmpty())
+    content_rect = GetPaintedFormBounds(dest_doc, cloned_stream.Get());
+  content_rect.Normalize();
+  if (!content_rect.IsEmpty())
+    cloned_dict->SetRectFor("EPDFOrigContentRect", content_rect);
+
+  // Set cloned stream as AP/N on the annotation.
+  RetainPtr<CPDF_Dictionary> ap_dict =
+      annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
+  ap_dict->SetNewFor<CPDF_Reference>("N", dest_doc,
+                                     cloned_stream->GetObjNum());
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!ctx)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
+  IPDF_Page* src_page = ctx->GetPage();
+  CPDF_Document* src_doc = src_page ? src_page->GetDocument() : nullptr;
+  if (!annot_dict || !src_doc)
+    return nullptr;
+
+  RetainPtr<CPDF_Stream> ap_stream =
+      GetAnnotAP(annot_dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+  if (!ap_stream)
+    return nullptr;
+
+  CFX_FloatRect bbox = ap_stream->GetDict()->GetRectFor("BBox");
+  bbox.Normalize();
+  if (bbox.IsEmpty()) {
+    bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
+    bbox.Normalize();
+  }
+  if (bbox.IsEmpty())
+    return nullptr;
+
+  const float page_width = bbox.Width();
+  const float page_height = bbox.Height();
+  if (page_width <= 0 || page_height <= 0)
+    return nullptr;
+
+  FPDF_DOCUMENT exported_doc = FPDF_CreateNewDocument();
+  if (!exported_doc)
+    return nullptr;
+
+  CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported_doc);
+  if (!dest_doc) {
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  AnnotAppearanceExporter exporter(dest_doc, src_doc);
+  RetainPtr<CPDF_Stream> cloned_stream = exporter.ExportFormXObject(ap_stream);
+  if (!cloned_stream) {
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  FPDF_PAGE exported_page = FPDFPage_New(exported_doc, 0, page_width, page_height);
+  if (!exported_page) {
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  CPDF_Page* dest_page = CPDFPageFromFPDFPage(exported_page);
+  if (!dest_page) {
+    FPDF_ClosePage(exported_page);
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  auto form = std::make_unique<CPDF_Form>(dest_doc, dest_page->GetMutableResources(),
+                                          std::move(cloned_stream));
+  form->ParseContent();
+
+  auto form_obj = std::make_unique<CPDF_FormObject>(
+      CPDF_PageObject::kNoContentStream, std::move(form),
+      CFX_Matrix(1, 0, 0, 1, -bbox.left, -bbox.bottom));
+  form_obj->CalcBoundingBox();
+  form_obj->SetDirty(true);
+  dest_page->AppendPageObject(std::move(form_obj));
+
+  if (!FPDFPage_GenerateContent(exported_page)) {
+    FPDF_ClosePage(exported_page);
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  FPDF_ClosePage(exported_page);
+  return exported_doc;
+}
+
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
+                                              int annot_count) {
+  if (!annots || annot_count <= 0)
+    return nullptr;
+
+  // Validate first annotation and extract source page/document.
+  CPDF_AnnotContext* first_ctx = CPDFAnnotContextFromFPDFAnnotation(annots[0]);
+  if (!first_ctx)
+    return nullptr;
+
+  IPDF_Page* src_page = first_ctx->GetPage();
+  CPDF_Document* src_doc = src_page ? src_page->GetDocument() : nullptr;
+  if (!src_doc)
+    return nullptr;
+
+  struct AnnotInfo {
+    RetainPtr<CPDF_Stream> ap_stream;
+    CFX_FloatRect ap_bbox;
+    CFX_FloatRect annot_rect;
+  };
+
+  std::vector<AnnotInfo> infos;
+  infos.reserve(annot_count);
+
+  CFX_FloatRect combined_rect;
+  bool first = true;
+
+  for (int i = 0; i < annot_count; i++) {
+    CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annots[i]);
+    if (!ctx)
+      return nullptr;
+
+    // All annotations must share the same source document.
+    IPDF_Page* page_i = ctx->GetPage();
+    if (!page_i || page_i->GetDocument() != src_doc)
+      return nullptr;
+
+    RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
+    if (!annot_dict)
+      return nullptr;
+
+    RetainPtr<CPDF_Stream> ap_stream =
+        GetAnnotAP(annot_dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+    if (!ap_stream)
+      return nullptr;
+
+    CFX_FloatRect ap_bbox = ap_stream->GetDict()->GetRectFor("BBox");
+    ap_bbox.Normalize();
+    if (ap_bbox.IsEmpty()) {
+      ap_bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
+      ap_bbox.Normalize();
+    }
+    if (ap_bbox.IsEmpty())
+      return nullptr;
+
+    CFX_FloatRect annot_rect =
+        annot_dict->GetRectFor(pdfium::annotation::kRect);
+    annot_rect.Normalize();
+    if (annot_rect.IsEmpty())
+      return nullptr;
+
+    if (first) {
+      combined_rect = annot_rect;
+      first = false;
+    } else {
+      combined_rect.Union(annot_rect);
+    }
+
+    infos.push_back({std::move(ap_stream), ap_bbox, annot_rect});
+  }
+
+  const float page_width = combined_rect.Width();
+  const float page_height = combined_rect.Height();
+  if (page_width <= 0 || page_height <= 0)
+    return nullptr;
+
+  FPDF_DOCUMENT exported_doc = FPDF_CreateNewDocument();
+  if (!exported_doc)
+    return nullptr;
+
+  CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported_doc);
+  if (!dest_doc) {
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  FPDF_PAGE exported_page =
+      FPDFPage_New(exported_doc, 0, page_width, page_height);
+  if (!exported_page) {
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  CPDF_Page* dest_page = CPDFPageFromFPDFPage(exported_page);
+  if (!dest_page) {
+    FPDF_ClosePage(exported_page);
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  AnnotAppearanceExporter exporter(dest_doc, src_doc);
+
+  for (const auto& info : infos) {
+    RetainPtr<CPDF_Stream> cloned_stream =
+        exporter.ExportFormXObject(info.ap_stream);
+    if (!cloned_stream) {
+      FPDF_ClosePage(exported_page);
+      FPDF_CloseDocument(exported_doc);
+      return nullptr;
+    }
+
+    auto form = std::make_unique<CPDF_Form>(
+        dest_doc, dest_page->GetMutableResources(),
+        std::move(cloned_stream));
+    form->ParseContent();
+
+    // Map from AP BBox space to the correct position within the combined page.
+    // Scale from BBox dimensions to annotation rect dimensions, then translate
+    // to the annotation's position relative to the combined rect origin.
+    const float sx = info.annot_rect.Width() / info.ap_bbox.Width();
+    const float sy = info.annot_rect.Height() / info.ap_bbox.Height();
+    const float tx = (info.annot_rect.left - combined_rect.left) -
+                     info.ap_bbox.left * sx;
+    const float ty = (info.annot_rect.bottom - combined_rect.bottom) -
+                     info.ap_bbox.bottom * sy;
+
+    auto form_obj = std::make_unique<CPDF_FormObject>(
+        CPDF_PageObject::kNoContentStream, std::move(form),
+        CFX_Matrix(sx, 0, 0, sy, tx, ty));
+    form_obj->CalcBoundingBox();
+    form_obj->SetDirty(true);
+    dest_page->AppendPageObject(std::move(form_obj));
+  }
+
+  if (!FPDFPage_GenerateContent(exported_page)) {
+    FPDF_ClosePage(exported_page);
+    FPDF_CloseDocument(exported_doc);
+    return nullptr;
+  }
+
+  FPDF_ClosePage(exported_page);
+  return exported_doc;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
