@@ -4278,8 +4278,12 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
   if (content_rect.IsEmpty())
     content_rect = GetPaintedFormBounds(dest_doc, cloned_stream.Get());
   content_rect.Normalize();
-  if (!content_rect.IsEmpty())
+  if (!content_rect.IsEmpty()) {
     cloned_dict->SetRectFor("EPDFOrigContentRect", content_rect);
+
+    if (!WrapAPContentIntoFormXObject(cloned_stream.Get(), dest_doc))
+      return false;
+  }
 
   // Set cloned stream as AP/N on the annotation.
   RetainPtr<CPDF_Dictionary> ap_dict =
