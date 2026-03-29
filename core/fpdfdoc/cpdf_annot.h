@@ -119,7 +119,7 @@ class CPDF_Annot {
 
   // --------------------------------------------------------------------
   // Built‑in icon (/Name) enumeration – must stay in sync with the public
-  // FPDF_ANNOT_ICON list above so that static_cast is safe both ways.
+  // FPDF_ANNOT_NAME list above so that static_cast is safe both ways.
   // --------------------------------------------------------------------
   enum class Icon {
     kUnknown = -1,
@@ -154,7 +154,18 @@ class CPDF_Annot {
     kStamp_TopSecret,
     kStamp_Draft,
     kStamp_ForPublicRelease,
-    kLast = kStamp_ForPublicRelease
+    kStamp_Completed,
+    kStamp_Void,
+    kStamp_PreliminaryResults,
+    kStamp_InformationOnly,
+    kStamp_Rejected,
+    kStamp_Witness,
+    kStamp_InitialHere,
+    kStamp_SignHere,
+    kStamp_Accepted,
+    kStamp_Custom,
+    kStamp_Image,
+    kLast = kStamp_Image
   };
 
   // --------------------------------------------------------------------
