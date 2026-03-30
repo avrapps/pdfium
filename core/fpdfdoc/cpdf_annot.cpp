@@ -536,7 +536,49 @@ CPDF_Annot::Icon CPDF_Annot::StringToIcon(const ByteString& name) {
   if (name == "ForPublicRelease") {
     return Icon::kStamp_ForPublicRelease;
   }
-  return Icon::kUnknown;
+  if (name == "Completed") {
+    return Icon::kStamp_Completed;
+  }
+  if (name == "Void") {
+    return Icon::kStamp_Void;
+  }
+  if (name == "PreliminaryResults") {
+    return Icon::kStamp_PreliminaryResults;
+  }
+  if (name == "InformationOnly") {
+    return Icon::kStamp_InformationOnly;
+  }
+  if (name == "Rejected") {
+    return Icon::kStamp_Rejected;
+  }
+  if (name == "Witness") {
+    return Icon::kStamp_Witness;
+  }
+  if (name == "InitialHere") {
+    return Icon::kStamp_InitialHere;
+  }
+  if (name == "SignHere") {
+    return Icon::kStamp_SignHere;
+  }
+  if (name == "Accepted") {
+    return Icon::kStamp_Accepted;
+  }
+  if (name == "Custom") {
+    return Icon::kStamp_Custom;
+  }
+  if (name == "Image") {
+    return Icon::kStamp_Image;
+  }
+  // Try stripping Adobe SB/SH prefix and re-matching.
+  if (name.GetLength() > 2) {
+    ByteString prefix = name.First(2);
+    if (prefix == "SB" || prefix == "SH") {
+      Icon result = StringToIcon(name.Substr(2));
+      if (result != Icon::kUnknown && result != Icon::kStamp_Custom)
+        return result;
+    }
+  }
+  return Icon::kStamp_Custom;
 }
 
 ByteString CPDF_Annot::IconToString(CPDF_Annot::Icon icon) {
@@ -595,6 +637,28 @@ ByteString CPDF_Annot::IconToString(CPDF_Annot::Icon icon) {
       return "Draft";
     case Icon::kStamp_ForPublicRelease:
       return "ForPublicRelease";
+    case Icon::kStamp_Completed:
+      return "Completed";
+    case Icon::kStamp_Void:
+      return "Void";
+    case Icon::kStamp_PreliminaryResults:
+      return "PreliminaryResults";
+    case Icon::kStamp_InformationOnly:
+      return "InformationOnly";
+    case Icon::kStamp_Rejected:
+      return "Rejected";
+    case Icon::kStamp_Witness:
+      return "Witness";
+    case Icon::kStamp_InitialHere:
+      return "InitialHere";
+    case Icon::kStamp_SignHere:
+      return "SignHere";
+    case Icon::kStamp_Accepted:
+      return "Accepted";
+    case Icon::kStamp_Custom:
+      return "Custom";
+    case Icon::kStamp_Image:
+      return "Image";
     case Icon::kUnknown:
       break;
   }

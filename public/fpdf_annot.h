@@ -172,45 +172,58 @@ typedef enum FPDF_VERTICAL_ALIGNMENT {
   FPDF_VERTICAL_ALIGNMENT_BOTTOM = 2
 } FPDF_VERTICAL_ALIGNMENT;
 
-typedef enum FPDF_ANNOT_ICON {
-  FPDF_ANNOT_ICON_UNKNOWN = -1,
+typedef enum FPDF_ANNOT_NAME {
+  FPDF_ANNOT_NAME_UNKNOWN = -1,
   /* Text */
-  FPDF_ANNOT_ICON_Text_Comment = 0,
-  FPDF_ANNOT_ICON_Text_Key,
-  FPDF_ANNOT_ICON_Text_Note,
-  FPDF_ANNOT_ICON_Text_Help,
-  FPDF_ANNOT_ICON_Text_NewParagraph,
-  FPDF_ANNOT_ICON_Text_Paragraph,
-  FPDF_ANNOT_ICON_Text_Insert,
+  FPDF_ANNOT_NAME_Text_Comment = 0,
+  FPDF_ANNOT_NAME_Text_Key,
+  FPDF_ANNOT_NAME_Text_Note,
+  FPDF_ANNOT_NAME_Text_Help,
+  FPDF_ANNOT_NAME_Text_NewParagraph,
+  FPDF_ANNOT_NAME_Text_Paragraph,
+  FPDF_ANNOT_NAME_Text_Insert,
 
   /* FileAttachment */
-  FPDF_ANNOT_ICON_File_Graph,
-  FPDF_ANNOT_ICON_File_PushPin,
-  FPDF_ANNOT_ICON_File_Paperclip,
-  FPDF_ANNOT_ICON_File_Tag,
+  FPDF_ANNOT_NAME_File_Graph,
+  FPDF_ANNOT_NAME_File_PushPin,
+  FPDF_ANNOT_NAME_File_Paperclip,
+  FPDF_ANNOT_NAME_File_Tag,
 
   /* Sound */
-  FPDF_ANNOT_ICON_Sound_Speaker,
-  FPDF_ANNOT_ICON_Sound_Mic,
+  FPDF_ANNOT_NAME_Sound_Speaker,
+  FPDF_ANNOT_NAME_Sound_Mic,
 
-  /* Stamp */
-  FPDF_ANNOT_ICON_Stamp_Approved,
-  FPDF_ANNOT_ICON_Stamp_Experimental,
-  FPDF_ANNOT_ICON_Stamp_NotApproved,
-  FPDF_ANNOT_ICON_Stamp_AsIs,
-  FPDF_ANNOT_ICON_Stamp_Expired,
-  FPDF_ANNOT_ICON_Stamp_NotForPublicRelease,
-  FPDF_ANNOT_ICON_Stamp_Confidential,
-  FPDF_ANNOT_ICON_Stamp_Final,
-  FPDF_ANNOT_ICON_Stamp_Sold,
-  FPDF_ANNOT_ICON_Stamp_Departmental,
-  FPDF_ANNOT_ICON_Stamp_ForComment,
-  FPDF_ANNOT_ICON_Stamp_TopSecret,
-  FPDF_ANNOT_ICON_Stamp_Draft,
-  FPDF_ANNOT_ICON_Stamp_ForPublicRelease,
+  /* Stamp (ISO 32000 standard) */
+  FPDF_ANNOT_NAME_Stamp_Approved,
+  FPDF_ANNOT_NAME_Stamp_Experimental,
+  FPDF_ANNOT_NAME_Stamp_NotApproved,
+  FPDF_ANNOT_NAME_Stamp_AsIs,
+  FPDF_ANNOT_NAME_Stamp_Expired,
+  FPDF_ANNOT_NAME_Stamp_NotForPublicRelease,
+  FPDF_ANNOT_NAME_Stamp_Confidential,
+  FPDF_ANNOT_NAME_Stamp_Final,
+  FPDF_ANNOT_NAME_Stamp_Sold,
+  FPDF_ANNOT_NAME_Stamp_Departmental,
+  FPDF_ANNOT_NAME_Stamp_ForComment,
+  FPDF_ANNOT_NAME_Stamp_TopSecret,
+  FPDF_ANNOT_NAME_Stamp_Draft,
+  FPDF_ANNOT_NAME_Stamp_ForPublicRelease,
 
-  FPDF_ANNOT_ICON_LAST = FPDF_ANNOT_ICON_Stamp_ForPublicRelease
-} FPDF_ANNOT_ICON;
+  /* Stamp (extended – Adobe SB/SH and custom) */
+  FPDF_ANNOT_NAME_Stamp_Completed,
+  FPDF_ANNOT_NAME_Stamp_Void,
+  FPDF_ANNOT_NAME_Stamp_PreliminaryResults,
+  FPDF_ANNOT_NAME_Stamp_InformationOnly,
+  FPDF_ANNOT_NAME_Stamp_Rejected,
+  FPDF_ANNOT_NAME_Stamp_Witness,
+  FPDF_ANNOT_NAME_Stamp_InitialHere,
+  FPDF_ANNOT_NAME_Stamp_SignHere,
+  FPDF_ANNOT_NAME_Stamp_Accepted,
+  FPDF_ANNOT_NAME_Stamp_Custom,
+  FPDF_ANNOT_NAME_Stamp_Image,
+
+  FPDF_ANNOT_NAME_LAST = FPDF_ANNOT_NAME_Stamp_Image
+} FPDF_ANNOT_NAME;
 
 typedef enum EPDF_STAMP_FIT {
   EPDF_STAMP_FIT_CONTAIN = 0,  // preserve aspect, fully visible
@@ -1634,23 +1647,24 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 
 // Experimental EmbedPDF Extension API.
-// Set the icon of an annotation.
+// Set the /Name entry of an annotation (icon name for text/file/sound,
+// stamp type identifier for stamp annotations).
 //
 //   annot    - handle to an annotation.
-//   icon     - the icon to be set.
+//   name     - the name to be set.
 //
 // Returns true on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetIcon(FPDF_ANNOTATION annot, FPDF_ANNOT_ICON icon);
+EPDFAnnot_SetName(FPDF_ANNOTATION annot, FPDF_ANNOT_NAME name);
 
 // Experimental EmbedPDF Extension API.
-// Get the icon of an annotation.
+// Get the /Name entry of an annotation.
 //
 //   annot    - handle to an annotation.
 //
-// Returns the icon.
-FPDF_EXPORT FPDF_ANNOT_ICON FPDF_CALLCONV
-EPDFAnnot_GetIcon(FPDF_ANNOTATION annot);
+// Returns the name.
+FPDF_EXPORT FPDF_ANNOT_NAME FPDF_CALLCONV
+EPDFAnnot_GetName(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Resize the normal appearance (/AP/N) of a Stamp to match the annotation's /Rect
@@ -1811,6 +1825,50 @@ EPDFPage_ApplyRedactions(FPDF_PAGE page);
 // Returns TRUE on success, FALSE if no appearance stream or error.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Set an annotation's normal appearance (AP/N) from a page of another document.
+// The page's content stream and resources are deep-cloned into the annotation's
+// document as a Form XObject and set as the AP/N entry.
+//
+//   annot         - handle to the target annotation.
+//   src_doc       - handle to the source document containing the page.
+//   page_index    - zero-based index of the source page.
+//
+// Returns TRUE on success, FALSE on error.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
+                                FPDF_DOCUMENT src_doc,
+                                int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Export an annotation's normal appearance (AP/N) as a standalone single-page
+// PDF document. The new page is sized to the appearance stream's BBox, or the
+// annotation rect when the BBox is unavailable.
+//
+//   annot - handle to an annotation with an appearance stream.
+//
+// Returns a new document containing the exported appearance, or NULL on error.
+// The caller owns the returned document and must close it with
+// FPDF_CloseDocument().
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Export multiple annotations' normal appearances (AP/N) as a standalone
+// single-page PDF document. The annotations must all belong to the same page.
+// The new page is sized to the union of all annotation rects, and each
+// appearance is placed at the correct relative position within the page.
+//
+//   annots      - array of annotation handles with appearance streams.
+//   annot_count - number of annotations in the array. Must be > 0.
+//
+// Returns a new document containing the combined appearances, or NULL on error.
+// The caller owns the returned document and must close it with
+// FPDF_CloseDocument().
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
+                                              int annot_count);
 
 // Experimental EmbedPDF Extension API.
 // Set the EmbedPDF extended rotation on an annotation. This stores a custom
