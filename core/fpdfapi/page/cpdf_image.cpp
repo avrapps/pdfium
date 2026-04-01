@@ -26,7 +26,9 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fxcodec/flate/flatemodule.h"
 #include "core/fxcodec/jpeg/jpegmodule.h"
+#include "core/fxcodec/png/pngmodule.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/data_vector.h"
@@ -388,6 +390,73 @@ void CPDF_Image::SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap) {
   is_mask_ = pBitmap->IsMaskFormat();
   width_ = BitmapWidth;
   height_ = BitmapHeight;
+}
+
+void CPDF_Image::SetPng(const uint8_t* png_data, size_t png_size) {
+  auto decoded = PngModule::Decode(
+      pdfium::span<const uint8_t>(png_data, png_size));
+  if (!decoded.has_value())
+    return;
+
+  const uint32_t w = decoded->width;
+  const uint32_t h = decoded->height;
+  const size_t rgb_size = static_cast<size_t>(w) * 3;
+
+  // Apply PNG Sub filter (predictor byte + row data) before Flate compression.
+  const size_t filtered_row = 1 + rgb_size;
+  DataVector<uint8_t> filtered(filtered_row * h);
+  for (uint32_t y = 0; y < h; y++) {
+    size_t dst_off = y * filtered_row;
+    size_t src_off = y * rgb_size;
+    filtered[dst_off] = 1;  // Sub filter type
+    filtered[dst_off + 1] = decoded->rgb[src_off + 0];
+    filtered[dst_off + 2] = decoded->rgb[src_off + 1];
+    filtered[dst_off + 3] = decoded->rgb[src_off + 2];
+    for (size_t x = 3; x < rgb_size; x++) {
+      filtered[dst_off + 1 + x] = static_cast<uint8_t>(
+          decoded->rgb[src_off + x] - decoded->rgb[src_off + x - 3]);
+    }
+  }
+
+  DataVector<uint8_t> compressed = FlateModule::Encode(filtered);
+
+  RetainPtr<CPDF_Dictionary> dict = CreateXObjectImageDict(w, h);
+  dict->SetNewFor<CPDF_Name>("ColorSpace", "DeviceRGB");
+  dict->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
+  dict->SetNewFor<CPDF_Name>("Filter", "FlateDecode");
+
+  auto parms = dict->SetNewFor<CPDF_Dictionary>("DecodeParms");
+  parms->SetNewFor<CPDF_Number>("Predictor", 15);
+  parms->SetNewFor<CPDF_Number>("Colors", 3);
+  parms->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
+  parms->SetNewFor<CPDF_Number>("Columns", static_cast<int>(w));
+
+  dict->SetNewFor<CPDF_Number>(
+      "Length", pdfium::checked_cast<int>(compressed.size()));
+
+  // Build alpha (SMask) stream if the PNG had transparency.
+  if (!decoded->alpha.empty()) {
+    DataVector<uint8_t> alpha_compressed =
+        FlateModule::Encode(decoded->alpha);
+
+    RetainPtr<CPDF_Dictionary> mask_dict = CreateXObjectImageDict(w, h);
+    mask_dict->SetNewFor<CPDF_Name>("ColorSpace", "DeviceGray");
+    mask_dict->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
+    mask_dict->SetNewFor<CPDF_Name>("Filter", "FlateDecode");
+    mask_dict->SetNewFor<CPDF_Number>(
+        "Length", pdfium::checked_cast<int>(alpha_compressed.size()));
+
+    auto mask_stream = document_->NewIndirect<CPDF_Stream>(
+        std::move(alpha_compressed), std::move(mask_dict));
+    dict->SetNewFor<CPDF_Reference>("SMask", document_,
+                                    mask_stream->GetObjNum());
+  }
+
+  stream_ = pdfium::MakeRetain<CPDF_Stream>(
+      std::move(compressed), std::move(dict));
+  is_mask_ = false;
+  width_ = w;
+  height_ = h;
 }
 
 void CPDF_Image::ResetCache(CPDF_Page* pPage) {

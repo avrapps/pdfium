@@ -56,6 +56,7 @@ class CPDF_Image final : public Retainable {
   void SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap);
   void SetJpegImage(RetainPtr<IFX_SeekableReadStream> pFile);
   void SetJpegImageInline(RetainPtr<IFX_SeekableReadStream> pFile);
+  void SetPng(const uint8_t* png_data, size_t png_size);
 
   bool OverwriteStreamInPlace(DataVector<uint8_t> new_data,
                               RetainPtr<CPDF_Dictionary> new_dict,

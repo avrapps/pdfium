@@ -782,6 +782,41 @@ FPDFImageObj_SetBitmap(FPDF_PAGE* pages,
                        FPDF_PAGEOBJECT image_object,
                        FPDF_BITMAP bitmap);
 
+// Set a PNG image on |image_object|. Decodes the PNG buffer, applies
+// FlateDecode with PNG prediction filters for optimal compression, and
+// handles alpha transparency via an SMask stream.
+//
+//   pages        - pointer to the start of all loaded pages, may be NULL.
+//   count        - number of |pages|, may be 0.
+//   image_object - handle to an image object.
+//   png_data     - pointer to the raw PNG file bytes.
+//   png_size     - size in bytes of the PNG data.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFImageObj_SetPng(FPDF_PAGE* pages,
+                    int count,
+                    FPDF_PAGEOBJECT image_object,
+                    const uint8_t* png_data,
+                    size_t png_size);
+
+// Set a JPEG image on |image_object| from a raw buffer. Embeds the JPEG
+// data inline (copied into the document) using DCTDecode -- no re-encoding.
+//
+//   pages        - pointer to the start of all loaded pages, may be NULL.
+//   count        - number of |pages|, may be 0.
+//   image_object - handle to an image object.
+//   jpeg_data    - pointer to the raw JPEG file bytes.
+//   jpeg_size    - size in bytes of the JPEG data.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFImageObj_SetJpeg(FPDF_PAGE* pages,
+                     int count,
+                     FPDF_PAGEOBJECT image_object,
+                     const uint8_t* jpeg_data,
+                     size_t jpeg_size);
+
 // Get a bitmap rasterization of |image_object|. FPDFImageObj_GetBitmap() only
 // operates on |image_object| and does not take the associated image mask into
 // account. It also ignores the matrix for |image_object|.

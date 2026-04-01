@@ -26,7 +26,9 @@
 #include "core/fpdfapi/render/cpdf_imagerenderer.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderstatus.h"
+#include "core/fxcrt/cfx_read_only_container_stream.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
@@ -623,5 +625,55 @@ FPDFImageObj_GetIccProfileDataDecoded(FPDF_PAGEOBJECT image_object,
   // SAFETY: required from caller.
   auto result_span = UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen));
   fxcrt::spancpy(result_span, data);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFImageObj_SetPng(FPDF_PAGE* pages,
+                    int count,
+                    FPDF_PAGEOBJECT image_object,
+                    const uint8_t* png_data,
+                    size_t png_size) {
+  CPDF_ImageObject* pImgObj = CPDFImageObjectFromFPDFPageObject(image_object);
+  if (!pImgObj || !png_data || png_size < 8)
+    return false;
+
+  if (pages) {
+    for (int index = 0; index < count; index++) {
+      CPDF_Page* pPage = CPDFPageFromFPDFPage(UNSAFE_TODO(pages[index]));
+      if (pPage)
+        pImgObj->GetImage()->ResetCache(pPage);
+    }
+  }
+
+  pImgObj->GetImage()->SetPng(png_data, png_size);
+  pImgObj->CalcBoundingBox();
+  pImgObj->SetDirty(true);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFImageObj_SetJpeg(FPDF_PAGE* pages,
+                     int count,
+                     FPDF_PAGEOBJECT image_object,
+                     const uint8_t* jpeg_data,
+                     size_t jpeg_size) {
+  CPDF_ImageObject* pImgObj = CPDFImageObjectFromFPDFPageObject(image_object);
+  if (!pImgObj || !jpeg_data || jpeg_size < 2)
+    return false;
+
+  if (pages) {
+    for (int index = 0; index < count; index++) {
+      CPDF_Page* pPage = CPDFPageFromFPDFPage(UNSAFE_TODO(pages[index]));
+      if (pPage)
+        pImgObj->GetImage()->ResetCache(pPage);
+    }
+  }
+
+  DataVector<uint8_t> data(jpeg_data, jpeg_data + jpeg_size);
+  auto pFile = pdfium::MakeRetain<CFX_ReadOnlyDataVectorStream>(std::move(data));
+  pImgObj->GetImage()->SetJpegImageInline(std::move(pFile));
+  pImgObj->CalcBoundingBox();
+  pImgObj->SetDirty(true);
   return true;
 }
