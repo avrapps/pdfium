@@ -95,7 +95,8 @@ extern "C" {
 typedef enum FPDFANNOT_COLORTYPE {
   FPDFANNOT_COLORTYPE_Color = 0,
   FPDFANNOT_COLORTYPE_InteriorColor,
-  FPDFANNOT_COLORTYPE_OverlayColor  // For Redact annotations only (OC key)
+  FPDFANNOT_COLORTYPE_OverlayColor,  // For Redact annotations only (OC key)
+  FPDFANNOT_COLORTYPE_TextColor      // For FreeText annotations (TextColor key)
 } FPDFANNOT_COLORTYPE;
 
 typedef enum FPDF_ANNOT_BORDER_STYLE {
@@ -1308,34 +1309,34 @@ EPDFAnnot_ClearBorderEffect(FPDF_ANNOTATION annot);
 // Get the rectangle differences (/RD) — the inset between an annotation's
 // /Rect and its drawn appearance — for a supported annotation.
 //
-//   annot         - handle to a square, circle, caret, free-text, or polygon
-//                   annotation.
-//   left, top,    - receive the difference values for each side.
-//   right, bottom
+//   annot            - handle to a square, circle, caret, free-text, or polygon
+//                      annotation.
+//   left, bottom,    - receive the native PDF /RD values for each side.
+//   right, top         PDFium core treats /RD as [left, bottom, right, top].
 //
 // Returns true if the annotation has an /RD entry, false otherwise.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
                                   float* left,
-                                  float* top,
+                                  float* bottom,
                                   float* right,
-                                  float* bottom);
+                                  float* top);
 
 // Experimental EmbedPDF Extension API.
 // Set the rectangle differences (/RD) for a supported annotation.
 //
-//   annot         - handle to a square, circle, caret, free-text, or polygon
-//                   annotation.
-//   left, top,    - the difference values for each side.
-//   right, bottom
+//   annot            - handle to a square, circle, caret, free-text, or polygon
+//                      annotation.
+//   left, bottom,    - the native PDF /RD values for each side.
+//   right, top         PDFium core treats /RD as [left, bottom, right, top].
 //
 // Returns true on success, false on failure.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
                                    float left,
-                                   float top,
+                                   float bottom,
                                    float right,
-                                   float bottom);
+                                   float top);
 
 // Experimental EmbedPDF Extension API.
 // Remove the rectangle differences (/RD) entry from a supported annotation.
@@ -1445,10 +1446,13 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
                          unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
-// Set the line endings of an annotation.
+// Set the line endings of a Line, Polyline, or FreeText annotation.
+// For Line/Polyline: writes /LE as a 2-element array [start_style, end_style].
+// For FreeText: writes /LE as a single name using end_style (Acrobat convention);
+// start_style is ignored.
 //
-//   annot    - handle to an annotation.
-//   start_style - the start line ending style.
+//   annot       - handle to an annotation.
+//   start_style - the start line ending style (ignored for FreeText).
 //   end_style   - the end line ending style.
 //
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1457,9 +1461,11 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
                         FPDF_ANNOT_LINE_END end_style);
 
 // Experimental EmbedPDF Extension API.
-// Get the line endings of an annotation.
+// Get the line endings of a Line, Polyline, or FreeText annotation.
+// Handles both 2-element arrays and single name values (Acrobat FreeText).
+// When /LE is a single name, start_style is set to FPDF_ANNOT_LE_None.
 //
-//   annot    - handle to an annotation.
+//   annot       - handle to an annotation.
 //   start_style - receives the start line ending style.
 //   end_style   - receives the end line ending style.
 //
@@ -2187,6 +2193,45 @@ EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
                                FPDF_ANNOTATION annot,
                                FPDF_WCHAR* buffer,
                                unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Get the number of callout line points (/CL array) on a FreeText annotation.
+//
+//   annot - handle to a FreeText annotation.
+//
+// Returns 2 (simple line), 3 (knee-jointed line), or 0 if absent/invalid.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetCalloutLineCount(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Get the callout line points (/CL array) from a FreeText annotation.
+// Same two-call pattern as FPDFAnnot_GetVertices: call with buffer=NULL
+// to get the count, then allocate and call again.
+//
+//   annot  - handle to a FreeText annotation.
+//   buffer - buffer to receive FS_POINTF structs (may be NULL).
+//   length - number of FS_POINTF entries the buffer can hold.
+//
+// Returns the number of points (2 or 3), or 0 on failure.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetCalloutLine(FPDF_ANNOTATION annot,
+                         FS_POINTF* buffer,
+                         unsigned long length);
+
+// Experimental EmbedPDF Extension API.
+// Set or remove the callout line (/CL array) on a FreeText annotation.
+// |count| must be 2 (simple line) or 3 (knee-jointed line).
+// Pass NULL/0 to remove the /CL entry.
+//
+//   annot  - handle to a FreeText annotation.
+//   points - array of 2 or 3 FS_POINTF structs (may be NULL to remove).
+//   count  - number of points.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
+                         const FS_POINTF* points,
+                         unsigned long count);
 
 #ifdef __cplusplus
 }  // extern "C"

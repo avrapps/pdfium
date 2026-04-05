@@ -942,6 +942,21 @@ CFX_FloatRect GetRectDifferences(const CPDF_Dictionary* annot_dict) {
                        rd->GetFloatAt(2), rd->GetFloatAt(3));
 }
 
+CPDF_Annot::LineEnding ReadCalloutLineEnding(
+    const CPDF_Dictionary* annot_dict) {
+  // Per spec (Table 174), FreeText /LE is a single Name.
+  ByteString name = annot_dict->GetNameFor("LE");
+  if (!name.IsEmpty())
+    return CPDF_Annot::StringToLineEnding(name);
+  // Tolerance fallback: some writers store LE as an array.
+  if (RetainPtr<const CPDF_Array> le = annot_dict->GetArrayFor("LE"); le) {
+    if (le->size() >= 1)
+      return CPDF_Annot::StringToLineEnding(
+          ReadLineEndingToken(le.Get(), 0));
+  }
+  return CPDF_Annot::LineEnding::kNone;
+}
+
 ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
                                 const CPDF_Dictionary& annot_dict) {
   fxcrt::ostringstream app_stream;
@@ -1492,88 +1507,272 @@ bool GenerateFreeTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const B
   fxcrt::ostringstream appearance_stream;
   appearance_stream << "/" << kGSDictName << " gs ";
 
-  const BorderStyleInfo border_style_info =
-      GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
-  // Get rotation info -- if rotated, draws in local unrotated space
-  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
-  CFX_FloatRect rect = rot_info.bbox;
-  const float half_border_width = border_style_info.width / 2.0f;
-  CFX_FloatRect background_rect = rect;
-  background_rect.Deflate(half_border_width, half_border_width);
-  CFX_FloatRect body_rect = background_rect;
-  body_rect.Deflate(half_border_width, half_border_width);
+  const CFX_Color& da_color = default_appearance_info.value().text_color;
 
-  auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
-  if (color_array) {
-    CFX_Color color = fpdfdoc::CFXColorFromArray(*color_array);
-    appearance_stream << "q\n" << GenerateColorAP(color, PaintOperation::kFill);
-    WriteRect(appearance_stream, background_rect) << " re f\nQ\n";
-  }
+  // Detect FreeText Callout: IT-first (spec-correct), CL as geometry gate.
+  const ByteString intent = annot_dict->GetNameFor("IT");
+  RetainPtr<const CPDF_Array> cl = annot_dict->GetArrayFor("CL");
+  const bool intent_is_callout = (intent == "FreeTextCallout");
+  const bool has_valid_cl = cl && (cl->size() == 4 || cl->size() == 6);
 
-  const CFX_Color& text_color = default_appearance_info.value().text_color;
-  const ByteString border_stream =
-      GenerateBorderAP(rect, border_style_info, text_color);
-  if (border_stream.GetLength() > 0) {
-    appearance_stream << "q\n" << border_stream << "Q\n";
-  }
+  if (intent_is_callout && has_valid_cl) {
+    // ---- Callout FreeText appearance ----
 
-  CPVT_FontMap map(doc, nullptr, std::move(default_font), font_name);
-  CPVT_VariableText::Provider provider(&map);
-  CPVT_VariableText vt(&provider);
+    // (a) Read CL points.
+    CFX_PointF tip(cl->GetFloatAt(0), cl->GetFloatAt(1));
+    const bool has_knee = (cl->size() == 6);
+    CFX_PointF knee(cl->GetFloatAt(2), cl->GetFloatAt(3));
+    CFX_PointF conn = has_knee
+        ? CFX_PointF(cl->GetFloatAt(4), cl->GetFloatAt(5))
+        : knee;
 
-  vt.SetPlateRect(body_rect);
-  vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
-  SetVtFontSize(default_appearance_info.value().font_size, vt);
-  vt.SetAutoReturn(true);
-  vt.SetMultiLine(true);
-  vt.Initialize();
-  vt.SetText(annot_dict->GetUnicodeTextFor(pdfium::annotation::kContents));
-  vt.RearrangeAll();
-  const CFX_FloatRect content_rect = vt.GetContentRect();
-  const float free_h = body_rect.Height() - content_rect.Height();   // can be < 0
-  float dy = 0.0f;
+    // (b) Compute text box from Rect + RD.
+    CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+    rect.Normalize();
+    CFX_FloatRect rd = GetRectDifferences(annot_dict);
+    CFX_FloatRect text_box(
+        rect.left   + rd.left,
+        rect.bottom + rd.bottom,
+        rect.right  - rd.right,
+        rect.top    - rd.top);
 
-  switch (GetVerticalAlign(annot_dict)) {
-    case CPDF_Annot::VerticalAlignment::kTop:
-      dy = 0.0f;
-      break;
-    case CPDF_Annot::VerticalAlignment::kMiddle:
-      dy = -free_h / 2.0f;      // centre
-      break;
-    case CPDF_Annot::VerticalAlignment::kBottom:
-      dy = -free_h;             // bottom
-      break;
-  }
+    // (c) Border width and colors.
+    const float border_w = GetBorderWidth(annot_dict);
 
-  CFX_PointF offset(0.0f, dy);
-  const ByteString body =
-      GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(), offset,
-                     /*continuous=*/true, /*sub_word=*/0);
-  if (body.GetLength() > 0) {
-    appearance_stream << "/Tx BMC\n" << "q\n";
-    if (content_rect.Width() > body_rect.Width() ||
-        content_rect.Height() > body_rect.Height()) {
-      WriteRect(appearance_stream, body_rect) << " re\nW\nn\n";
+    // (d) Set fill (from /C), stroke (from DA), and line width.
+    auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
+    if (color_array) {
+      CFX_Color fill = fpdfdoc::CFXColorFromArray(*color_array);
+      appearance_stream << GenerateColorAP(fill, PaintOperation::kFill);
     }
-    appearance_stream << "BT\n"
-                      << GenerateColorAP(text_color, PaintOperation::kFill)
-                      << body << "ET\n"
-                      << "Q\nEMC\n";
-  }
+    appearance_stream << GenerateColorAP(da_color, PaintOperation::kStroke);
+    if (border_w > 0)
+      appearance_stream << border_w << " w\n";
 
-  auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-  auto resource_font_dict =
-      GenerateResourceFontDict(doc, font_name, font_dict->GetObjNum());
-  auto resource_dict = GenerateResourcesDict(
-      doc, std::move(graphics_state_dict), std::move(resource_font_dict));
-  if (rot_info.is_rotated) {
-    GenerateAndSetAPDictWithTransform(doc, annot_dict, &appearance_stream,
-                                     std::move(resource_dict),
-                                     rot_info.matrix, rot_info.bbox);
-  } else {
+    // (e) Draw callout polyline.
+    // Extend conn along the incoming segment direction by half the border
+    // width so the line slides under the text box rect's stroke area,
+    // eliminating the angular gap at the connection point.
+    const float half_bw = border_w / 2.0f;
+    CFX_PointF last_start = has_knee ? knee : tip;
+    CFX_PointF line_dir = UnitVector(conn - last_start);
+    CFX_PointF adjusted_conn(conn.x + line_dir.x * half_bw,
+                             conn.y + line_dir.y * half_bw);
+
+    appearance_stream << tip.x << " " << tip.y << " m\n";
+    if (has_knee)
+      appearance_stream << knee.x << " " << knee.y << " l\n";
+    appearance_stream << adjusted_conn.x << " " << adjusted_conn.y
+                      << " l S\n";
+
+    // (f) Draw line ending at tip.
+    CPDF_Annot::LineEnding le = ReadCalloutLineEnding(annot_dict);
+    if (le != CPDF_Annot::LineEnding::kNone &&
+        le != CPDF_Annot::LineEnding::kUnknown) {
+      CFX_PointF dir = UnitVector(knee - tip);
+      CFX_PointF dir_rev = {-dir.x, -dir.y};
+      float angle = atan2(dir_rev.y, dir_rev.x);
+
+      switch (le) {
+        case CPDF_Annot::LineEnding::kRClosedArrow:
+        case CPDF_Annot::LineEnding::kROpenArrow:
+          angle += FXSYS_PI;
+          break;
+        case CPDF_Annot::LineEnding::kButt:
+          angle += FXSYS_PI / 2.0f;
+          break;
+        case CPDF_Annot::LineEnding::kSlash:
+          angle -= FXSYS_PI / 1.5f;
+          break;
+        default:
+          break;
+      }
+
+      EmitEndingWithAngle(appearance_stream, tip, angle, [&]() {
+        switch (le) {
+          case CPDF_Annot::LineEnding::kOpenArrow:
+          case CPDF_Annot::LineEnding::kROpenArrow:
+            EmitArrowPath(appearance_stream, border_w, ArrowStyle::kOpen,
+                          /*do_fill=*/false);
+            break;
+          case CPDF_Annot::LineEnding::kClosedArrow:
+          case CPDF_Annot::LineEnding::kRClosedArrow:
+            EmitArrowPath(appearance_stream, border_w, ArrowStyle::kClosed,
+                          /*do_fill=*/false);
+            break;
+          case CPDF_Annot::LineEnding::kCircle:
+            EmitCirclePath(appearance_stream, border_w, /*do_fill=*/false);
+            break;
+          case CPDF_Annot::LineEnding::kSquare:
+            EmitSquarePath(appearance_stream, border_w, /*do_fill=*/false);
+            break;
+          case CPDF_Annot::LineEnding::kDiamond:
+            EmitDiamondPath(appearance_stream, border_w, /*do_fill=*/false);
+            break;
+          case CPDF_Annot::LineEnding::kButt:
+            EmitButtOrSlashPath(appearance_stream, border_w, kButtLenFactor);
+            break;
+          case CPDF_Annot::LineEnding::kSlash:
+            EmitButtOrSlashPath(appearance_stream, border_w, kSlashLenFactor);
+            break;
+          default:
+            break;
+        }
+      });
+    }
+
+    // (g) Draw text box rectangle (fill + stroke).
+    CFX_FloatRect text_box_stroke = text_box;
+    text_box_stroke.Deflate(half_bw, half_bw);
+    WriteRect(appearance_stream, text_box_stroke) << " re B\n";
+
+    // (h) Draw text inside the text box.
+    static constexpr float kCalloutTextPadding = 2.0f;
+    CFX_FloatRect text_body = text_box;
+    text_body.Deflate(border_w + kCalloutTextPadding,
+                      border_w + kCalloutTextPadding);
+
+    CFX_Color actual_text_color = da_color;
+    auto tc = annot_dict->GetArrayFor("TextColor");
+    if (tc && tc->size() >= 3) {
+      actual_text_color = fpdfdoc::CFXColorFromArray(*tc);
+    }
+
+    CPVT_FontMap map(doc, nullptr, std::move(default_font), font_name);
+    CPVT_VariableText::Provider provider(&map);
+    CPVT_VariableText vt(&provider);
+
+    vt.SetPlateRect(text_body);
+    vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
+    SetVtFontSize(default_appearance_info.value().font_size, vt);
+    vt.SetAutoReturn(true);
+    vt.SetMultiLine(true);
+    vt.Initialize();
+    vt.SetText(annot_dict->GetUnicodeTextFor(pdfium::annotation::kContents));
+    vt.RearrangeAll();
+
+    const CFX_FloatRect content_rect = vt.GetContentRect();
+    const float free_h = text_body.Height() - content_rect.Height();
+    float dy = 0.0f;
+    switch (GetVerticalAlign(annot_dict)) {
+      case CPDF_Annot::VerticalAlignment::kTop:
+        dy = 0.0f;
+        break;
+      case CPDF_Annot::VerticalAlignment::kMiddle:
+        dy = -free_h / 2.0f;
+        break;
+      case CPDF_Annot::VerticalAlignment::kBottom:
+        dy = -free_h;
+        break;
+    }
+
+    CFX_PointF offset(0.0f, dy);
+    const ByteString body =
+        GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(), offset,
+                       /*continuous=*/true, /*sub_word=*/0);
+    if (body.GetLength() > 0) {
+      appearance_stream << "q\n";
+      WriteRect(appearance_stream, text_body) << " re W n\n";
+      appearance_stream << "BT\n"
+                        << GenerateColorAP(actual_text_color,
+                                           PaintOperation::kFill)
+                        << body << "ET\nQ\n";
+    }
+
+    // Finalize AP dict.
+    auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+    auto resource_font_dict =
+        GenerateResourceFontDict(doc, font_name, font_dict->GetObjNum());
+    auto resource_dict = GenerateResourcesDict(
+        doc, std::move(graphics_state_dict), std::move(resource_font_dict));
     GenerateAndSetAPDict(doc, annot_dict, &appearance_stream,
                          std::move(resource_dict),
                          /*is_text_markup_annotation=*/false);
+  } else {
+    // ---- Regular FreeText appearance (unchanged) ----
+
+    const BorderStyleInfo border_style_info =
+        GetBorderStyleInfo(annot_dict->GetDictFor("BS"));
+    const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+    CFX_FloatRect rect = rot_info.bbox;
+    const float half_border_width = border_style_info.width / 2.0f;
+    CFX_FloatRect background_rect = rect;
+    background_rect.Deflate(half_border_width, half_border_width);
+    CFX_FloatRect body_rect = background_rect;
+    body_rect.Deflate(half_border_width, half_border_width);
+
+    auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
+    if (color_array) {
+      CFX_Color color = fpdfdoc::CFXColorFromArray(*color_array);
+      appearance_stream << "q\n"
+                        << GenerateColorAP(color, PaintOperation::kFill);
+      WriteRect(appearance_stream, background_rect) << " re f\nQ\n";
+    }
+
+    const ByteString border_stream =
+        GenerateBorderAP(rect, border_style_info, da_color);
+    if (border_stream.GetLength() > 0) {
+      appearance_stream << "q\n" << border_stream << "Q\n";
+    }
+
+    CPVT_FontMap map(doc, nullptr, std::move(default_font), font_name);
+    CPVT_VariableText::Provider provider(&map);
+    CPVT_VariableText vt(&provider);
+
+    vt.SetPlateRect(body_rect);
+    vt.SetAlignment(annot_dict->GetIntegerFor("Q"));
+    SetVtFontSize(default_appearance_info.value().font_size, vt);
+    vt.SetAutoReturn(true);
+    vt.SetMultiLine(true);
+    vt.Initialize();
+    vt.SetText(annot_dict->GetUnicodeTextFor(pdfium::annotation::kContents));
+    vt.RearrangeAll();
+    const CFX_FloatRect content_rect = vt.GetContentRect();
+    const float free_h = body_rect.Height() - content_rect.Height();
+    float dy = 0.0f;
+
+    switch (GetVerticalAlign(annot_dict)) {
+      case CPDF_Annot::VerticalAlignment::kTop:
+        dy = 0.0f;
+        break;
+      case CPDF_Annot::VerticalAlignment::kMiddle:
+        dy = -free_h / 2.0f;
+        break;
+      case CPDF_Annot::VerticalAlignment::kBottom:
+        dy = -free_h;
+        break;
+    }
+
+    CFX_PointF offset(0.0f, dy);
+    const ByteString body =
+        GenerateEditAP(vt.GetProvider()->GetFontMap(), vt.GetIterator(), offset,
+                       /*continuous=*/true, /*sub_word=*/0);
+    if (body.GetLength() > 0) {
+      appearance_stream << "/Tx BMC\n" << "q\n";
+      if (content_rect.Width() > body_rect.Width() ||
+          content_rect.Height() > body_rect.Height()) {
+        WriteRect(appearance_stream, body_rect) << " re\nW\nn\n";
+      }
+      appearance_stream << "BT\n"
+                        << GenerateColorAP(da_color, PaintOperation::kFill)
+                        << body << "ET\n"
+                        << "Q\nEMC\n";
+    }
+
+    auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+    auto resource_font_dict =
+        GenerateResourceFontDict(doc, font_name, font_dict->GetObjNum());
+    auto resource_dict = GenerateResourcesDict(
+        doc, std::move(graphics_state_dict), std::move(resource_font_dict));
+    if (rot_info.is_rotated) {
+      GenerateAndSetAPDictWithTransform(doc, annot_dict, &appearance_stream,
+                                       std::move(resource_dict),
+                                       rot_info.matrix, rot_info.bbox);
+    } else {
+      GenerateAndSetAPDict(doc, annot_dict, &appearance_stream,
+                           std::move(resource_dict),
+                           /*is_text_markup_annotation=*/false);
+    }
   }
   return true;
 }
@@ -2941,9 +3140,19 @@ bool CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
   ByteString new_default_appearance_color =
       GenerateColorAP(color, PaintOperation::kFill);
   CHECK(!new_default_appearance_color.IsEmpty());
+  // EmbedPDF: Strip trailing newlines and write color before font.
+  // GenerateColorAP/StringFromFontNameAndSize append '\n' for content streams,
+  // but the /DA string value must be a compact single-line format for Adobe
+  // Acrobat compatibility. Adobe's FreeText callout AP regeneration fails to
+  // parse the color when the DA contains embedded newlines, causing the
+  // border/line color to fall back to black. Color-first order also matches
+  // the format Adobe produce.
+  new_default_appearance_color.TrimBack('\n');
+  new_default_appearance_font_name_and_size.TrimBack('\n');
   annot_dict->SetNewFor<CPDF_String>(
       "DA",
-      new_default_appearance_font_name_and_size + new_default_appearance_color);
+      new_default_appearance_color + " " +
+          new_default_appearance_font_name_and_size);
 
   // TODO(thestig): Call GenerateAnnotAP();
   return true;
@@ -2994,7 +3203,11 @@ bool CPDF_GenerateAP::UpdateDefaultAppearance(
 
   ByteString da_font_part = StringFromFontNameAndSize(resource_key, font_size);
   ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
+  // EmbedPDF: Strip trailing newlines and write color before font.
+  // See comment in GenerateDefaultAppearanceWithColor for rationale.
+  da_color_part.TrimBack('\n');
+  da_font_part.TrimBack('\n');
 
-  annot_dict->SetNewFor<CPDF_String>("DA", da_font_part + da_color_part);
+  annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
   return true;
 }

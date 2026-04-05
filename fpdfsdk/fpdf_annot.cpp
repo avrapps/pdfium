@@ -2448,6 +2448,8 @@ static ByteString GetColorKeyForType(FPDFANNOT_COLORTYPE type) {
       return "IC";
     case FPDFANNOT_COLORTYPE_OverlayColor:
       return "OC";
+    case FPDFANNOT_COLORTYPE_TextColor:
+      return "TextColor";
     case FPDFANNOT_COLORTYPE_Color:
     default:
       return "C";
@@ -2648,10 +2650,10 @@ EPDFAnnot_ClearBorderEffect(FPDF_ANNOTATION annot) {
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
                                   float* left,
-                                  float* top,
+                                  float* bottom,
                                   float* right,
-                                  float* bottom) {
-  if (!left || !top || !right || !bottom) {
+                                  float* top) {
+  if (!left || !bottom || !right || !top) {
     return false;
   }
 
@@ -2670,16 +2672,16 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
   RetainPtr<const CPDF_Array> pRDArray = pAnnotDict->GetArrayFor("RD");
   if (!pRDArray || pRDArray->size() < 4) {
     *left = 0;
-    *top = 0;
-    *right = 0;
     *bottom = 0;
+    *right = 0;
+    *top = 0;
     return false;
   }
 
   *left = pRDArray->GetFloatAt(0);
-  *top = pRDArray->GetFloatAt(1);
+  *bottom = pRDArray->GetFloatAt(1);
   *right = pRDArray->GetFloatAt(2);
-  *bottom = pRDArray->GetFloatAt(3);
+  *top = pRDArray->GetFloatAt(3);
 
   return true;
 }
@@ -2687,9 +2689,9 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
                                    float left,
-                                   float top,
+                                   float bottom,
                                    float right,
-                                   float bottom) {
+                                   float top) {
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
   if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
       subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
@@ -2704,9 +2706,9 @@ EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
 
   RetainPtr<CPDF_Array> pRDArray = pAnnotDict->SetNewFor<CPDF_Array>("RD");
   pRDArray->AppendNew<CPDF_Number>(left);
-  pRDArray->AppendNew<CPDF_Number>(top);
-  pRDArray->AppendNew<CPDF_Number>(right);
   pRDArray->AppendNew<CPDF_Number>(bottom);
+  pRDArray->AppendNew<CPDF_Number>(right);
+  pRDArray->AppendNew<CPDF_Number>(top);
 
   return true;
 }
@@ -3021,9 +3023,9 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
                          FPDF_ANNOT_LINE_END start_style,
                          FPDF_ANNOT_LINE_END end_style) {
-  // Only LINE (and optionally POLYLINE) annotations have /LE.
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE)
+  if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE &&
+      subtype != FPDF_ANNOT_FREETEXT)
     return false;
 
   RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
@@ -3044,23 +3046,30 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
     return true;
   }
 
-  ByteString s_name = CPDF_Annot::LineEndingToString(s);
-  ByteString e_name = CPDF_Annot::LineEndingToString(e);
+  if (subtype == FPDF_ANNOT_FREETEXT) {
+    // FreeText uses a single name for /LE (Acrobat convention).
+    ByteString e_name = CPDF_Annot::LineEndingToString(e);
+    if (e_name.IsEmpty())
+      e_name = "None";
+    dict->SetNewFor<CPDF_Name>("LE", e_name);
+  } else {
+    ByteString s_name = CPDF_Annot::LineEndingToString(s);
+    ByteString e_name = CPDF_Annot::LineEndingToString(e);
 
-  // Fallback to "None" for invalids.
-  if (s_name.IsEmpty())
-    s_name = "None";
-  if (e_name.IsEmpty())
-    e_name = "None";
+    if (s_name.IsEmpty())
+      s_name = "None";
+    if (e_name.IsEmpty())
+      e_name = "None";
 
-  RetainPtr<CPDF_Array> le = dict->GetMutableArrayFor("LE");
-  if (le)
-    le->Clear();
-  else
-    le = dict->SetNewFor<CPDF_Array>("LE");
+    RetainPtr<CPDF_Array> le = dict->GetMutableArrayFor("LE");
+    if (le)
+      le->Clear();
+    else
+      le = dict->SetNewFor<CPDF_Array>("LE");
 
-  le->AppendNew<CPDF_Name>(s_name);
-  le->AppendNew<CPDF_Name>(e_name);
+    le->AppendNew<CPDF_Name>(s_name);
+    le->AppendNew<CPDF_Name>(e_name);
+  }
 
   return true;
 }
@@ -3087,28 +3096,38 @@ EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
     return false;
 
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE)
+  if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE &&
+      subtype != FPDF_ANNOT_FREETEXT)
     return false;
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!dict)
     return false;
 
+  // Try reading as a 2-element array first (spec-compliant for all types).
   RetainPtr<const CPDF_Array> le = dict->GetArrayFor("LE");
-  if (!le || le->size() < 2)
+  if (le && le->size() >= 2) {
+    ByteString s_name = ReadLineEndingToken(le.Get(), 0);
+    ByteString e_name = ReadLineEndingToken(le.Get(), 1);
+
+    CPDF_Annot::LineEnding s =
+        CPDF_Annot::StringToLineEnding(s_name.IsEmpty() ? "None" : s_name);
+    CPDF_Annot::LineEnding e =
+        CPDF_Annot::StringToLineEnding(e_name.IsEmpty() ? "None" : e_name);
+
+    *start_style = static_cast<FPDF_ANNOT_LINE_END>(s);
+    *end_style   = static_cast<FPDF_ANNOT_LINE_END>(e);
+    return true;
+  }
+
+  // Fall back to single name (Acrobat FreeText convention).
+  ByteString name = dict->GetNameFor("LE");
+  if (name.IsEmpty())
     return false;
 
-  ByteString s_name = ReadLineEndingToken(le.Get(), 0);
-  ByteString e_name = ReadLineEndingToken(le.Get(), 1);
-
-  // Fallback to None if unreadable
-  CPDF_Annot::LineEnding s =
-      CPDF_Annot::StringToLineEnding(s_name.IsEmpty() ? "None" : s_name);
-  CPDF_Annot::LineEnding e =
-      CPDF_Annot::StringToLineEnding(e_name.IsEmpty() ? "None" : e_name);
-
-  *start_style = static_cast<FPDF_ANNOT_LINE_END>(s);
-  *end_style   = static_cast<FPDF_ANNOT_LINE_END>(e);
+  *start_style = FPDF_ANNOT_LE_None;
+  *end_style = static_cast<FPDF_ANNOT_LINE_END>(
+      CPDF_Annot::StringToLineEnding(name));
   return true;
 }
 
@@ -5169,6 +5188,97 @@ EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
     if (CPDF_Page* pTargetPdfPage = ToPDFPage(pTargetPage)) {
       pPDFForm->FixPageFields(pTargetPdfPage);
     }
+  }
+
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetCalloutLineCount(FPDF_ANNOTATION annot) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+    return 0;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return 0;
+
+  RetainPtr<const CPDF_Array> cl = dict->GetArrayFor("CL");
+  if (!cl)
+    return 0;
+
+  // /CL must have 4 (2 points) or 6 (3 points) numbers.
+  const size_t sz = cl->size();
+  if (sz == 4)
+    return 2;
+  if (sz >= 6)
+    return 3;
+  return 0;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetCalloutLine(FPDF_ANNOTATION annot,
+                         FS_POINTF* buffer,
+                         unsigned long length) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+    return 0;
+
+  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return 0;
+
+  RetainPtr<const CPDF_Array> cl = dict->GetArrayFor("CL");
+  if (!cl)
+    return 0;
+
+  const size_t sz = cl->size();
+  unsigned long points_len = 0;
+  if (sz == 4)
+    points_len = 2;
+  else if (sz >= 6)
+    points_len = 3;
+  else
+    return 0;
+
+  if (buffer && length >= points_len) {
+    auto buffer_span = UNSAFE_BUFFERS(pdfium::span(buffer, length));
+    for (unsigned long i = 0; i < points_len; ++i) {
+      buffer_span[i].x = cl->GetFloatAt(i * 2);
+      buffer_span[i].y = cl->GetFloatAt(i * 2 + 1);
+    }
+  }
+  return points_len;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
+                         const FS_POINTF* points,
+                         unsigned long count) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict)
+    return false;
+
+  if (!points || count == 0) {
+    dict->RemoveFor("CL");
+    return true;
+  }
+
+  // /CL must be 2 points (4 numbers) or 3 points (6 numbers).
+  if (count != 2 && count != 3)
+    return false;
+
+  RetainPtr<CPDF_Array> cl = dict->GetMutableArrayFor("CL");
+  if (cl)
+    cl->Clear();
+  else
+    cl = dict->SetNewFor<CPDF_Array>("CL");
+
+  auto pts = UNSAFE_BUFFERS(pdfium::span(points, count));
+  for (unsigned long i = 0; i < count; ++i) {
+    cl->AppendNew<CPDF_Number>(pts[i].x);
+    cl->AppendNew<CPDF_Number>(pts[i].y);
   }
 
   return true;
