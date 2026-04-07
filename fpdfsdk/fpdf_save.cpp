@@ -6,8 +6,11 @@
 
 #include "public/fpdf_save.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <stdint.h>
+#include <string>
 
 #include <optional>
 #include <unordered_map>
@@ -252,4 +255,61 @@ FPDF_SaveWithVersion(FPDF_DOCUMENT document,
                      FPDF_DWORD flags,
                      int fileVersion) {
   return DoDocSave(document, file_write, flags, fileVersion);
+}
+
+namespace {
+
+struct MemoryFileWriter : public FPDF_FILEWRITE {
+  std::string data;
+
+  MemoryFileWriter() {
+    version = 1;
+    WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
+                    unsigned long size) -> int {
+      static_cast<MemoryFileWriter*>(self)->data.append(
+          static_cast<const char*>(buf), size);
+      return static_cast<int>(size);
+    };
+  }
+};
+
+void* SaveToBuffer(FPDF_DOCUMENT document,
+                   FPDF_DWORD flags,
+                   unsigned long* out_size,
+                   std::optional<int> version) {
+  if (!out_size)
+    return nullptr;
+  *out_size = 0;
+
+  MemoryFileWriter writer;
+  bool ok = version.has_value()
+                ? DoDocSave(document, &writer, flags, version)
+                : DoDocSave(document, &writer, flags, {});
+  if (!ok || writer.data.empty())
+    return nullptr;
+
+  void* buffer = malloc(writer.data.size());
+  if (!buffer)
+    return nullptr;
+
+  memcpy(buffer, writer.data.data(), writer.data.size());
+  *out_size = static_cast<unsigned long>(writer.data.size());
+  return buffer;
+}
+
+}  // namespace
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToBuffer(FPDF_DOCUMENT document,
+                          FPDF_DWORD flags,
+                          unsigned long* out_size) {
+  return SaveToBuffer(document, flags, out_size, {});
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToBufferWithVersion(FPDF_DOCUMENT document,
+                                     FPDF_DWORD flags,
+                                     unsigned long* out_size,
+                                     int file_version) {
+  return SaveToBuffer(document, flags, out_size, file_version);
 }

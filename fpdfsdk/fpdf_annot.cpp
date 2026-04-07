@@ -4859,6 +4859,7 @@ EPDFPage_CreateFormField(FPDF_PAGE page,
     case FPDF_FORMFIELD_COMBOBOX:
     case FPDF_FORMFIELD_LISTBOX:
     case FPDF_FORMFIELD_PUSHBUTTON:
+    case FPDF_FORMFIELD_SIGNATURE:
       break;
     default:
       return nullptr;
@@ -4890,6 +4891,9 @@ EPDFPage_CreateFormField(FPDF_PAGE page,
       break;
     case FPDF_FORMFIELD_LISTBOX:
       ft_value = "Ch";
+      break;
+    case FPDF_FORMFIELD_SIGNATURE:
+      ft_value = "Sig";
       break;
   }
 

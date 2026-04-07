@@ -6,7 +6,9 @@
 
 #include "public/fpdf_formfill.h"
 
+#include <cstring>
 #include <memory>
+#include <new>
 #include <utility>
 #include <variant>
 
@@ -935,4 +937,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FORM_IsIndexSelected(FPDF_FORMHANDLE hHandle, FPDF_PAGE page, int index) {
   CPDFSDK_PageView* pPageView = FormHandleToPageView(hHandle, page);
   return pPageView && pPageView->IsIndexSelected(index);
+}
+
+FPDF_EXPORT FPDF_FORMFILLINFO* FPDF_CALLCONV EPDF_OpenFormFillInfo() {
+  FPDF_FORMFILLINFO* info = new (std::nothrow) FPDF_FORMFILLINFO();
+  if (!info)
+    return nullptr;
+  memset(info, 0, sizeof(FPDF_FORMFILLINFO));
+  info->version = 1;
+  return info;
+}
+
+FPDF_EXPORT void FPDF_CALLCONV
+EPDF_CloseFormFillInfo(FPDF_FORMFILLINFO* info) {
+  delete info;
 }
