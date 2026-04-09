@@ -531,3 +531,11 @@ EPDFSig_GetContactInfo(FPDF_SIGNATURE signature,
       obj->GetUnicodeText(),
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, length)));
 }
+
+FPDF_EXPORT FPDF_SIGNATURE FPDF_CALLCONV
+EPDFSig_GetAnnotSignatureHandle(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> pField = GetSigFieldDict(annot);
+  if (!pField)
+    return nullptr;
+  return FPDFSignatureFromCPDFDictionary(pField.Get());
+}

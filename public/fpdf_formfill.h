@@ -1824,6 +1824,25 @@ FORM_IsIndexSelected(FPDF_FORMHANDLE hHandle, FPDF_PAGE page, int index);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_LoadXFA(FPDF_DOCUMENT document);
 
 // Experimental EmbedPDF Extension API.
+// Function: EPDF_FixPageFieldsRaw
+//          Register orphan widget annotations from a page's Annots array
+//          into the interactive form's field tree, without loading the full
+//          page via FPDF_LoadPage.  This must be called before using
+//          FPDFAnnot_GetFormFieldType on annotations obtained through
+//          EPDFPage_GetAnnotRaw.
+// Parameters:
+//          hHandle      -   Handle to the form fill module, as returned by
+//                           FPDFDOC_InitFormFillEnvironment().
+//          document     -   Handle to the document.
+//          page_index   -   0-based index of the page.
+// Return value:
+//          None.
+FPDF_EXPORT void FPDF_CALLCONV
+EPDF_FixPageFieldsRaw(FPDF_FORMHANDLE hHandle,
+                       FPDF_DOCUMENT document,
+                       int page_index);
+
+// Experimental EmbedPDF Extension API.
 // Function: EPDF_OpenFormFillInfo
 //          Allocates a zeroed FPDF_FORMFILLINFO struct with version set to 1.
 // Parameters:

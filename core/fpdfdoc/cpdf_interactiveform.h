@@ -93,6 +93,7 @@ class CPDF_InteractiveForm {
 
   void SetNotifierIface(NotifierIface* notify);
   void FixPageFields(CPDF_Page* page);
+  void FixPageFieldsFromDict(CPDF_Dictionary* page_dict);
 
   // Wrap callbacks thru NotifierIface.
   bool NotifyBeforeValueChange(CPDF_FormField* field, const WideString& value);

@@ -314,6 +314,22 @@ EPDFSig_GetContactInfo(FPDF_SIGNATURE signature,
                         void* buffer,
                         unsigned long length);
 
+// Experimental EmbedPDF Extension API.
+// Get the FPDF_SIGNATURE handle for a Sig field widget annotation.
+//
+// Bridges the annotation world to the FPDFSignatureObj_Get* reader family.
+// The returned handle can be passed to FPDFSignatureObj_GetContents,
+// FPDFSignatureObj_GetReason, EPDFSig_GetLocation, etc.
+//
+//   annot - handle to an annotation. Must be a Sig field widget
+//           (merged field/widget or child widget with Sig parent).
+//
+// Returns the FPDF_SIGNATURE handle on success, or NULL if the annotation
+// is not a Sig field widget. The caller does not take ownership; the handle
+// remains valid until FPDF_CloseDocument() is called.
+FPDF_EXPORT FPDF_SIGNATURE FPDF_CALLCONV
+EPDFSig_GetAnnotSignatureHandle(FPDF_ANNOTATION annot);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

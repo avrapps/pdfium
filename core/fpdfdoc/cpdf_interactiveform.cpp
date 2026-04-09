@@ -887,7 +887,14 @@ void CPDF_InteractiveForm::LoadField(RetainPtr<CPDF_Dictionary> field_dict,
 }
 
 void CPDF_InteractiveForm::FixPageFields(CPDF_Page* page) {
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
+  FixPageFieldsFromDict(page->GetMutableDict().Get());
+}
+
+void CPDF_InteractiveForm::FixPageFieldsFromDict(CPDF_Dictionary* page_dict) {
+  if (!page_dict) {
+    return;
+  }
+  RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
   if (!annots) {
     return;
   }

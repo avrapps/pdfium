@@ -939,6 +939,29 @@ FORM_IsIndexSelected(FPDF_FORMHANDLE hHandle, FPDF_PAGE page, int index) {
   return pPageView && pPageView->IsIndexSelected(index);
 }
 
+FPDF_EXPORT void FPDF_CALLCONV
+EPDF_FixPageFieldsRaw(FPDF_FORMHANDLE hHandle,
+                       FPDF_DOCUMENT document,
+                       int page_index) {
+  CPDFSDK_InteractiveForm* pForm = FormHandleToInteractiveForm(hHandle);
+  if (!pForm) {
+    return;
+  }
+
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc || page_index < 0 || page_index >= pDoc->GetPageCount()) {
+    return;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      pDoc->GetMutablePageDictionary(page_index);
+  if (!page_dict) {
+    return;
+  }
+
+  pForm->GetInteractiveForm()->FixPageFieldsFromDict(page_dict.Get());
+}
+
 FPDF_EXPORT FPDF_FORMFILLINFO* FPDF_CALLCONV EPDF_OpenFormFillInfo() {
   FPDF_FORMFILLINFO* info = new (std::nothrow) FPDF_FORMFILLINFO();
   if (!info)
