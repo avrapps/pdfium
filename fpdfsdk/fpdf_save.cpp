@@ -241,24 +241,6 @@ bool DoDocSave(FPDF_DOCUMENT document,
   return create_result;
 }
 
-}  // namespace
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SaveAsCopy(FPDF_DOCUMENT document,
-                                                    FPDF_FILEWRITE* file_write,
-                                                    FPDF_DWORD flags) {
-  return DoDocSave(document, file_write, flags, {});
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-FPDF_SaveWithVersion(FPDF_DOCUMENT document,
-                     FPDF_FILEWRITE* file_write,
-                     FPDF_DWORD flags,
-                     int fileVersion) {
-  return DoDocSave(document, file_write, flags, fileVersion);
-}
-
-namespace {
-
 struct MemoryFileWriter : public FPDF_FILEWRITE {
   std::string data;
 
@@ -298,6 +280,20 @@ void* SaveToBuffer(FPDF_DOCUMENT document,
 }
 
 }  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SaveAsCopy(FPDF_DOCUMENT document,
+                                                    FPDF_FILEWRITE* file_write,
+                                                    FPDF_DWORD flags) {
+  return DoDocSave(document, file_write, flags, {});
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDF_SaveWithVersion(FPDF_DOCUMENT document,
+                     FPDF_FILEWRITE* file_write,
+                     FPDF_DWORD flags,
+                     int fileVersion) {
+  return DoDocSave(document, file_write, flags, fileVersion);
+}
 
 FPDF_EXPORT void* FPDF_CALLCONV
 EPDF_SaveDocumentToBuffer(FPDF_DOCUMENT document,
