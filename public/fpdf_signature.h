@@ -8,6 +8,9 @@
 // NOLINTNEXTLINE(build/include)
 #include "fpdfview.h"
 
+// NOLINTNEXTLINE(build/include)
+#include "fpdf_revision.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -329,6 +332,45 @@ EPDFSig_GetContactInfo(FPDF_SIGNATURE signature,
 // remains valid until FPDF_CloseDocument() is called.
 FPDF_EXPORT FPDF_SIGNATURE FPDF_CALLCONV
 EPDFSig_GetAnnotSignatureHandle(FPDF_ANNOTATION annot);
+
+// ---- Signature-Revision Bridge APIs ----
+// These functions cross both the signature and revision domains.
+// Pure revision APIs are in fpdf_revision.h.
+
+// Experimental EmbedPDF Extension API.
+// Get the signature associated with a revision, if any.
+// Requires the document handle to enumerate signature fields.
+// If multiple signatures map to the same revision, returns the first match.
+// Returns NULL if the revision has no signature.
+FPDF_EXPORT FPDF_SIGNATURE FPDF_CALLCONV
+EPDFRevision_GetSignature(FPDF_DOCUMENT document, EPDF_REVISION revision);
+
+// Experimental EmbedPDF Extension API.
+// Get the revision index that a signature belongs to.
+// Returns -1 on error or if unmappable.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFSig_GetSignatureRevision(FPDF_DOCUMENT document,
+                             FPDF_SIGNATURE signature);
+
+// DocMDP compliance status values.
+#define EPDF_DOCMDP_COMPLIANT 0
+#define EPDF_DOCMDP_VIOLATED 1
+#define EPDF_DOCMDP_NOT_APPLICABLE 2
+#define EPDF_DOCMDP_UNSUPPORTED 3
+#define EPDF_DOCMDP_INDETERMINATE 4
+
+// Experimental EmbedPDF Extension API.
+// Check DocMDP compliance between the certified revision and a later revision.
+// Automatically finds the certification signature and its permission from
+// catalog /Perms/DocMDP.
+//
+//   document        - document handle.
+//   check_revision  - revision to check (-1 means current/latest).
+//
+// Returns one of the EPDF_DOCMDP_* status values.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFSig_CheckDocMDPCompliance(FPDF_DOCUMENT document,
+                              int check_revision);
 
 #ifdef __cplusplus
 }  // extern "C"

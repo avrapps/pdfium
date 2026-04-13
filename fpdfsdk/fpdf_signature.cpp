@@ -4,7 +4,6 @@
 
 #include "public/fpdf_signature.h"
 
-#include <utility>
 #include <vector>
 
 #include "constants/form_fields.h"
@@ -15,8 +14,13 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_revision_classifier.h"
+#include "core/fpdfapi/parser/cpdf_revision_diff.h"
+#include "core/fpdfapi/parser/cpdf_revision_provider.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/object_tree_traversal_util.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
@@ -43,7 +47,9 @@ RetainPtr<CPDF_Array> CreateByteRangePlaceholderArray(
   return pByteRange;
 }
 
-std::vector<RetainPtr<const CPDF_Dictionary>> CollectSignatures(
+}  // namespace
+
+static std::vector<RetainPtr<const CPDF_Dictionary>> CollectSignatures(
     CPDF_Document* doc) {
   std::vector<RetainPtr<const CPDF_Dictionary>> signatures;
   const CPDF_Dictionary* root = doc->GetRoot();
@@ -71,6 +77,8 @@ std::vector<RetainPtr<const CPDF_Dictionary>> CollectSignatures(
   }
   return signatures;
 }
+
+namespace {
 
 RetainPtr<CPDF_Dictionary> GetSigFieldDict(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* pCtx = CPDFAnnotContextFromFPDFAnnotation(annot);
@@ -538,4 +546,219 @@ EPDFSig_GetAnnotSignatureHandle(FPDF_ANNOTATION annot) {
   if (!pField)
     return nullptr;
   return FPDFSignatureFromCPDFDictionary(pField.Get());
+}
+
+// ---- Signature-Revision Bridge Implementations ----
+
+namespace {
+
+int MapSignatureToRevision(const CPDF_RevisionProvider* provider,
+                           const CPDF_Dictionary* sig_field_dict) {
+  RetainPtr<const CPDF_Dictionary> value_dict =
+      sig_field_dict->GetDictFor(pdfium::form_fields::kV);
+  if (!value_dict)
+    return -1;
+
+  RetainPtr<const CPDF_Array> byte_range =
+      value_dict->GetArrayFor("ByteRange");
+  if (!byte_range || byte_range->size() < 4)
+    return -1;
+
+  const int64_t signed_end =
+      byte_range->GetIntegerAt(2) + byte_range->GetIntegerAt(3);
+
+  for (size_t i = 0; i < provider->GetRevisionCount(); ++i) {
+    if (provider->GetLayer(i).revision_end == signed_end)
+      return static_cast<int>(i);
+  }
+
+  int best = -1;
+  for (size_t i = 0; i < provider->GetRevisionCount(); ++i) {
+    if (provider->GetLayer(i).revision_end <= signed_end)
+      best = static_cast<int>(i);
+  }
+  return best;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_SIGNATURE FPDF_CALLCONV
+EPDFRevision_GetSignature(FPDF_DOCUMENT document, EPDF_REVISION revision) {
+  if (!revision || !document)
+    return nullptr;
+
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc)
+    return nullptr;
+
+  const CPDF_RevisionProvider* provider =
+      GetRevisionProviderFromDocument(document);
+  if (!provider || provider->GetRevisionCount() == 0)
+    return nullptr;
+
+  const auto* target_layer =
+      reinterpret_cast<const CPDF_RevisionProvider::RevisionLayer*>(revision);
+
+  int target_index = -1;
+  for (size_t i = 0; i < provider->GetRevisionCount(); ++i) {
+    if (&provider->GetLayer(i) == target_layer) {
+      target_index = static_cast<int>(i);
+      break;
+    }
+  }
+  if (target_index < 0)
+    return nullptr;
+
+  std::vector<RetainPtr<const CPDF_Dictionary>> signatures =
+      CollectSignatures(doc);
+  for (const auto& sig : signatures) {
+    if (MapSignatureToRevision(provider, sig.Get()) == target_index)
+      return FPDFSignatureFromCPDFDictionary(sig.Get());
+  }
+  return nullptr;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFSig_GetSignatureRevision(FPDF_DOCUMENT document,
+                             FPDF_SIGNATURE signature) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc)
+    return -1;
+
+  const CPDF_RevisionProvider* provider =
+      GetRevisionProviderFromDocument(document);
+  if (!provider)
+    return -1;
+
+  const CPDF_Dictionary* sig_dict =
+      CPDFDictionaryFromFPDFSignature(signature);
+  if (!sig_dict)
+    return -1;
+
+  return MapSignatureToRevision(provider, sig_dict);
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFSig_CheckDocMDPCompliance(FPDF_DOCUMENT document,
+                              int check_revision) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc)
+    return EPDF_DOCMDP_UNSUPPORTED;
+
+  CPDF_Parser* parser = doc->GetParser();
+  if (!parser)
+    return EPDF_DOCMDP_UNSUPPORTED;
+
+  const CPDF_RevisionProvider* provider = parser->GetRevisionProvider();
+  if (!provider || provider->GetRevisionCount() == 0)
+    return EPDF_DOCMDP_UNSUPPORTED;
+
+  // Find the certification signature via catalog /Perms/DocMDP.
+  const CPDF_Dictionary* root = doc->GetRoot();
+  if (!root)
+    return EPDF_DOCMDP_NOT_APPLICABLE;
+
+  RetainPtr<const CPDF_Dictionary> perms = root->GetDictFor("Perms");
+  if (!perms)
+    return EPDF_DOCMDP_NOT_APPLICABLE;
+
+  RetainPtr<const CPDF_Dictionary> docmdp_sig = perms->GetDictFor("DocMDP");
+  if (!docmdp_sig)
+    return EPDF_DOCMDP_NOT_APPLICABLE;
+
+  // Get permission level from the /Reference TransformParams.
+  int permission = 2;  // Default per ISO 32000.
+  RetainPtr<const CPDF_Array> reference = docmdp_sig->GetArrayFor("Reference");
+  if (reference) {
+    for (size_t i = 0; i < reference->size(); ++i) {
+      RetainPtr<const CPDF_Dictionary> ref_dict = reference->GetDictAt(i);
+      if (!ref_dict)
+        continue;
+      if (ref_dict->GetNameFor("TransformMethod") != "DocMDP")
+        continue;
+      RetainPtr<const CPDF_Dictionary> params =
+          ref_dict->GetDictFor("TransformParams");
+      if (params) {
+        int p = params->GetIntegerFor("P");
+        if (p >= 1 && p <= 3)
+          permission = p;
+      }
+      break;
+    }
+  }
+
+  // Determine the certification signature's revision.
+  int cert_revision = -1;
+  std::vector<RetainPtr<const CPDF_Dictionary>> signatures =
+      CollectSignatures(doc);
+  for (const auto& sig : signatures) {
+    RetainPtr<const CPDF_Dictionary> v = sig->GetDictFor(pdfium::form_fields::kV);
+    if (v.Get() == docmdp_sig.Get()) {
+      cert_revision = MapSignatureToRevision(provider, sig.Get());
+      break;
+    }
+  }
+  if (cert_revision < 0)
+    return EPDF_DOCMDP_INDETERMINATE;
+
+  // Determine the check revision.
+  int target_revision = check_revision;
+  if (target_revision < 0)
+    target_revision = static_cast<int>(provider->GetRevisionCount()) - 1;
+
+  if (target_revision <= cert_revision)
+    return EPDF_DOCMDP_COMPLIANT;
+
+  // Compute diff between certified revision and check revision.
+  auto cert_map =
+      provider->GetVisibleObjectsAtRevision(cert_revision);
+  auto check_map =
+      provider->GetVisibleObjectsAtRevision(target_revision);
+
+  std::vector<RevisionDiffEntry> raw_diff =
+      CPDF_RevisionDiff::ComputeDiff(cert_map, check_map);
+
+  if (raw_diff.empty())
+    return EPDF_DOCMDP_COMPLIANT;
+
+  // TODO: GetObjectsWithMultipleReferences is a full-document BFS. If this
+  // function is called repeatedly for the same document, consider caching the
+  // result on a per-document handle or a dedicated context object.
+  std::set<uint32_t> multi_ref_set =
+      GetObjectsWithMultipleReferences(doc);
+  std::vector<SemanticChange> changes =
+      ClassifyChanges(doc, raw_diff, multi_ref_set);
+
+  // Check compliance.
+  if (permission < 1 || permission > 3)
+    return EPDF_DOCMDP_UNSUPPORTED;
+
+  for (const auto& change : changes) {
+    if (change.semantic_type == SemanticChangeType::kDSS ||
+        change.semantic_type == SemanticChangeType::kDocumentTimestamp) {
+      continue;
+    }
+
+    switch (permission) {
+      case 1:
+        return EPDF_DOCMDP_VIOLATED;
+
+      case 2:
+        if (change.semantic_type != SemanticChangeType::kFormStateChange &&
+            change.semantic_type != SemanticChangeType::kSignature) {
+          return EPDF_DOCMDP_VIOLATED;
+        }
+        break;
+
+      case 3:
+        if (change.semantic_type != SemanticChangeType::kFormStateChange &&
+            change.semantic_type != SemanticChangeType::kSignature &&
+            change.semantic_type != SemanticChangeType::kAnnotation) {
+          return EPDF_DOCMDP_VIOLATED;
+        }
+        break;
+    }
+  }
+
+  return EPDF_DOCMDP_COMPLIANT;
 }

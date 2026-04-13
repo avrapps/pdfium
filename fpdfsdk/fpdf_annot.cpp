@@ -5305,3 +5305,39 @@ EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
   }
   return true;
 }
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* pCtx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!pCtx)
+    return 0;
+  const CPDF_Dictionary* dict = pCtx->GetAnnotDict();
+  if (!dict)
+    return 0;
+  return dict->GetObjNum();
+}
+
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
+  if (!page || obj_num == 0)
+    return nullptr;
+
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return nullptr;
+
+  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  if (!annots)
+    return nullptr;
+
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<CPDF_Dictionary> d =
+        ToDictionary(annots->GetMutableDirectObjectAt(i));
+    if (d && d->GetObjNum() == obj_num) {
+      auto ctx = std::make_unique<CPDF_AnnotContext>(
+          std::move(d), IPDFPageFromFPDFPage(page));
+      return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+    }
+  }
+  return nullptr;
+}

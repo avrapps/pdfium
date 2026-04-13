@@ -673,6 +673,46 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
   return FPDFPageFromIPDFPage(pPage.Leak());
 }
 
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0)
+    return nullptr;
+
+  int page_index = doc->GetPageIndex(obj_num);
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
+    return nullptr;
+
+#ifdef PDF_ENABLE_XFA
+  auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());
+  if (context) {
+    return FPDFPageFromIPDFPage(
+        context->GetOrCreateXFAPage(page_index).Leak());
+  }
+#endif  // PDF_ENABLE_XFA
+
+  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  if (!dict)
+    return nullptr;
+
+  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
+  pPage->AddPageImageCache();
+  pPage->ParseContent();
+
+  return FPDFPageFromIPDFPage(pPage.Leak());
+}
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFPage_GetObjectNumber(FPDF_PAGE page) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return 0;
+  RetainPtr<const CPDF_Dictionary> dict = pPage->GetDict();
+  if (!dict)
+    return 0;
+  return dict->GetObjNum();
+}
+
 FPDF_EXPORT float FPDF_CALLCONV FPDF_GetPageWidthF(FPDF_PAGE page) {
   IPDF_Page* pPage = IPDFPageFromFPDFPage(page);
   return pPage ? pPage->GetPageWidth() : 0.0f;
