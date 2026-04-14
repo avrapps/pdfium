@@ -20,7 +20,7 @@ namespace {
 
 struct RevisionDiffResult {
   std::vector<RevisionDiffEntry> entries;
-  std::vector<SemanticChange> semantic_changes;
+  std::vector<ResolvedSemanticChange> semantic_changes;
   std::set<uint32_t> multi_ref_set;
   bool semantic_computed = false;
 };
@@ -164,7 +164,7 @@ EPDFRevisionDiff_GetSemanticCategoryCounts(FPDF_DOCUMENT document,
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFRevisionDiff_GetSemanticEntryCount(FPDF_DOCUMENT document,
+EPDFRevisionDiff_GetResolvedEntryCount(FPDF_DOCUMENT document,
                                        EPDF_REVISION_DIFF diff) {
   if (!diff || !document)
     return 0;
@@ -179,13 +179,16 @@ EPDFRevisionDiff_GetSemanticEntryCount(FPDF_DOCUMENT document,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFRevisionDiff_GetSemanticEntry(FPDF_DOCUMENT document,
+EPDFRevisionDiff_GetResolvedEntry(FPDF_DOCUMENT document,
                                   EPDF_REVISION_DIFF diff,
                                   unsigned long index,
-                                  unsigned int* out_obj_num,
+                                  unsigned int* out_changed_obj_num,
+                                  unsigned int* out_target_obj_num,
+                                  unsigned int* out_page_obj_num,
                                   int* out_diff_category,
                                   int* out_semantic_type) {
-  if (!diff || !document || !out_obj_num || !out_diff_category ||
+  if (!diff || !document || !out_changed_obj_num || !out_target_obj_num ||
+      !out_page_obj_num || !out_diff_category ||
       !out_semantic_type) {
     return false;
   }
@@ -199,8 +202,10 @@ EPDFRevisionDiff_GetSemanticEntry(FPDF_DOCUMENT document,
   if (index >= result->semantic_changes.size())
     return false;
 
-  const SemanticChange& change = result->semantic_changes[index];
-  *out_obj_num = change.obj_num;
+  const ResolvedSemanticChange& change = result->semantic_changes[index];
+  *out_changed_obj_num = change.changed_obj_num;
+  *out_target_obj_num = change.target_obj_num;
+  *out_page_obj_num = change.page_obj_num;
   *out_diff_category = static_cast<int>(change.diff_category);
   *out_semantic_type = static_cast<int>(change.semantic_type);
   return true;

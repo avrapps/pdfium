@@ -26,8 +26,10 @@ enum class SemanticChangeType : uint8_t {
   kOther = 7,
 };
 
-struct SemanticChange {
-  uint32_t obj_num;
+struct ResolvedSemanticChange {
+  uint32_t changed_obj_num;
+  uint32_t target_obj_num;
+  uint32_t page_obj_num;
   RevisionDiffCategory diff_category;
   SemanticChangeType semantic_type;
 };
@@ -40,6 +42,7 @@ enum class SupportOwnerKind : uint8_t {
 
 struct SupportCollectionPolicy {
   bool include_ap = false;
+  bool include_value = false;
   bool include_popup = false;
   bool include_actions = false;
 };
@@ -73,7 +76,7 @@ SupportPromotionDecision DecideSupportPromotion(
 
 // Two-pass semantic classification of raw diff entries.
 // multi_ref_set should be precomputed via GetObjectsWithMultipleReferences().
-std::vector<SemanticChange> ClassifyChanges(
+std::vector<ResolvedSemanticChange> ClassifyChanges(
     CPDF_Document* doc,
     const std::vector<RevisionDiffEntry>& raw_diff,
     const std::set<uint32_t>& multi_ref_set);

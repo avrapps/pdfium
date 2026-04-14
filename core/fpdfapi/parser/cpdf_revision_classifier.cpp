@@ -114,6 +114,19 @@ std::set<uint32_t> CollectAPObjectNumbers(CPDF_Document* doc,
   return result;
 }
 
+std::set<uint32_t> CollectValueObjectNumbers(CPDF_Document* doc,
+                                             const CPDF_Dictionary* owner_dict) {
+  std::set<uint32_t> result;
+  const CPDF_Object* value = owner_dict->GetObjectFor("V");
+  if (!value)
+    return result;
+
+  if (value->IsReference())
+    result.insert(value->AsReference()->GetRefObjNum());
+  CollectReferencesRecursive(doc, value, &result);
+  return result;
+}
+
 uint32_t GetAcroFormObjNum(const CPDF_Dictionary* root) {
   if (!root)
     return 0;
@@ -126,9 +139,54 @@ uint32_t GetAcroFormObjNum(const CPDF_Dictionary* root) {
 }
 
 struct DirectClassification {
+  uint32_t target_obj_num = 0;
+  uint32_t page_obj_num = 0;
   SemanticChangeType semantic_type = SemanticChangeType::kOther;
   SupportOwnerKind owner_kind = SupportOwnerKind::kNone;
 };
+
+uint32_t GetPageObjectNum(const CPDF_Dictionary* dict) {
+  if (!dict)
+    return 0;
+
+  const CPDF_Object* page = dict->GetObjectFor("P");
+  if (page) {
+    if (page->IsReference())
+      return page->AsReference()->GetRefObjNum();
+
+    if (const CPDF_Dictionary* page_dict = page->AsDictionary())
+      return page_dict->GetObjNum();
+  }
+
+  // Follow the /Parent owner chain until a /P page reference is found.
+  // This is not page-tree inheritance; it simply walks the owner chain.
+  // Depth cap prevents infinite loops from malformed circular references.
+  const CPDF_Dictionary* cur = dict;
+  for (int depth = 0; depth < 4; ++depth) {
+    const CPDF_Object* parent_ref = cur->GetObjectFor("Parent");
+    if (!parent_ref)
+      break;
+
+    const CPDF_Object* parent_obj = parent_ref->GetDirect();
+    const CPDF_Dictionary* parent_dict =
+        parent_obj ? parent_obj->AsDictionary() : nullptr;
+    if (!parent_dict)
+      break;
+
+    const CPDF_Object* parent_page = parent_dict->GetObjectFor("P");
+    if (parent_page) {
+      if (parent_page->IsReference())
+        return parent_page->AsReference()->GetRefObjNum();
+
+      if (const CPDF_Dictionary* parent_page_dict = parent_page->AsDictionary())
+        return parent_page_dict->GetObjNum();
+    }
+
+    cur = parent_dict;
+  }
+
+  return 0;
+}
 
 // LIMITATION: Classification uses the latest parse context
 // (doc->GetMutableIndirectObject), not a historical snapshot. Objects that were
@@ -143,7 +201,7 @@ DirectClassification ClassifyObject(CPDF_Document* doc,
                                     uint32_t acroform_obj_num,
                                     const std::set<uint32_t>& dss_obj_nums) {
   if (dss_obj_nums.count(obj_num))
-    return {SemanticChangeType::kDSS, SupportOwnerKind::kNone};
+    return {obj_num, 0, SemanticChangeType::kDSS, SupportOwnerKind::kNone};
 
   RetainPtr<CPDF_Object> obj = doc->GetMutableIndirectObject(obj_num);
   if (!obj)
@@ -160,31 +218,54 @@ DirectClassification ClassifyObject(CPDF_Document* doc,
   ByteString type = dict->GetNameFor("Type");
 
   if (type == "DocTimeStamp")
-    return {SemanticChangeType::kDocumentTimestamp, SupportOwnerKind::kNone};
+    return {obj_num, 0, SemanticChangeType::kDocumentTimestamp,
+            SupportOwnerKind::kNone};
 
   if (type == "Sig")
-    return {SemanticChangeType::kSignature, SupportOwnerKind::kNone};
+    return {obj_num, 0, SemanticChangeType::kSignature,
+            SupportOwnerKind::kNone};
 
   ByteString subtype = dict->GetNameFor("Subtype");
   if (subtype == "Widget")
-    return {SemanticChangeType::kFormStateChange, SupportOwnerKind::kForm};
+    return {obj_num, GetPageObjectNum(dict), SemanticChangeType::kFormStateChange,
+            SupportOwnerKind::kForm};
 
   if (acroform_obj_num != 0 && obj_num == acroform_obj_num)
-    return {SemanticChangeType::kFormStateChange, SupportOwnerKind::kForm};
+    return {obj_num, 0, SemanticChangeType::kFormStateChange,
+            SupportOwnerKind::kForm};
+
+  if (!subtype.IsEmpty() && dict->KeyExist("Rect")) {
+    uint32_t target_obj_num = obj_num;
+    if (subtype == "Popup") {
+      const CPDF_Object* parent_ref = dict->GetObjectFor("Parent");
+      if (parent_ref) {
+        if (parent_ref->IsReference()) {
+          target_obj_num = parent_ref->AsReference()->GetRefObjNum();
+        } else if (const CPDF_Dictionary* parent_dict =
+                       parent_ref->AsDictionary()) {
+          if (parent_dict->GetObjNum())
+            target_obj_num = parent_dict->GetObjNum();
+        }
+      }
+    }
+
+    return {target_obj_num, GetPageObjectNum(dict),
+            SemanticChangeType::kAnnotation, SupportOwnerKind::kAnnotation};
+  }
 
   if (dict->KeyExist("FT") || dict->KeyExist("V") ||
       dict->KeyExist("Parent")) {
-    return {SemanticChangeType::kFormStateChange, SupportOwnerKind::kForm};
+    return {obj_num, GetPageObjectNum(dict),
+            SemanticChangeType::kFormStateChange, SupportOwnerKind::kForm};
   }
 
   if (type == "Page" || type == "Pages")
-    return {SemanticChangeType::kPage, SupportOwnerKind::kNone};
+    return {obj_num, type == "Page" ? obj_num : 0, SemanticChangeType::kPage,
+            SupportOwnerKind::kNone};
 
   if (type == "Catalog")
-    return {SemanticChangeType::kCatalog, SupportOwnerKind::kNone};
-
-  if (!subtype.IsEmpty() && dict->KeyExist("Rect"))
-    return {SemanticChangeType::kAnnotation, SupportOwnerKind::kAnnotation};
+    return {obj_num, 0, SemanticChangeType::kCatalog,
+            SupportOwnerKind::kNone};
 
   return {};
 }
@@ -222,6 +303,9 @@ std::set<uint32_t> CollectSupportObjectNumbers(
   if (policy.include_ap)
     result.merge(CollectAPObjectNumbers(doc, owner_dict));
 
+  if (policy.include_value)
+    result.merge(CollectValueObjectNumbers(doc, owner_dict));
+
   if (policy.include_popup) {
     const CPDF_Object* popup = owner_dict->GetObjectFor("Popup");
     if (popup) {
@@ -248,8 +332,8 @@ std::set<uint32_t> CollectSupportObjectNumbers(
 }
 
 SupportPromotionDecision DecideSupportPromotion(
-    uint32_t obj_num,
-    RevisionDiffCategory diff_category,
+    uint32_t /*obj_num*/,
+    RevisionDiffCategory /*diff_category*/,
     const std::set<uint32_t>& form_owner_hits,
     const std::set<uint32_t>& annotation_owner_hits,
     bool has_multiple_references_in_document) {
@@ -268,18 +352,14 @@ SupportPromotionDecision DecideSupportPromotion(
   if (has_multiple_references_in_document)
     return SupportPromotionDecision::kShared;
 
-  if (diff_category == RevisionDiffCategory::kAdded) {
-    return from_form ? SupportPromotionDecision::kPromoteToForm
-                     : SupportPromotionDecision::kPromoteToAnnotation;
-  }
-
-  return SupportPromotionDecision::kNotLocal;
+  return from_form ? SupportPromotionDecision::kPromoteToForm
+                   : SupportPromotionDecision::kPromoteToAnnotation;
 }
 
 // LIMITATION: All object access uses the current (latest) document parse
 // state. See ClassifyObject comment for details on freed/replaced object
 // classification accuracy.
-std::vector<SemanticChange> ClassifyChanges(
+std::vector<ResolvedSemanticChange> ClassifyChanges(
     CPDF_Document* doc,
     const std::vector<RevisionDiffEntry>& raw_diff,
     const std::set<uint32_t>& multi_ref_set) {
@@ -296,18 +376,23 @@ std::vector<SemanticChange> ClassifyChanges(
   }();
 
   // --- Pass 1: direct-owner classification ---
-  std::vector<SemanticChange> result;
+  std::vector<ResolvedSemanticChange> result;
   result.reserve(raw_diff.size());
 
   std::map<uint32_t, SupportOwnerKind> direct_owners;
 
   for (const auto& entry : raw_diff) {
-    SemanticChange change;
-    change.obj_num = entry.obj_num;
+    ResolvedSemanticChange change;
+    change.changed_obj_num = entry.obj_num;
+    change.target_obj_num = entry.obj_num;
+    change.page_obj_num = 0;
     change.diff_category = entry.category;
     DirectClassification direct =
         ClassifyObject(doc, entry.obj_num, root, acroform_obj_num,
                        dss_obj_nums);
+    change.target_obj_num = direct.target_obj_num ? direct.target_obj_num
+                                                  : entry.obj_num;
+    change.page_obj_num = direct.page_obj_num;
     change.semantic_type = direct.semantic_type;
     result.push_back(change);
 
@@ -332,6 +417,7 @@ std::vector<SemanticChange> ClassifyChanges(
     SupportCollectionPolicy policy;
     if (owner_kind == SupportOwnerKind::kForm) {
       policy.include_ap = true;
+      policy.include_value = true;
     } else if (owner_kind == SupportOwnerKind::kAnnotation) {
       policy.include_ap = true;
       policy.include_popup = true;
@@ -353,21 +439,67 @@ std::vector<SemanticChange> ClassifyChanges(
   }
 
   for (auto& change : result) {
+    if ((change.semantic_type == SemanticChangeType::kSignature ||
+         change.semantic_type == SemanticChangeType::kDocumentTimestamp) &&
+        form_support_hits[change.changed_obj_num].size() == 1 &&
+        annotation_support_hits[change.changed_obj_num].empty() &&
+        !multi_ref_set.count(change.changed_obj_num)) {
+      uint32_t owner_obj_num = *form_support_hits[change.changed_obj_num].begin();
+      change.target_obj_num = owner_obj_num;
+      RetainPtr<CPDF_Object> owner_obj =
+          doc->GetMutableIndirectObject(owner_obj_num);
+      CPDF_Dictionary* owner_dict =
+          owner_obj ? owner_obj->AsMutableDictionary() : nullptr;
+      if (!owner_dict) {
+        if (CPDF_Stream* owner_stream =
+                owner_obj ? owner_obj->AsMutableStream() : nullptr) {
+          owner_dict = owner_stream->GetMutableDict();
+        }
+      }
+      change.page_obj_num = GetPageObjectNum(owner_dict);
+      continue;
+    }
+
     if (change.semantic_type != SemanticChangeType::kOther)
       continue;
 
     SupportPromotionDecision decision = DecideSupportPromotion(
-        change.obj_num, change.diff_category,
-        form_support_hits[change.obj_num],
-        annotation_support_hits[change.obj_num],
-        multi_ref_set.count(change.obj_num));
+        change.changed_obj_num, change.diff_category,
+        form_support_hits[change.changed_obj_num],
+        annotation_support_hits[change.changed_obj_num],
+        multi_ref_set.count(change.changed_obj_num));
 
     switch (decision) {
       case SupportPromotionDecision::kPromoteToForm:
         change.semantic_type = SemanticChangeType::kFormStateChange;
+        if (!form_support_hits[change.changed_obj_num].empty()) {
+          uint32_t owner_obj_num = *form_support_hits[change.changed_obj_num].begin();
+          change.target_obj_num = owner_obj_num;
+          RetainPtr<CPDF_Object> owner_obj = doc->GetMutableIndirectObject(owner_obj_num);
+          CPDF_Dictionary* owner_dict =
+              owner_obj ? owner_obj->AsMutableDictionary() : nullptr;
+          if (!owner_dict) {
+            if (CPDF_Stream* owner_stream = owner_obj ? owner_obj->AsMutableStream() : nullptr)
+              owner_dict = owner_stream->GetMutableDict();
+          }
+          change.page_obj_num = GetPageObjectNum(owner_dict);
+        }
         break;
       case SupportPromotionDecision::kPromoteToAnnotation:
         change.semantic_type = SemanticChangeType::kAnnotation;
+        if (!annotation_support_hits[change.changed_obj_num].empty()) {
+          uint32_t owner_obj_num =
+              *annotation_support_hits[change.changed_obj_num].begin();
+          change.target_obj_num = owner_obj_num;
+          RetainPtr<CPDF_Object> owner_obj = doc->GetMutableIndirectObject(owner_obj_num);
+          CPDF_Dictionary* owner_dict =
+              owner_obj ? owner_obj->AsMutableDictionary() : nullptr;
+          if (!owner_dict) {
+            if (CPDF_Stream* owner_stream = owner_obj ? owner_obj->AsMutableStream() : nullptr)
+              owner_dict = owner_stream->GetMutableDict();
+          }
+          change.page_obj_num = GetPageObjectNum(owner_dict);
+        }
         break;
       case SupportPromotionDecision::kAmbiguous:
       case SupportPromotionDecision::kShared:

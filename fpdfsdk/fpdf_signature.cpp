@@ -726,7 +726,7 @@ EPDFSig_CheckDocMDPCompliance(FPDF_DOCUMENT document,
   // result on a per-document handle or a dedicated context object.
   std::set<uint32_t> multi_ref_set =
       GetObjectsWithMultipleReferences(doc);
-  std::vector<SemanticChange> changes =
+  std::vector<ResolvedSemanticChange> changes =
       ClassifyChanges(doc, raw_diff, multi_ref_set);
 
   // Check compliance.

@@ -106,36 +106,42 @@ EPDFRevisionDiff_GetSemanticCategoryCounts(
     unsigned long buffer_length);
 
 // Experimental EmbedPDF Extension API.
-// Get the number of semantically classified entries in a diff.
+// Get the number of resolved semantic entries in a diff.
 // Lazily computes semantic classification on the first call and caches
 // the result (same cache as GetSemanticCategoryCounts).
 //
 //   document - document handle (needed for semantic classification).
 //   diff     - diff handle from EPDFRevision_Compare().
 //
-// Returns the number of semantic entries, or 0 on error.
+// Returns the number of resolved entries, or 0 on error.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFRevisionDiff_GetSemanticEntryCount(FPDF_DOCUMENT document,
+EPDFRevisionDiff_GetResolvedEntryCount(FPDF_DOCUMENT document,
                                        EPDF_REVISION_DIFF diff);
 
 // Experimental EmbedPDF Extension API.
-// Get a specific semantically classified entry.
+// Get a specific resolved semantic entry.
 // Lazily computes semantic classification on the first call and caches
 // the result (same cache as GetSemanticCategoryCounts).
 //
-//   document         - document handle (needed for semantic classification).
-//   diff             - diff handle from EPDFRevision_Compare().
-//   index            - zero-based index into the semantic entries.
-//   out_obj_num      - receives the indirect object number.
-//   out_diff_category - receives 0=added, 1=modified, 2=freed.
-//   out_semantic_type - receives one of the EPDF_SEMANTIC_* values.
+//   document            - document handle (needed for semantic classification).
+//   diff                - diff handle from EPDFRevision_Compare().
+//   index               - zero-based index into the resolved entries.
+//   out_changed_obj_num - receives the actual changed indirect object number.
+//   out_target_obj_num  - receives the resolved logical target object number,
+//                         or 0 if unavailable.
+//   out_page_obj_num    - receives the owning page dictionary object number,
+//                         or 0 if unavailable.
+//   out_diff_category   - receives 0=added, 1=modified, 2=freed.
+//   out_semantic_type   - receives one of the EPDF_SEMANTIC_* values.
 //
 // Returns TRUE on success, FALSE on error or out-of-range index.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFRevisionDiff_GetSemanticEntry(FPDF_DOCUMENT document,
+EPDFRevisionDiff_GetResolvedEntry(FPDF_DOCUMENT document,
                                   EPDF_REVISION_DIFF diff,
                                   unsigned long index,
-                                  unsigned int* out_obj_num,
+                                  unsigned int* out_changed_obj_num,
+                                  unsigned int* out_target_obj_num,
+                                  unsigned int* out_page_obj_num,
                                   int* out_diff_category,
                                   int* out_semantic_type);
 
