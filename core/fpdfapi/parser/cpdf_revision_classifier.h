@@ -43,8 +43,7 @@ enum class SupportOwnerKind : uint8_t {
 struct SupportCollectionPolicy {
   bool include_ap = false;
   bool include_value = false;
-  bool include_popup = false;
-  bool include_actions = false;
+  bool include_annotation_support = false;
 };
 
 enum class SupportPromotionDecision : uint8_t {

@@ -127,6 +127,34 @@ std::set<uint32_t> CollectValueObjectNumbers(CPDF_Document* doc,
   return result;
 }
 
+void CollectSupportRoot(CPDF_Document* doc,
+                        const CPDF_Dictionary* owner_dict,
+                        const char* key,
+                        std::set<uint32_t>* result) {
+  const CPDF_Object* root = owner_dict->GetObjectFor(key);
+  if (!root)
+    return;
+
+  if (root->IsReference())
+    result->insert(root->AsReference()->GetRefObjNum());
+  CollectReferencesRecursive(doc, root, result);
+}
+
+std::set<uint32_t> CollectAnnotationSupportObjectNumbers(
+    CPDF_Document* doc,
+    const CPDF_Dictionary* owner_dict) {
+  std::set<uint32_t> result = CollectAPObjectNumbers(doc, owner_dict);
+
+  for (const char* key : {pdfium::annotation::kPopup, pdfium::annotation::kA,
+                          pdfium::annotation::kAA, pdfium::annotation::kBS,
+                          pdfium::annotation::kBE, pdfium::annotation::kMK,
+                          pdfium::annotation::kOC}) {
+    CollectSupportRoot(doc, owner_dict, key, &result);
+  }
+
+  return result;
+}
+
 uint32_t GetAcroFormObjNum(const CPDF_Dictionary* root) {
   if (!root)
     return 0;
@@ -306,27 +334,8 @@ std::set<uint32_t> CollectSupportObjectNumbers(
   if (policy.include_value)
     result.merge(CollectValueObjectNumbers(doc, owner_dict));
 
-  if (policy.include_popup) {
-    const CPDF_Object* popup = owner_dict->GetObjectFor("Popup");
-    if (popup) {
-      if (popup->IsReference()) {
-        uint32_t num = popup->AsReference()->GetRefObjNum();
-        result.insert(num);
-      }
-      CollectReferencesRecursive(doc, popup, &result);
-    }
-  }
-
-  if (policy.include_actions) {
-    for (const char* key : {"A", "AA"}) {
-      const CPDF_Object* action = owner_dict->GetObjectFor(key);
-      if (action) {
-        if (action->IsReference())
-          result.insert(action->AsReference()->GetRefObjNum());
-        CollectReferencesRecursive(doc, action, &result);
-      }
-    }
-  }
+  if (policy.include_annotation_support)
+    result.merge(CollectAnnotationSupportObjectNumbers(doc, owner_dict));
 
   return result;
 }
@@ -419,9 +428,7 @@ std::vector<ResolvedSemanticChange> ClassifyChanges(
       policy.include_ap = true;
       policy.include_value = true;
     } else if (owner_kind == SupportOwnerKind::kAnnotation) {
-      policy.include_ap = true;
-      policy.include_popup = true;
-      policy.include_actions = true;
+      policy.include_annotation_support = true;
     }
 
     std::set<uint32_t> owned =
