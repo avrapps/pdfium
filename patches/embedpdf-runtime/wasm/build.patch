@@ -27,15 +27,10 @@ index 5103543..6bf11a8 100644
    }
  
    configs += [
-@@ -395,7 +397,7 @@ config("compiler") {
-       } else if (is_chromeos) {
-         cflags += [ "-fstack-protector-strong" ]
-       } else if (is_posix || is_fuchsia) {
+@@ -398,2 +400,2 @@ config("compiler") {
 -        if (current_os != "aix") {
 +        if (current_os != "aix" && current_os != "emscripten") {
            # Not available on aix.
-           cflags += [ "-fstack-protector" ]
-         }
 diff --git a/toolchain/wasm/BUILD.gn b/toolchain/wasm/BUILD.gn
 index 4b4d65c..08612bf 100644
 --- a/toolchain/wasm/BUILD.gn
