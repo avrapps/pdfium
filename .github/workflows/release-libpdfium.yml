@@ -46,7 +46,7 @@ jobs:
     env:
       DEPOT_TOOLS_WIN_TOOLCHAIN: 0
       EMSDK_VERSION: 3.1.72
-      MUSL_URL: https://musl.cc
+      MUSL_URLS: ${{ secrets.MUSL_URL || 'https://more.musl.cc https://musl.cc' }}
       PDF_RUNTIME_TARGET_OS_LIST: ${{ matrix.target_os }}
     steps:
       - uses: actions/checkout@v6
@@ -64,18 +64,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake curl g++ pkg-config tar
 
+          download_musl_toolchain() {
+            local triple="$1"
+            local archive="$triple-cross.tgz"
+
+            for base_url in $MUSL_URLS; do
+              local url="$base_url/$archive"
+              if [[ "$base_url" == *"more.musl.cc"* ]]; then
+                url="$base_url/$triple/$archive"
+              fi
+
+              echo "Downloading $url"
+              if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$archive" "$url"; then
+                tar xzf "$archive"
+                echo "$PWD/$triple-cross/bin" >> "$GITHUB_PATH"
+                return
+              fi
+            done
+
+            echo "Failed to download musl toolchain for $triple" >&2
+            exit 1
+          }
+
           if [[ " ${{ matrix.targets }} " == *" linux-arm64 "* ]]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
 
           if [[ " ${{ matrix.targets }} " == *" linuxmusl-x64 "* ]]; then
-            curl -L "$MUSL_URL/x86_64-linux-musl-cross.tgz" | tar xz
-            echo "$PWD/x86_64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+            download_musl_toolchain x86_64-linux-musl
           fi
 
           if [[ " ${{ matrix.targets }} " == *" linuxmusl-arm64 "* ]]; then
-            curl -L "$MUSL_URL/aarch64-linux-musl-cross.tgz" | tar xz
-            echo "$PWD/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+            download_musl_toolchain aarch64-linux-musl
           fi
 
           if [[ " ${{ matrix.targets }} " == *" wasm32 "* ]]; then
