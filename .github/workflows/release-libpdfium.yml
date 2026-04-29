@@ -99,11 +99,16 @@ jobs:
           fi
 
           if [[ " ${{ matrix.targets }} " == *" wasm32 "* ]]; then
-            git clone https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-            "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
-            "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
-            echo "$RUNNER_TEMP/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
-            echo "$RUNNER_TEMP/emsdk/upstream/bin" >> "$GITHUB_PATH"
+            mkdir -p third_party
+            if [[ -d third_party/emsdk ]]; then
+              git -C third_party/emsdk pull
+            else
+              git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
+            fi
+            third_party/emsdk/emsdk install "$EMSDK_VERSION"
+            third_party/emsdk/emsdk activate "$EMSDK_VERSION"
+            echo "$PWD/third_party/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+            echo "$PWD/third_party/emsdk/upstream/bin" >> "$GITHUB_PATH"
           fi
       - name: Select Xcode
         if: runner.os == 'macOS'
