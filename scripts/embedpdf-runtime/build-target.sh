@@ -13,6 +13,7 @@ case "$TARGET" in
   wasm32)
     GN_TARGET_OS="emscripten"
     GN_TARGET_CPU="wasm"
+    EXTRA_ARGS=$'\nis_clang=false\nuse_custom_libcxx=false'
     ;;
   darwin-arm64)
     GN_TARGET_OS="mac"
@@ -33,12 +34,12 @@ case "$TARGET" in
   linuxmusl-x64)
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="x64"
-    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false'
+    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_sysroot=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false'
     ;;
   linuxmusl-arm64)
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false'
+    EXTRA_ARGS=$'\nis_musl=true\nis_clang=false\nuse_sysroot=false\nuse_custom_libcxx=false\nuse_custom_libcxx_for_host=false\nuse_glib=false'
     ;;
   win32-x64)
     GN_TARGET_OS="win"
@@ -59,6 +60,14 @@ PDF_RUNTIME_TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-$GN_TARGET_OS}" \
 
 "$SOURCE_DIR/scripts/embedpdf-runtime/apply-patches.sh" "$TARGET"
 
+if [[ "$TARGET" == linux-* ]]; then
+  (
+    cd "$SOURCE_DIR"
+    build/install-build-deps.sh --no-prompt
+    build/linux/sysroot_scripts/install-sysroot.py "--arch=$GN_TARGET_CPU"
+  )
+fi
+
 OUT="$SOURCE_DIR/out/embedpdf-runtime/$TARGET"
 mkdir -p "$OUT"
 
@@ -72,11 +81,8 @@ is_component_build=false
 clang_use_chrome_plugins=false
 pdf_is_standalone=true
 use_debug_fission=false
-use_custom_libcxx=false
-use_sysroot=false
 pdf_is_complete_lib=true
 pdf_use_partition_alloc=false
-is_clang=false
 symbol_level=0
 target_os="$GN_TARGET_OS"
 target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}
