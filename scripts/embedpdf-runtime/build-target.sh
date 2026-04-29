@@ -54,7 +54,8 @@ case "$TARGET" in
     ;;
 esac
 
-"$SOURCE_DIR/scripts/embedpdf-runtime/ensure-deps.sh"
+PDF_RUNTIME_TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-$GN_TARGET_OS}" \
+  "$SOURCE_DIR/scripts/embedpdf-runtime/ensure-deps.sh"
 
 "$SOURCE_DIR/scripts/embedpdf-runtime/apply-patches.sh" "$TARGET"
 

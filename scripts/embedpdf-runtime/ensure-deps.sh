@@ -5,6 +5,7 @@ SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../..
 FORK_URL="${PDF_RUNTIME_FORK_URL:-https://github.com/embedpdf/pdfium.git}"
 REF="${PDF_RUNTIME_REF:-HEAD}"
 SYNC_MODE="${PDF_RUNTIME_SYNC:-auto}"
+TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-}"
 STAMP_DIR="$SOURCE_DIR/.embedpdf-runtime"
 STAMP_FILE="$STAMP_DIR/deps-sync.stamp"
 
@@ -32,6 +33,7 @@ write_stamp() {
   cat > "$STAMP_FILE" <<EOF
 fork_url=$FORK_URL
 ref=$REF
+target_os_list=$TARGET_OS_LIST
 deps_sha=$(deps_sha)
 EOF
 }
@@ -40,6 +42,7 @@ stamp_matches() {
   [[ -f "$STAMP_FILE" ]] || return 1
   grep -Fxq "fork_url=$FORK_URL" "$STAMP_FILE" &&
     grep -Fxq "ref=$REF" "$STAMP_FILE" &&
+    grep -Fxq "target_os_list=$TARGET_OS_LIST" "$STAMP_FILE" &&
     grep -Fxq "deps_sha=$(deps_sha)" "$STAMP_FILE"
 }
 

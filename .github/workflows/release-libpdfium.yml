@@ -30,19 +30,28 @@ jobs:
           - group: linux-x64-wasm
             runner: ubuntu-24.04
             targets: linux-x64 linuxmusl-x64 wasm32
+            target_os: linux emscripten
           - group: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04
             targets: linux-arm64 linuxmusl-arm64
+            target_os: linux
           - group: darwin
             runner: macos-14
             targets: darwin-arm64 darwin-x64
+            target_os: mac
           - group: win32
             runner: windows-2022
             targets: win32-x64 win32-arm64
+            target_os: win
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+      EMSDK_VERSION: 3.1.72
+      MUSL_URL: https://musl.cc
+      PDF_RUNTIME_TARGET_OS_LIST: ${{ matrix.target_os }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
       - name: Install depot_tools
         shell: bash
         run: |
@@ -50,7 +59,32 @@ jobs:
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
       - name: Install Linux deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake curl g++ pkg-config tar
+
+          if [[ " ${{ matrix.targets }} " == *" linux-arm64 "* ]]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          fi
+
+          if [[ " ${{ matrix.targets }} " == *" linuxmusl-x64 "* ]]; then
+            curl -L "$MUSL_URL/x86_64-linux-musl-cross.tgz" | tar xz
+            echo "$PWD/x86_64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          fi
+
+          if [[ " ${{ matrix.targets }} " == *" linuxmusl-arm64 "* ]]; then
+            curl -L "$MUSL_URL/aarch64-linux-musl-cross.tgz" | tar xz
+            echo "$PWD/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          fi
+
+          if [[ " ${{ matrix.targets }} " == *" wasm32 "* ]]; then
+            git clone https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+            "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+            "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+            echo "$RUNNER_TEMP/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+            echo "$RUNNER_TEMP/emsdk/upstream/bin" >> "$GITHUB_PATH"
+          fi
       - name: Build and package targets
         shell: bash
         run: |
@@ -71,7 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
