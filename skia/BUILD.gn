@@ -513,7 +513,9 @@ skia_source_set("skia_opts") {
   } else if (current_cpu == "mipsel" || current_cpu == "mips64el") {
     cflags += [ "-fomit-frame-pointer" ]
   } else {
-    assert(false, "Unsupported target CPU " + current_cpu)
+    # WASM builds do not use Skia, but GN still evaluates this target.
+    # Keep unsupported CPU evaluation non-fatal for the runtime build.
+    # assert(false, "Unsupported target CPU " + current_cpu)
   }
 
   if (is_android && !is_debug) {

@@ -1,0 +1,92 @@
+name: Release EmbedPDF PDF Runtime Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: embedpdf/main
+      release:
+        description: Publish GitHub release
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.group }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: linux-x64-wasm
+            runner: ubuntu-24.04
+            targets: linux-x64 linuxmusl-x64 wasm32
+          - group: linux-arm64
+            runner: ubuntu-24.04-arm
+            targets: linux-arm64 linuxmusl-arm64
+          - group: darwin
+            runner: macos-14
+            targets: darwin-arm64 darwin-x64
+          - group: win32
+            runner: windows-2022
+            targets: win32-x64 win32-arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config
+      - name: Build and package targets
+        shell: bash
+        run: |
+          for target in ${{ matrix.targets }}; do
+            scripts/embedpdf-runtime/build-target.sh "$target"
+            scripts/embedpdf-runtime/package-target.sh "$target"
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: libembedpdf-pdf-runtime-${{ matrix.group }}
+          path: out/embedpdf-runtime-artifacts/*.tar.gz
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    needs: build
+    if: inputs.release == true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          mkdir -p out/embedpdf-runtime-artifacts
+          find artifacts -name '*.tar.gz' -exec cp {} out/embedpdf-runtime-artifacts/ \;
+      - name: Write manifest
+        shell: bash
+        run: |
+          tag="runtime-$(git rev-parse HEAD)"
+          export PDF_RUNTIME_ARTIFACT_DIR="$PWD/out/embedpdf-runtime-artifacts"
+          export PDF_RUNTIME_RELEASE_BASE_URL="https://github.com/${{ github.repository }}/releases/download/$tag"
+          scripts/embedpdf-runtime/write-manifest.sh "$PDF_RUNTIME_ARTIFACT_DIR/pdf-runtime-build.generated.json"
+      - uses: ncipollo/release-action@v1
+        with:
+          tag: runtime-${{ github.sha }}
+          name: EmbedPDF PDF Runtime ${{ github.sha }}
+          artifacts: out/embedpdf-runtime-artifacts/*
+          allowUpdates: true

@@ -1,0 +1,38 @@
+diff --git a/config/BUILDCONFIG.gn b/config/BUILDCONFIG.gn
+index 147226d..7e0dfe0 100644
+--- a/config/BUILDCONFIG.gn
++++ b/config/BUILDCONFIG.gn
+@@ -135,6 +135,9 @@ declare_args() {
+   # set "is_official_build" to true for any build intended to ship to end-users.
+   is_official_build = false
+ 
++  # Use musl instead of glibc
++  is_musl = false
++
+   # Set to true when compiling with the Clang compiler.
+   is_clang = current_os != "linux" ||
+              (current_cpu != "s390x" && current_cpu != "s390" &&
+@@ -255,7 +258,9 @@ if (target_os == "android") {
+   _default_toolchain = "//build/toolchain/android:android_clang_$target_cpu"
+ } else if (target_os == "chromeos" || target_os == "linux") {
+   # See comments in build/toolchain/cros/BUILD.gn about board compiles.
+-  if (is_clang) {
++  if (is_musl) {
++    _default_toolchain = "//build/toolchain/linux/musl:$target_cpu"
++  } else if (is_clang) {
+     _default_toolchain = "//build/toolchain/linux:clang_$target_cpu"
+   } else {
+     _default_toolchain = "//build/toolchain/linux:$target_cpu"
+diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
+index 5103543..eac7af8 100644
+--- a/config/compiler/BUILD.gn
++++ b/config/compiler/BUILD.gn
+@@ -394,7 +394,7 @@ config("compiler") {
+         }
+       } else if (is_chromeos) {
+         cflags += [ "-fstack-protector-strong" ]
+-      } else if (is_posix || is_fuchsia) {
++      } else if ((is_posix && !is_musl) || is_fuchsia) {
+         if (current_os != "aix") {
+           # Not available on aix.
+           cflags += [ "-fstack-protector" ]
