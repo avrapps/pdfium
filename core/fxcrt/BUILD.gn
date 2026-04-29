@@ -159,7 +159,7 @@ source_set("fxcrt") {
   } else {
     sources += [ "fx_memory_malloc.cpp" ]
   }
-  if (is_posix) {
+  if (is_posix || is_wasm) {
     sources += [
       "cfx_fileaccess_posix.cpp",
       "cfx_fileaccess_posix.h",
