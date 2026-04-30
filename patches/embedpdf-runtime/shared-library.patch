@@ -1,5 +1,5 @@
 diff --git a/BUILD.gn b/BUILD.gn
-index 000000000..000000000 100644
+index 62210c2f6..053fbff6d 100644
 --- a/BUILD.gn
 +++ b/BUILD.gn
 @@ -228,7 +228,7 @@ group("pdfium_public_headers") {
