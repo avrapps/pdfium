@@ -111,6 +111,10 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: sudo xcode-select -s "/Applications/Xcode_26.0.app"
+      - name: Install Windows deps
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "/c/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64" >> "$GITHUB_PATH"
       - name: Build and package targets
         shell: bash
         run: |
