@@ -7,7 +7,7 @@ index 7dbd8a17e..361f74f85 100644
          werror = ""
        }
 -      command = "\"$python_path\" $_tool_wrapper_path rc-wrapper $env rc.exe /nologo $werror$sys_include_flags{{defines}} {{include_dirs}} /fo{{output}} {{source}}"
-+      command = "\"$python_path\" $_tool_wrapper_path rc-wrapper $env rc.exe /nologo $werror$sys_include_flags{{defines}} {{include_dirs}} /fo{{output}} /dENV=$env {{source}}"
++      command = "\"$python_path\" $_tool_wrapper_path rc-wrapper $env rc.exe /nologo $werror$sys_include_flags{{defines}} {{include_dirs}} /fo{{output}} -DENV=$env {{source}}"
        depsformat = "msvc"
        outputs = [ "$object_subdir/{{source_name_part}}.res" ]
        description = "RC {{output}}"
