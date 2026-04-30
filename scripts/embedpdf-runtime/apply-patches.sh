@@ -78,7 +78,9 @@ case "$TARGET" in
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/mac/build.patch"
     ;;
   win32-*)
+    apply_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/win/build.patch"
+    copy_patch_file "$PATCH_DIR/win/resources.rc" "$SOURCE_DIR/resources.rc"
     ;;
   linux-*)
     echo "No runtime dependency patches required for $TARGET"

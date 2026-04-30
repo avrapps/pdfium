@@ -1,0 +1,23 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 000000000..000000000 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -228,7 +228,7 @@ group("pdfium_public_headers") {
+   ]
+ }
+ 
+-component("pdfium") {
++shared_library("pdfium") {
+   output_name = "pdfium"
+   libs = []
+   configs += [ ":pdfium_strict_config" ]
+@@ -263,6 +263,9 @@ component("pdfium") {
+       "gdi32.lib",
+       "user32.lib",
+     ]
++    sources = [
++      "resources.rc",
++    ]
+   }
+ 
+   if (is_mac) {
