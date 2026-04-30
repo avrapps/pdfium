@@ -116,7 +116,13 @@ jobs:
         shell: pwsh
         run: |
           $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
-          $sdk = Get-ChildItem $kitsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $sdk = Get-ChildItem $kitsRoot -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if ($null -eq $sdk) {
+            throw "No Windows SDK version directory found in $kitsRoot"
+          }
           $rcPath = Join-Path $sdk.FullName 'x64'
           if (!(Test-Path (Join-Path $rcPath 'rc.exe'))) {
             throw "rc.exe not found in $rcPath"
