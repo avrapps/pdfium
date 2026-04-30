@@ -3,6 +3,7 @@ set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TARGET="${1:-}"
+PDF_IS_COMPLETE_LIB=true
 
 if [[ -z "$TARGET" ]]; then
   echo "usage: $0 <target>" >&2
@@ -44,10 +45,12 @@ case "$TARGET" in
   win32-x64)
     GN_TARGET_OS="win"
     GN_TARGET_CPU="x64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   win32-arm64)
     GN_TARGET_OS="win"
     GN_TARGET_CPU="arm64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   *)
     echo "unknown target: $TARGET" >&2
@@ -81,7 +84,7 @@ is_component_build=false
 clang_use_chrome_plugins=false
 pdf_is_standalone=true
 use_debug_fission=false
-pdf_is_complete_lib=true
+pdf_is_complete_lib=$PDF_IS_COMPLETE_LIB
 pdf_use_partition_alloc=false
 symbol_level=0
 target_os="$GN_TARGET_OS"

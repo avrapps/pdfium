@@ -18,8 +18,10 @@ ARCHIVE="$OUTPUT_DIR/libembedpdf-pdf-runtime-$TARGET-$SHORT_SHA.tar.gz"
 
 case "$TARGET" in
   win32-*)
-    LIB_SOURCE="$OUT/obj/pdfium.lib"
-    LIB_DEST="$STAGING/lib/pdfium.lib"
+    LIB_SOURCE="$OUT/pdfium.dll.lib"
+    LIB_DEST="$STAGING/lib/pdfium.dll.lib"
+    DLL_SOURCE="$OUT/pdfium.dll"
+    DLL_DEST="$STAGING/bin/pdfium.dll"
     ;;
   *)
     LIB_SOURCE="$OUT/obj/libpdfium.a"
@@ -31,12 +33,20 @@ if [[ ! -f "$LIB_SOURCE" ]]; then
   echo "missing $LIB_SOURCE; run build-target.sh $TARGET first" >&2
   exit 1
 fi
+if [[ -n "${DLL_SOURCE:-}" && ! -f "$DLL_SOURCE" ]]; then
+  echo "missing $DLL_SOURCE; run build-target.sh $TARGET first" >&2
+  exit 1
+fi
 
 rm -rf "$STAGING"
 mkdir -p "$STAGING/include" "$STAGING/lib" "$STAGING/LICENSES" "$OUTPUT_DIR"
 
 cp -R "$SOURCE_DIR/public/." "$STAGING/include/"
 cp "$LIB_SOURCE" "$LIB_DEST"
+if [[ -n "${DLL_SOURCE:-}" ]]; then
+  mkdir -p "$(dirname "$DLL_DEST")"
+  cp "$DLL_SOURCE" "$DLL_DEST"
+fi
 cp "$OUT/args.gn" "$STAGING/args.gn"
 cp "$SOURCE_DIR/LICENSE" "$STAGING/LICENSES/PDFIUM_LICENSE"
 
