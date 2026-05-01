@@ -44,6 +44,39 @@ apply_patch_file() {
   )
 }
 
+revert_patch_file() {
+  local workdir="$1"
+  local patch_file="$2"
+
+  if [[ ! -d "$workdir" ]]; then
+    echo "revert workdir does not exist: $workdir" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$patch_file" ]]; then
+    echo "patch file does not exist: $patch_file" >&2
+    exit 1
+  fi
+
+  (
+    cd "$workdir"
+
+    if patch --dry-run --reverse --batch -p1 < "$patch_file" >/dev/null; then
+      echo "Reverting $patch_file"
+      patch --reverse --batch -p1 < "$patch_file"
+      return
+    fi
+
+    if patch --dry-run --forward --batch -p1 < "$patch_file" >/dev/null; then
+      echo "Already reverted $patch_file"
+      return
+    fi
+
+    echo "Could not revert $patch_file (tree in unexpected state)" >&2
+    exit 1
+  )
+}
+
 copy_patch_file() {
   local src="$1"
   local dst="$2"
@@ -66,15 +99,18 @@ copy_patch_file() {
 
 case "$TARGET" in
   wasm32)
+    revert_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/wasm/build.patch"
     copy_patch_file "$PATCH_DIR/wasm/config.gn" "$SOURCE_DIR/build/config/wasm/BUILD.gn"
     ;;
   linuxmusl-*)
+    revert_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
     apply_patch_file "$SOURCE_DIR" "$PATCH_DIR/musl/pdfium.patch"
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/musl/build.patch"
     copy_patch_file "$PATCH_DIR/musl/toolchain.gn" "$SOURCE_DIR/build/toolchain/linux/musl/BUILD.gn"
     ;;
   darwin-*)
+    apply_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/mac/build.patch"
     ;;
   win32-*)
@@ -83,7 +119,7 @@ case "$TARGET" in
     copy_patch_file "$PATCH_DIR/win/resources.rc" "$SOURCE_DIR/resources.rc"
     ;;
   linux-*)
-    echo "No runtime dependency patches required for $TARGET"
+    apply_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
     ;;
   *)
     echo "unknown target: $TARGET" >&2

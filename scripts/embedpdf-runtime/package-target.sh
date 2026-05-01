@@ -23,6 +23,18 @@ case "$TARGET" in
     DLL_SOURCE="$OUT/pdfium.dll"
     DLL_DEST="$STAGING/bin/pdfium.dll"
     ;;
+  darwin-*)
+    LIB_SOURCE="$OUT/libpdfium.dylib"
+    LIB_DEST="$STAGING/lib/libpdfium.dylib"
+    ;;
+  linux-*)
+    LIB_SOURCE="$OUT/libpdfium.so"
+    LIB_DEST="$STAGING/lib/libpdfium.so"
+    ;;
+  linuxmusl-*|wasm32)
+    LIB_SOURCE="$OUT/obj/libpdfium.a"
+    LIB_DEST="$STAGING/lib/libpdfium.a"
+    ;;
   *)
     LIB_SOURCE="$OUT/obj/libpdfium.a"
     LIB_DEST="$STAGING/lib/libpdfium.a"
@@ -43,6 +55,11 @@ mkdir -p "$STAGING/include" "$STAGING/lib" "$STAGING/LICENSES" "$OUTPUT_DIR"
 
 cp -R "$SOURCE_DIR/public/." "$STAGING/include/"
 cp "$LIB_SOURCE" "$LIB_DEST"
+case "$TARGET" in
+  darwin-*)
+    install_name_tool -id "@rpath/libpdfium.dylib" "$LIB_DEST"
+    ;;
+esac
 if [[ -n "${DLL_SOURCE:-}" ]]; then
   mkdir -p "$(dirname "$DLL_DEST")"
   cp "$DLL_SOURCE" "$DLL_DEST"

@@ -19,18 +19,22 @@ case "$TARGET" in
   darwin-arm64)
     GN_TARGET_OS="mac"
     GN_TARGET_CPU="arm64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   darwin-x64)
     GN_TARGET_OS="mac"
     GN_TARGET_CPU="x64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   linux-x64)
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="x64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   linux-arm64)
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="arm64"
+    PDF_IS_COMPLETE_LIB=false
     ;;
   linuxmusl-x64)
     GN_TARGET_OS="linux"
