@@ -35,6 +35,7 @@ case "$TARGET" in
     GN_TARGET_OS="linux"
     GN_TARGET_CPU="arm64"
     PDF_IS_COMPLETE_LIB=false
+    EXTRA_ARGS=$'\narm_control_flow_integrity="none"'
     ;;
   linuxmusl-x64)
     GN_TARGET_OS="linux"
