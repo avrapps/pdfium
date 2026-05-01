@@ -18,33 +18,25 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.group }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - group: linux-x64-wasm
-            runner: ubuntu-24.04
-            targets: linux-x64 linuxmusl-x64 wasm32
-            target_os: linux emscripten
-          - group: linux-arm64
-            runner: ubuntu-24.04
-            targets: linux-arm64 linuxmusl-arm64
-            target_os: linux
-          - group: darwin
-            runner: macos-15
-            targets: darwin-arm64 darwin-x64
-            target_os: mac
-          - group: win32
-            runner: windows-2022
-            targets: win32-x64 win32-arm64
-            target_os: win
+          - { target: linux-x64,        runner: ubuntu-24.04 }
+          - { target: linux-arm64,      runner: ubuntu-24.04 }
+          - { target: linuxmusl-x64,    runner: ubuntu-24.04 }
+          - { target: linuxmusl-arm64,  runner: ubuntu-24.04 }
+          - { target: wasm32,           runner: ubuntu-24.04 }
+          - { target: darwin-arm64,     runner: macos-15 }
+          - { target: darwin-x64,       runner: macos-15 }
+          - { target: win32-x64,        runner: windows-2022 }
+          - { target: win32-arm64,      runner: windows-2022 }
     env:
       DEPOT_TOOLS_WIN_TOOLCHAIN: 0
       EMSDK_VERSION: 3.1.72
       MUSL_URLS: ${{ secrets.MUSL_URL || 'https://more.musl.cc https://musl.cc' }}
-      PDF_RUNTIME_TARGET_OS_LIST: ${{ matrix.target_os }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -54,59 +46,56 @@ jobs:
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
-      - name: Install Linux deps
+      - name: Install Linux base deps
         if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake curl g++ pkg-config tar
-
-          download_musl_toolchain() {
-            local triple="$1"
-            local archive="$triple-cross.tgz"
-
-            for base_url in $MUSL_URLS; do
-              local url="$base_url/$archive"
-              if [[ "$base_url" == *"more.musl.cc"* ]]; then
-                url="$base_url/$triple/$archive"
-              fi
-
-              echo "Downloading $url"
-              if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$archive" "$url"; then
-                tar xzf "$archive"
-                echo "$PWD/$triple-cross/bin" >> "$GITHUB_PATH"
-                return
-              fi
-            done
-
-            echo "Failed to download musl toolchain for $triple" >&2
-            exit 1
-          }
-
-          if [[ " ${{ matrix.targets }} " == *" linux-arm64 "* ]]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Install aarch64 cross-compiler
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Install musl toolchain
+        if: startsWith(matrix.target, 'linuxmusl-')
+        shell: bash
+        run: |
+          triple=x86_64-linux-musl
+          if [[ "${{ matrix.target }}" == "linuxmusl-arm64" ]]; then
+            triple=aarch64-linux-musl
           fi
+          archive="$triple-cross.tgz"
 
-          if [[ " ${{ matrix.targets }} " == *" linuxmusl-x64 "* ]]; then
-            download_musl_toolchain x86_64-linux-musl
-          fi
-
-          if [[ " ${{ matrix.targets }} " == *" linuxmusl-arm64 "* ]]; then
-            download_musl_toolchain aarch64-linux-musl
-          fi
-
-          if [[ " ${{ matrix.targets }} " == *" wasm32 "* ]]; then
-            mkdir -p third_party
-            if [[ -d third_party/emsdk ]]; then
-              git -C third_party/emsdk pull
-            else
-              git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
+          for base_url in $MUSL_URLS; do
+            url="$base_url/$archive"
+            if [[ "$base_url" == *"more.musl.cc"* ]]; then
+              url="$base_url/$triple/$archive"
             fi
-            third_party/emsdk/emsdk install "$EMSDK_VERSION"
-            third_party/emsdk/emsdk activate "$EMSDK_VERSION"
-            echo "$PWD/third_party/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
-            echo "$PWD/third_party/emsdk/upstream/bin" >> "$GITHUB_PATH"
+
+            echo "Downloading $url"
+            if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$archive" "$url"; then
+              tar xzf "$archive"
+              echo "$PWD/$triple-cross/bin" >> "$GITHUB_PATH"
+              exit 0
+            fi
+          done
+
+          echo "Failed to download musl toolchain for $triple" >&2
+          exit 1
+      - name: Install Emscripten
+        if: matrix.target == 'wasm32'
+        shell: bash
+        run: |
+          mkdir -p third_party
+          if [[ -d third_party/emsdk ]]; then
+            git -C third_party/emsdk pull
+          else
+            git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
           fi
+          third_party/emsdk/emsdk install "$EMSDK_VERSION"
+          third_party/emsdk/emsdk activate "$EMSDK_VERSION"
+          echo "$PWD/third_party/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "$PWD/third_party/emsdk/upstream/bin" >> "$GITHUB_PATH"
       - name: Select Xcode
         if: runner.os == 'macOS'
         shell: bash
@@ -128,16 +117,15 @@ jobs:
             throw "rc.exe not found in $rcPath"
           }
           $rcPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Build and package targets
+      - name: Build target
         shell: bash
-        run: |
-          for target in ${{ matrix.targets }}; do
-            scripts/embedpdf-runtime/build-target.sh "$target"
-            scripts/embedpdf-runtime/package-target.sh "$target"
-          done
+        run: scripts/embedpdf-runtime/build-target.sh "${{ matrix.target }}"
+      - name: Package target
+        shell: bash
+        run: scripts/embedpdf-runtime/package-target.sh "${{ matrix.target }}"
       - uses: actions/upload-artifact@v6
         with:
-          name: libembedpdf-pdf-runtime-${{ matrix.group }}
+          name: libembedpdf-pdf-runtime-${{ matrix.target }}
           path: out/embedpdf-runtime-artifacts/*.tar.gz
 
   release:
