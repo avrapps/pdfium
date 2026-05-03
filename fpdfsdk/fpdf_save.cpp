@@ -10,7 +10,6 @@
 #include <stdint.h>
 
 #include <optional>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -28,18 +27,8 @@
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "public/fpdf_edit.h"
-
-// External pending security storage defined in fpdf_view.cpp
-enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
-struct PendingSecurity {
-  PendingSecurityMode mode = PendingSecurityMode::kNone;
-  RetainPtr<CPDF_Dictionary> encrypt_dict;
-  RetainPtr<CPDF_SecurityHandler> security_handler;
-};
-extern std::mutex& GetPendingSecurityMutex();
-extern std::unordered_map<FPDF_DOCUMENT, PendingSecurity>&
-GetPendingSecurityMap();
 
 #ifdef PDF_ENABLE_XFA
 #include "core/fpdfapi/parser/cpdf_stream.h"

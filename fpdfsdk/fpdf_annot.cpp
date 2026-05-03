@@ -870,7 +870,10 @@ static bool FitImageIntoBox(float box_w, float box_h,
   const float sx = box_w / img_w;
   const float sy = box_h / img_h;
 
-  float scale_x, scale_y;
+  // Default to kStretch semantics; this also serves as a safe fallback if a
+  // future enumerator is added without updating this switch.
+  float scale_x = sx;
+  float scale_y = sy;
   switch (fit) {
     case EPDFStampFitCpp::kContain: {
       float s = std::min(sx, sy);
@@ -883,8 +886,6 @@ static bool FitImageIntoBox(float box_w, float box_h,
       break;
     }
     case EPDFStampFitCpp::kStretch:
-      scale_x = sx;
-      scale_y = sy;
       break;
   }
 

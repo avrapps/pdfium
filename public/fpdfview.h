@@ -1666,7 +1666,8 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 //
 //   page - handle to the page.
 //
-// Returns the object number (> 0) on success, or 0 on error.
+// Returns the object number (> 0) on success, or 0 if the page handle is
+// invalid, the page dictionary is a direct object, or the page is an XFA page.
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page);
 
