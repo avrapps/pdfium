@@ -1647,6 +1647,30 @@ FPDF_EXPORT FPDF_RESULT FPDF_CALLCONV FPDF_BStr_Set(FPDF_BSTR* bstr,
 FPDF_EXPORT FPDF_RESULT FPDF_CALLCONV FPDF_BStr_Clear(FPDF_BSTR* bstr);
 #endif  // PDF_ENABLE_XFA
 
+// Experimental EmbedPDF Extension API.
+// Load a page by its PDF indirect object number.
+// Similar to FPDF_LoadPage() but keyed by the page dictionary's object
+// number instead of page index.
+//
+//   document - handle to the document.
+//   obj_num  - the indirect object number of the page dictionary.
+//
+// Returns a handle to the loaded page, or NULL if the object number
+// does not correspond to a page. The caller must close the returned
+// handle with FPDF_ClosePage().
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
+
+// Experimental EmbedPDF Extension API.
+// Get the PDF indirect object number of a page's dictionary.
+//
+//   page - handle to the page.
+//
+// Returns the object number (> 0) on success, or 0 if the page handle is
+// invalid, the page dictionary is a direct object, or the page is an XFA page.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFPage_GetObjectNumber(FPDF_PAGE page);
+
 #ifdef __cplusplus
 }
 #endif
