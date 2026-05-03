@@ -855,9 +855,9 @@ inline EPDFStampFitCpp ToCpp(EPDF_STAMP_FIT v) {
   switch (v) {
     case EPDF_STAMP_FIT_COVER:   return EPDFStampFitCpp::kCover;
     case EPDF_STAMP_FIT_STRETCH: return EPDFStampFitCpp::kStretch;
-    case EPDF_STAMP_FIT_CONTAIN:
-    default:                     return EPDFStampFitCpp::kContain;
+    case EPDF_STAMP_FIT_CONTAIN: return EPDFStampFitCpp::kContain;
   }
+  return EPDFStampFitCpp::kContain;
 }
 
 static bool FitImageIntoBox(float box_w, float box_h,
@@ -883,7 +883,6 @@ static bool FitImageIntoBox(float box_w, float box_h,
       break;
     }
     case EPDFStampFitCpp::kStretch:
-    default:
       scale_x = sx;
       scale_y = sy;
       break;
@@ -2451,9 +2450,9 @@ static ByteString GetColorKeyForType(FPDFANNOT_COLORTYPE type) {
     case FPDFANNOT_COLORTYPE_TextColor:
       return "TextColor";
     case FPDFANNOT_COLORTYPE_Color:
-    default:
       return "C";
   }
+  return "C";
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -4759,9 +4758,9 @@ static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
     case EPDF_MK_COLOR_BG:
       return "BG";
     case EPDF_MK_COLOR_BC:
-    default:
       return "BC";
   }
+  return "BC";
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -5308,4 +5307,40 @@ EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
     pOpt->AppendNew<CPDF_String>(ws_label.AsStringView());
   }
   return true;
+}
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot) {
+  CPDF_AnnotContext* pCtx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!pCtx)
+    return 0;
+  const CPDF_Dictionary* dict = pCtx->GetAnnotDict();
+  if (!dict)
+    return 0;
+  return dict->GetObjNum();
+}
+
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
+  if (!page || obj_num == 0)
+    return nullptr;
+
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return nullptr;
+
+  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  if (!annots)
+    return nullptr;
+
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<CPDF_Dictionary> d =
+        ToDictionary(annots->GetMutableDirectObjectAt(i));
+    if (d && d->GetObjNum() == obj_num) {
+      auto ctx = std::make_unique<CPDF_AnnotContext>(
+          std::move(d), IPDFPageFromFPDFPage(page));
+      return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+    }
+  }
+  return nullptr;
 }

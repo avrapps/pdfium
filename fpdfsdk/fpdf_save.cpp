@@ -37,8 +37,9 @@ struct PendingSecurity {
   RetainPtr<CPDF_Dictionary> encrypt_dict;
   RetainPtr<CPDF_SecurityHandler> security_handler;
 };
-extern std::mutex g_pending_security_mutex;
-extern std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
+extern std::mutex& GetPendingSecurityMutex();
+extern std::unordered_map<FPDF_DOCUMENT, PendingSecurity>&
+GetPendingSecurityMap();
 
 #ifdef PDF_ENABLE_XFA
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -207,9 +208,10 @@ bool DoDocSave(FPDF_DOCUMENT document,
 
   // Apply pending security state
   {
-    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
-    auto it = g_pending_security.find(document);
-    if (it != g_pending_security.end()) {
+    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
+    auto& pending_security = GetPendingSecurityMap();
+    auto it = pending_security.find(document);
+    if (it != pending_security.end()) {
       if (it->second.mode == PendingSecurityMode::kRemove) {
         flags |= FPDF_REMOVE_SECURITY;
       } else if (it->second.mode == PendingSecurityMode::kEncrypt) {

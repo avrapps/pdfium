@@ -2233,6 +2233,28 @@ EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
                          const FS_POINTF* points,
                          unsigned long count);
 
+// Experimental EmbedPDF Extension API.
+// Get the PDF indirect object number of an annotation's dictionary.
+//
+//   annot - handle to an annotation.
+//
+// Returns the object number (> 0) on success, or 0 if the annotation
+// dictionary is a direct object or the handle is invalid.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Get an annotation on a page by its PDF indirect object number.
+// Similar to EPDFPage_GetAnnotByName() but keyed by object number.
+//
+//   page    - handle to the page.
+//   obj_num - the indirect object number to look for.
+//
+// Returns a handle to the annotation, or NULL if not found.
+// The caller must close the returned handle with FPDFPage_CloseAnnot().
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

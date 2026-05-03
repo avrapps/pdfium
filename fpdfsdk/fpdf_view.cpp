@@ -126,16 +126,24 @@ struct PendingSecurity {
   RetainPtr<CPDF_SecurityHandler> security_handler;  // Only for kEncrypt
 };
 
-// Thread-safe storage - keyed by FPDF_DOCUMENT handle
-// Note: NOT static - needs external linkage for fpdf_save.cpp
-std::mutex g_pending_security_mutex;
-std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
+// Thread-safe storage - keyed by FPDF_DOCUMENT handle.
+// Intentionally leaked to avoid shutdown-order issues and global destructors.
+std::mutex& GetPendingSecurityMutex() {
+  static std::mutex* mutex = new std::mutex;
+  return *mutex;
+}
+
+std::unordered_map<FPDF_DOCUMENT, PendingSecurity>& GetPendingSecurityMap() {
+  static auto* pending_security =
+      new std::unordered_map<FPDF_DOCUMENT, PendingSecurity>;
+  return *pending_security;
+}
 
 // Helper to cleanup pending security on document close
 void EPDF_CleanupPendingSecurity(FPDF_DOCUMENT doc) {
-  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
-  g_pending_security.erase(doc);
-}
+  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
+  GetPendingSecurityMap().erase(doc);
+} 
 
 namespace {
 
@@ -520,8 +528,9 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   // User opens with old password, calls setEncryption with new, saves.
 
   // Build permissions P value (negative, with reserved bits set)
+  const uint32_t allowed_flags_32 = static_cast<uint32_t>(allowed_flags);
   int32_t permissions =
-      static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags));
+      static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags_32));
 
   // Create encrypt dictionary as indirect object
   auto pEncryptDict = pDoc->NewIndirect<CPDF_Dictionary>();
@@ -558,12 +567,12 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
 
   // Store (OVERWRITE if exists - allows changing password multiple times)
   {
-    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
     PendingSecurity pending;
     pending.mode = PendingSecurityMode::kEncrypt;
     pending.encrypt_dict = std::move(pEncryptDict);
     pending.security_handler = std::move(pSecurityHandler);
-    g_pending_security[document] = std::move(pending);
+    GetPendingSecurityMap()[document] = std::move(pending);
   }
 
   return true;
@@ -577,11 +586,11 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
 
   // Set pending security to removal mode
   // This will cause RemoveSecurity() to be called during save
-  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
   PendingSecurity pending;
   pending.mode = PendingSecurityMode::kRemove;
   // encrypt_dict and security_handler remain null for removal
-  g_pending_security[document] = std::move(pending);
+  GetPendingSecurityMap()[document] = std::move(pending);
 
   return true;
 }
@@ -683,6 +692,46 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
   pPage->ParseContent();
 
   return FPDFPageFromIPDFPage(pPage.Leak());
+}
+
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0)
+    return nullptr;
+
+  int page_index = doc->GetPageIndex(obj_num);
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
+    return nullptr;
+
+#ifdef PDF_ENABLE_XFA
+  auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());
+  if (context) {
+    return FPDFPageFromIPDFPage(
+        context->GetOrCreateXFAPage(page_index).Leak());
+  }
+#endif  // PDF_ENABLE_XFA
+
+  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  if (!dict)
+    return nullptr;
+
+  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
+  pPage->AddPageImageCache();
+  pPage->ParseContent();
+
+  return FPDFPageFromIPDFPage(pPage.Leak());
+}
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFPage_GetObjectNumber(FPDF_PAGE page) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return 0;
+  RetainPtr<const CPDF_Dictionary> dict = pPage->GetDict();
+  if (!dict)
+    return 0;
+  return dict->GetObjNum();
 }
 
 FPDF_EXPORT float FPDF_CALLCONV FPDF_GetPageWidthF(FPDF_PAGE page) {
