@@ -5345,3 +5345,71 @@ EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
   }
   return nullptr;
 }
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveAnnot(FPDF_PAGE page, int index) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage || index < 0)
+    return false;
+
+  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  if (!annots || static_cast<size_t>(index) >= annots->size())
+    return false;
+
+  RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
+  RetainPtr<CPDF_Dictionary> dict =
+      ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+
+  uint32_t objnum = 0;
+  if (entry && entry->IsReference()) {
+    objnum = entry->AsReference()->GetRefObjNum();
+  } else if (dict) {
+    objnum = dict->GetObjNum();
+  }
+
+  annots->RemoveAt(index);
+
+  if (objnum)
+    pPage->GetDocument()->DeleteIndirectObject(objnum);
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
+  if (!page || obj_num == 0)
+    return false;
+
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage)
+    return false;
+
+  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
+  if (!annots)
+    return false;
+
+  for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
+    RetainPtr<CPDF_Dictionary> dict =
+        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
+    if (!dict)
+      continue;
+
+    uint32_t entry_objnum = 0;
+    if (entry && entry->IsReference()) {
+      entry_objnum = entry->AsReference()->GetRefObjNum();
+    } else {
+      entry_objnum = dict->GetObjNum();
+    }
+    if (entry_objnum != obj_num)
+      continue;
+
+    annots->RemoveAt(i);
+
+    if (entry_objnum)
+      pPage->GetDocument()->DeleteIndirectObject(entry_objnum);
+
+    return true;
+  }
+  return false;
+}

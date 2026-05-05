@@ -2255,6 +2255,30 @@ EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot);
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
 
+// Experimental EmbedPDF Extension API.
+// Remove an annotation on a page by index. Same as FPDFPage_RemoveAnnot but
+// also deletes the underlying indirect object so no orphan remains in the
+// document.
+//
+//   page  - handle to the page.
+//   index - the index of the annotation in the /Annots array.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveAnnot(FPDF_PAGE page, int index);
+
+// Experimental EmbedPDF Extension API.
+// Remove an annotation on a page by its PDF indirect object number.
+// Similar to EPDFPage_RemoveAnnotByName() but keyed by object number.
+//
+//   page    - handle to the page.
+//   obj_num - the indirect object number to remove.
+//
+// Returns true on success. Also deletes the indirect object so no orphan
+// remains in the document.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
