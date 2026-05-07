@@ -13,7 +13,6 @@
 #include <string>
 
 #include <optional>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -31,17 +30,8 @@
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "public/fpdf_edit.h"
-
-// External pending security storage defined in fpdf_view.cpp
-enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
-struct PendingSecurity {
-  PendingSecurityMode mode = PendingSecurityMode::kNone;
-  RetainPtr<CPDF_Dictionary> encrypt_dict;
-  RetainPtr<CPDF_SecurityHandler> security_handler;
-};
-extern std::mutex g_pending_security_mutex;
-extern std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
 
 #ifdef PDF_ENABLE_XFA
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -210,9 +200,10 @@ bool DoDocSave(FPDF_DOCUMENT document,
 
   // Apply pending security state
   {
-    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
-    auto it = g_pending_security.find(document);
-    if (it != g_pending_security.end()) {
+    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
+    auto& pending_security = GetPendingSecurityMap();
+    auto it = pending_security.find(document);
+    if (it != pending_security.end()) {
       if (it->second.mode == PendingSecurityMode::kRemove) {
         flags |= FPDF_REMOVE_SECURITY;
       } else if (it->second.mode == PendingSecurityMode::kEncrypt) {

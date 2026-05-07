@@ -66,6 +66,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
+#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/fpdf_formfill.h"
 
@@ -116,25 +117,24 @@ static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
               FPDF_RENDERERTYPE_SKIA);
 #endif  // defined(PDF_USE_SKIA)
 
-// Experimental EmbedPDF Extension: Pending security storage
-// Unified structure for pending encryption or removal
-enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
+// Storage for pending security state (declared in fpdfsdk_pending_security.h).
+// Both the mutex and the map are intentionally leaked behind function-local
+// statics to avoid the static destruction order fiasco.
+std::mutex& GetPendingSecurityMutex() {
+  static std::mutex* mutex = new std::mutex;
+  return *mutex;
+}
 
-struct PendingSecurity {
-  PendingSecurityMode mode = PendingSecurityMode::kNone;
-  RetainPtr<CPDF_Dictionary> encrypt_dict;      // Only for kEncrypt
-  RetainPtr<CPDF_SecurityHandler> security_handler;  // Only for kEncrypt
-};
-
-// Thread-safe storage - keyed by FPDF_DOCUMENT handle
-// Note: NOT static - needs external linkage for fpdf_save.cpp
-std::mutex g_pending_security_mutex;
-std::unordered_map<FPDF_DOCUMENT, PendingSecurity> g_pending_security;
+std::unordered_map<FPDF_DOCUMENT, PendingSecurity>& GetPendingSecurityMap() {
+  static auto* pending_security =
+      new std::unordered_map<FPDF_DOCUMENT, PendingSecurity>;
+  return *pending_security;
+}
 
 // Helper to cleanup pending security on document close
 void EPDF_CleanupPendingSecurity(FPDF_DOCUMENT doc) {
-  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
-  g_pending_security.erase(doc);
+  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
+  GetPendingSecurityMap().erase(doc);
 }
 
 namespace {
@@ -508,8 +508,9 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   // User opens with old password, calls setEncryption with new, saves.
 
   // Build permissions P value (negative, with reserved bits set)
+  const uint32_t allowed_flags_32 = static_cast<uint32_t>(allowed_flags);
   int32_t permissions =
-      static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags));
+      static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags_32));
 
   // Create encrypt dictionary as indirect object
   auto pEncryptDict = pDoc->NewIndirect<CPDF_Dictionary>();
@@ -546,12 +547,12 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
 
   // Store (OVERWRITE if exists - allows changing password multiple times)
   {
-    std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
     PendingSecurity pending;
     pending.mode = PendingSecurityMode::kEncrypt;
     pending.encrypt_dict = std::move(pEncryptDict);
     pending.security_handler = std::move(pSecurityHandler);
-    g_pending_security[document] = std::move(pending);
+    GetPendingSecurityMap()[document] = std::move(pending);
   }
 
   return true;
@@ -565,11 +566,11 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
 
   // Set pending security to removal mode
   // This will cause RemoveSecurity() to be called during save
-  std::lock_guard<std::mutex> lock(g_pending_security_mutex);
+  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
   PendingSecurity pending;
   pending.mode = PendingSecurityMode::kRemove;
   // encrypt_dict and security_handler remain null for removal
-  g_pending_security[document] = std::move(pending);
+  GetPendingSecurityMap()[document] = std::move(pending);
 
   return true;
 }
@@ -643,13 +644,14 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_GetPageCount(FPDF_DOCUMENT document) {
   return pExtension ? pExtension->GetPageCount() : doc->GetPageCount();
 }
 
-FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
-                                                  int page_index) {
-  auto* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc) {
-    return nullptr;
-  }
+namespace {
 
+// Shared body of FPDF_LoadPage and EPDFDoc_LoadPageByObjectNumber. Validates
+// `page_index` against the document's page count, then constructs and returns
+// a leaked page handle. Returns nullptr on any failure.
+FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
+                                   CPDF_Document* doc,
+                                   int page_index) {
   if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
     return nullptr;
   }
@@ -673,41 +675,34 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
   return FPDFPageFromIPDFPage(pPage.Leak());
 }
 
+}  // namespace
+
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
+                                                  int page_index) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return nullptr;
+  }
+  return LoadPageByValidatedIndex(document, doc, page_index);
+}
+
 FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
 EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
   auto* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || obj_num == 0)
+  if (!doc || obj_num == 0) {
     return nullptr;
-
-  int page_index = doc->GetPageIndex(obj_num);
-  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
-    return nullptr;
-
-#ifdef PDF_ENABLE_XFA
-  auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());
-  if (context) {
-    return FPDFPageFromIPDFPage(
-        context->GetOrCreateXFAPage(page_index).Leak());
   }
-#endif  // PDF_ENABLE_XFA
-
-  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
-  if (!dict)
-    return nullptr;
-
-  auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
-  pPage->AddPageImageCache();
-  pPage->ParseContent();
-
-  return FPDFPageFromIPDFPage(pPage.Leak());
+  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num));
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page) {
+  // Note: CPDFPageFromFPDFPage() returns null for XFA pages, so this function
+  // returns 0 for XFA pages (documented in the header).
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
   if (!pPage)
     return 0;
-  RetainPtr<const CPDF_Dictionary> dict = pPage->GetDict();
+  const CPDF_Dictionary* dict = pPage->GetDict().Get();
   if (!dict)
     return 0;
   return dict->GetObjNum();

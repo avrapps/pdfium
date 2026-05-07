@@ -203,7 +203,6 @@ typedef int FPDF_ANNOT_APPEARANCEMODE;
 // Dictionary value types.
 typedef int FPDF_OBJECT_TYPE;
 
-#if defined(COMPONENT_BUILD)
 // FPDF_EXPORT should be consistent with |export| in the pdfium_fuzzer
 // template in testing/fuzzers/BUILD.gn.
 #if defined(WIN32)
@@ -219,9 +218,6 @@ typedef int FPDF_OBJECT_TYPE;
 #define FPDF_EXPORT
 #endif  // defined(FPDF_IMPLEMENTATION)
 #endif  // defined(WIN32)
-#else
-#define FPDF_EXPORT
-#endif  // defined(COMPONENT_BUILD)
 
 #if defined(WIN32) && defined(FPDFSDK_EXPORTS)
 #define FPDF_CALLCONV __stdcall
@@ -1670,7 +1666,8 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 //
 //   page - handle to the page.
 //
-// Returns the object number (> 0) on success, or 0 on error.
+// Returns the object number (> 0) on success, or 0 if the page handle is
+// invalid, the page dictionary is a direct object, or the page is an XFA page.
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page);
 

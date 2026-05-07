@@ -2,6 +2,7 @@
 /build
 /buildtools
 /compile_commands.json
+/.embedpdf-runtime
 /out
 /testing/corpus
 /testing/scripts/rust
