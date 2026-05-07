@@ -2279,6 +2279,33 @@ EPDFPage_RemoveAnnot(FPDF_PAGE page, int index);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
 
+// Experimental EmbedPDF Extension API.
+// Move a contiguous block of annotations within a page's /Annots array.
+// Mirrors FPDF_MovePages semantics for the per-page annotation list:
+// the entries at |from_indices[0..from_indices_len)| are detached, then
+// re-inserted as a contiguous block starting at |to_index| in the
+// post-removal index space, preserving caller-supplied order.
+//
+//   page              - handle to the page.
+//   from_indices      - array of source indices in /Annots to move.
+//   from_indices_len  - length of |from_indices|; must be > 0.
+//   to_index          - destination index in the post-removal index
+//                       space; must be in [0, current_count -
+//                       from_indices_len].
+//
+// All validation runs BEFORE any mutation: a failure (out-of-range
+// source, out-of-range destination, or any duplicate source index)
+// returns false WITHOUT mutating the array. The indirect annotation
+// objects are never destroyed by this call, so durable identity
+// (objectNumber, /NM) is preserved across the move.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_MoveAnnots(FPDF_PAGE page,
+                    const int* from_indices,
+                    int from_indices_len,
+                    int to_index);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
