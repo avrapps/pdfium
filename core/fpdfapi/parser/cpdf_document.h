@@ -144,6 +144,10 @@ class CPDF_Document : public Observable,
   // Returns whether CreateModifiedAPStream() created `stream`.
   bool IsModifiedAPStream(const CPDF_Stream* stream) const;
 
+  // Returns whether `objnum` has been promoted from its base storage into a
+  // document overlay. Always false for ordinary documents.
+  virtual bool IsObjectPromoted(uint32_t objnum) const;
+
   // CPDF_Parser::ParsedObjectsHolder:
   bool TryInit() override;
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override;

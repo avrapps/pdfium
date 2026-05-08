@@ -427,6 +427,9 @@ RetainPtr<CPDF_Image> CPDF_DocPageData::GetImage(uint32_t dwStreamObjNum) {
   DCHECK(dwStreamObjNum);
   auto it = image_map_.find(dwStreamObjNum);
   if (it != image_map_.end()) {
+    if (GetDocument()->IsObjectPromoted(dwStreamObjNum)) {
+      it->second->RebindStreamIfPromoted();
+    }
     return it->second;
   }
 

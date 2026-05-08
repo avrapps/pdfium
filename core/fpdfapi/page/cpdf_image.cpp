@@ -42,67 +42,74 @@
 
 namespace {
 
-  // Internal helper that overwrites an existing stream's dict + bytes
-  // and purges any cached image.
-  bool OverwriteStreamData(CPDF_Stream* s,
-                           CPDF_Document* doc,
-                           DataVector<uint8_t> new_data,
-                           RetainPtr<CPDF_Dictionary> new_dict,
-                           bool data_is_decoded) {
-    if (!s || !new_dict)
-      return false;
-  
-    // Replace dictionary entries (no streams allowed as values).
-    RetainPtr<CPDF_Dictionary> old = s->GetMutableDict();
-    if (!old)
-      return false;
-  
-    // Clear existing keys.
-    for (const ByteString& k : old->GetKeys())
-      old->RemoveFor(k.AsStringView());
-  
-    // Deep-copy all entries from new_dict into old.
-    CPDF_DictionaryLocker lock(new_dict);
-    for (auto it = lock.begin(); it != lock.end(); ++it)
-      old->SetFor(it->first, it->second->Clone());
-  
-    // Swap in the bytes.
-    if (data_is_decoded) {
-      // Decoded pixels: also removes Filter/DecodeParms from the stream dict.
-      s->SetDataAndRemoveFilter(pdfium::span<const uint8_t>(new_data));
-    } else {
-      // Already filtered (e.g., JPEG with /Filter /DCTDecode).
-      s->TakeData(std::move(new_data));
-    }
-  
-    if (doc)
-      doc->MaybePurgeImage(s->GetObjNum());
-  
-    return true;
+// Internal helper that overwrites an existing stream's dict + bytes
+// and purges any cached image.
+bool OverwriteStreamData(CPDF_Stream* s,
+                         CPDF_Document* doc,
+                         DataVector<uint8_t> new_data,
+                         RetainPtr<CPDF_Dictionary> new_dict,
+                         bool data_is_decoded) {
+  if (!s || !new_dict) {
+    return false;
   }
-  
+
+  // Replace dictionary entries (no streams allowed as values).
+  RetainPtr<CPDF_Dictionary> old = s->GetMutableDict();
+  if (!old) {
+    return false;
+  }
+
+  // Clear existing keys.
+  for (const ByteString& k : old->GetKeys()) {
+    old->RemoveFor(k.AsStringView());
+  }
+
+  // Deep-copy all entries from new_dict into old.
+  CPDF_DictionaryLocker lock(new_dict);
+  for (auto it = lock.begin(); it != lock.end(); ++it) {
+    old->SetFor(it->first, it->second->Clone());
+  }
+
+  // Swap in the bytes.
+  if (data_is_decoded) {
+    // Decoded pixels: also removes Filter/DecodeParms from the stream dict.
+    s->SetDataAndRemoveFilter(pdfium::span<const uint8_t>(new_data));
+  } else {
+    // Already filtered (e.g., JPEG with /Filter /DCTDecode).
+    s->TakeData(std::move(new_data));
+  }
+
+  if (doc) {
+    doc->MaybePurgeImage(s->GetObjNum());
+  }
+
+  return true;
+}
+
 }  // namespace
 
 bool CPDF_Image::OverwriteStreamInPlace(DataVector<uint8_t> new_data,
                                         RetainPtr<CPDF_Dictionary> new_dict,
                                         bool data_is_decoded) {
   // Ensure we can mutate the underlying stream.
-  if (stream_->IsInline())
+  if (stream_->IsInline()) {
     ConvertStreamToIndirectObject();
+  }
 
   RetainPtr<const CPDF_Stream> s_const = GetStream();
-  if (!s_const)
+  if (!s_const) {
     return false;
+  }
 
   // Get a mutable stream by objnum.
   RetainPtr<CPDF_Stream> s =
       ToStream(document_->GetMutableIndirectObject(s_const->GetObjNum()));
-  if (!s)
+  if (!s) {
     return false;
+  }
 
-  const bool ok =
-      OverwriteStreamData(s.Get(), document_, std::move(new_data),
-                          std::move(new_dict), data_is_decoded);
+  const bool ok = OverwriteStreamData(s.Get(), document_, std::move(new_data),
+                                      std::move(new_dict), data_is_decoded);
   if (ok) {
     // Refresh cached flags/size from the new dictionary.
     FinishInitialization();
@@ -132,7 +139,7 @@ CPDF_Image::CPDF_Image(CPDF_Document* doc, RetainPtr<CPDF_Stream> pStream)
 
 CPDF_Image::CPDF_Image(CPDF_Document* doc, uint32_t dwStreamObjNum)
     : document_(doc),
-      stream_(ToStream(doc->GetMutableIndirectObject(dwStreamObjNum))) {
+      stream_(ToStream(doc->GetIndirectObject(dwStreamObjNum))) {
   DCHECK(document_);
   FinishInitialization();
 }
@@ -151,7 +158,11 @@ void CPDF_Image::FinishInitialization() {
 
 void CPDF_Image::ConvertStreamToIndirectObject() {
   CHECK(stream_->IsInline());
-  document_->AddIndirectObject(stream_);
+  document_->AddIndirectObject(AcquireMutableStreamForEdit());
+}
+
+RetainPtr<CPDF_Stream> CPDF_Image::AcquireMutableStreamForEdit() {
+  return pdfium::WrapRetain(const_cast<CPDF_Stream*>(stream_.Get()));
 }
 
 RetainPtr<const CPDF_Dictionary> CPDF_Image::GetDict() const {
@@ -164,6 +175,22 @@ RetainPtr<const CPDF_Stream> CPDF_Image::GetStream() const {
 
 RetainPtr<const CPDF_Dictionary> CPDF_Image::GetOC() const {
   return oc_;
+}
+
+bool CPDF_Image::RebindStreamIfPromoted() {
+  if (!stream_ || stream_->GetObjNum() == 0) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Stream> current_stream =
+      ToStream(document_->GetIndirectObject(stream_->GetObjNum()));
+  if (!current_stream || current_stream.Get() == stream_.Get()) {
+    return false;
+  }
+
+  stream_ = std::move(current_stream);
+  FinishInitialization();
+  return true;
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Image::InitJPEG(
@@ -253,7 +280,6 @@ void CPDF_Image::SetJpegImageInline(RetainPtr<IFX_SeekableReadStream> pFile) {
 
   stream_ = pdfium::MakeRetain<CPDF_Stream>(std::move(data), std::move(dict));
 }
-
 
 void CPDF_Image::SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap) {
   int32_t BitmapWidth = pBitmap->GetWidth();
@@ -393,10 +419,11 @@ void CPDF_Image::SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap) {
 }
 
 void CPDF_Image::SetPng(const uint8_t* png_data, size_t png_size) {
-  auto decoded = PngModule::Decode(
-      pdfium::span<const uint8_t>(png_data, png_size));
-  if (!decoded.has_value())
+  auto decoded =
+      PngModule::Decode(pdfium::span<const uint8_t>(png_data, png_size));
+  if (!decoded.has_value()) {
     return;
+  }
 
   const uint32_t w = decoded->width;
   const uint32_t h = decoded->height;
@@ -431,13 +458,12 @@ void CPDF_Image::SetPng(const uint8_t* png_data, size_t png_size) {
   parms->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
   parms->SetNewFor<CPDF_Number>("Columns", static_cast<int>(w));
 
-  dict->SetNewFor<CPDF_Number>(
-      "Length", pdfium::checked_cast<int>(compressed.size()));
+  dict->SetNewFor<CPDF_Number>("Length",
+                               pdfium::checked_cast<int>(compressed.size()));
 
   // Build alpha (SMask) stream if the PNG had transparency.
   if (!decoded->alpha.empty()) {
-    DataVector<uint8_t> alpha_compressed =
-        FlateModule::Encode(decoded->alpha);
+    DataVector<uint8_t> alpha_compressed = FlateModule::Encode(decoded->alpha);
 
     RetainPtr<CPDF_Dictionary> mask_dict = CreateXObjectImageDict(w, h);
     mask_dict->SetNewFor<CPDF_Name>("ColorSpace", "DeviceGray");
@@ -452,8 +478,8 @@ void CPDF_Image::SetPng(const uint8_t* png_data, size_t png_size) {
                                     mask_stream->GetObjNum());
   }
 
-  stream_ = pdfium::MakeRetain<CPDF_Stream>(
-      std::move(compressed), std::move(dict));
+  stream_ =
+      pdfium::MakeRetain<CPDF_Stream>(std::move(compressed), std::move(dict));
   is_mask_ = false;
   width_ = w;
   height_ = h;

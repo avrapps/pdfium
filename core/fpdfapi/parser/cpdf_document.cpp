@@ -416,6 +416,10 @@ bool CPDF_Document::IsModifiedAPStream(const CPDF_Stream* stream) const {
          pdfium::Contains(modified_apstream_ids_, stream->GetObjNum());
 }
 
+bool CPDF_Document::IsObjectPromoted(uint32_t objnum) const {
+  return false;
+}
+
 int CPDF_Document::GetPageIndex(uint32_t objnum) {
   uint32_t skip_count = 0;
   bool bSkipped = false;
