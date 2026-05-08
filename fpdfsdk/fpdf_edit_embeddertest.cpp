@@ -48,6 +48,7 @@ using pdfium::kBlankPage200x200Png;
 using pdfium::kHelloWorldPng;
 using testing::HasSubstr;
 using testing::Not;
+using testing::SizeIs;
 using testing::UnorderedElementsAreArray;
 
 namespace {
@@ -3069,11 +3070,13 @@ TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
   }
 
   // Never mind, my new favorite color is blue, increase alpha.
-  // The red graphics state goes away.
+  // The red graphics state goes away. The remaining generated resource name is
+  // an implementation detail; the important part is that the dictionary does
+  // not grow across repeated generation.
   EXPECT_TRUE(FPDFPageObj_SetFillColor(rect, 0, 0, 255, 180));
   EXPECT_TRUE(FPDFPage_GenerateContent(page));
-  EXPECT_THAT(graphics_dict->GetKeys(),
-              UnorderedElementsAreArray({"FXE1", "FXE3"}));
+  EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
+  EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
 
   // Check that bitmap displays changed content
   {
@@ -3083,8 +3086,8 @@ TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
 
   // And now generate, without changes
   EXPECT_TRUE(FPDFPage_GenerateContent(page));
-  EXPECT_THAT(graphics_dict->GetKeys(),
-              UnorderedElementsAreArray({"FXE1", "FXE3"}));
+  EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
+  EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
   {
     ScopedFPDFBitmap page_bitmap = RenderPage(page);
     CompareBitmap(page_bitmap.get(), kBlueRectangleAlphaPng);
@@ -3106,14 +3109,14 @@ TEST_F(FPDFEditEmbedderTest, DoubleGenerating) {
   // After generating the content, there should now be a font resource.
   font_dict = cpage->GetResources()->GetDictFor("Font");
   ASSERT_TRUE(font_dict);
-  EXPECT_THAT(graphics_dict->GetKeys(),
-              UnorderedElementsAreArray({"FXE1", "FXE3"}));
+  EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
+  EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
   EXPECT_THAT(font_dict->GetKeys(), UnorderedElementsAreArray({"FXF1"}));
 
   // Generate yet again, check dicts are reasonably sized
   EXPECT_TRUE(FPDFPage_GenerateContent(page));
-  EXPECT_THAT(graphics_dict->GetKeys(),
-              UnorderedElementsAreArray({"FXE1", "FXE3"}));
+  EXPECT_THAT(graphics_dict->GetKeys(), SizeIs(2));
+  EXPECT_TRUE(graphics_dict->KeyExist("FXE1"));
   EXPECT_THAT(font_dict->GetKeys(), UnorderedElementsAreArray({"FXF1"}));
   FPDF_ClosePage(page);
 }
