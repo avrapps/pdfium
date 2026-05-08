@@ -740,8 +740,7 @@ TEST_F(FPDFEditEmbedderTest, Bug1549) {
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  // TODO(crbug.com/42270554): Should be "bug_1549_removed".
-  VerifySavedDocument("bug_1549_incorrect");
+  VerifySavedDocument("bug_1549_removed");
 }
 
 TEST_F(FPDFEditEmbedderTest, SetText) {
