@@ -79,7 +79,7 @@ TEST_F(FPDFFlattenEmbedderTest, Bug861842) {
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
   // TODO(crbug.com/861842): This should not render blank.
-  VerifySavedDocument("blank_100x120");
+  VerifySavedDocumentWithExpectationSuffix("blank_100x120");
 }
 
 TEST_F(FPDFFlattenEmbedderTest, Bug889099) {
