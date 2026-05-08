@@ -108,8 +108,8 @@ class CPDF_InteractiveForm {
   CPDF_Document* document() { return document_; }
 
  private:
-  void LoadField(RetainPtr<CPDF_Dictionary> field_dict, int nLevel);
-  void AddTerminalField(RetainPtr<CPDF_Dictionary> field_dict);
+  void LoadField(RetainPtr<const CPDF_Dictionary> field_dict, int nLevel);
+  void AddTerminalField(RetainPtr<const CPDF_Dictionary> field_dict);
   CPDF_FormControl* AddControl(CPDF_FormField* field,
                                RetainPtr<CPDF_Dictionary> widget_dict);
 
