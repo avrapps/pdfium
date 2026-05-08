@@ -851,7 +851,13 @@ std::optional<CFX_Color::TypeAndARGB> GetFreetextFontColor(
   RetainPtr<const CPDF_Dictionary> acroform_dict =
       root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
   CPDF_DefaultAppearance default_appearance(annot_dict, acroform_dict);
-  return default_appearance.GetColorARGB();
+  std::optional<CFX_Color::TypeAndARGB> color =
+      default_appearance.GetColorARGB();
+  if (color.has_value()) {
+    return color;
+  }
+  return CFX_Color::TypeAndARGB(CFX_Color::Type::kGray,
+                                ArgbEncode(255, 0, 0, 0));
 }
 
 std::optional<FX_COLORREF> GetWidgetFontColor(FPDF_FORMHANDLE handle,
@@ -2202,19 +2208,15 @@ FPDFAnnot_SetFontColor(FPDF_FORMHANDLE handle,
     return false;
   }
 
-  bool generated = CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
-      form->GetInteractiveForm()->document(), annot_dict, CFX_Color(R, G, B));
-  if (!generated) {
+  CPDF_Document* doc = form->GetInteractiveForm()->document();
+  bool updated = CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
+      doc, annot_dict, CFX_Color(R, G, B));
+  if (!updated) {
     return false;
   }
 
-  // Remove the appearance stream. Otherwise PDF viewers will render that and
-  // not use the new color.
-  //
-  // TODO(thestig) When GenerateDefaultAppearanceWithColor() properly updates
-  // the annotation's appearance stream, remove this.
-  annot_dict->RemoveFor(pdfium::annotation::kAP);
-  return true;
+  return CPDF_GenerateAP::GenerateAnnotAP(doc, annot_dict.Get(),
+                                          CPDF_Annot::Subtype::FREETEXT);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

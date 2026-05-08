@@ -13,7 +13,6 @@
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
 #include "constants/form_fields.h"
-#include "constants/form_flags.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -26,9 +25,6 @@
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfdoc/cpdf_annot.h"
-#include "core/fpdfdoc/cpdf_formfield.h"
-#include "core/fpdfdoc/cpdf_generateap.h"
-#include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
 
@@ -125,57 +121,6 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
   return pPopupAnnot;
 }
 
-void GenerateAP(CPDF_Document* doc, CPDF_Dictionary* pAnnotDict) {
-  if (!pAnnotDict ||
-      pAnnotDict->GetByteStringFor(pdfium::annotation::kSubtype) != "Widget") {
-    return;
-  }
-
-  RetainPtr<const CPDF_Object> pFieldTypeObj =
-      CPDF_FormField::GetFieldAttrForDict(pAnnotDict, pdfium::form_fields::kFT);
-  if (!pFieldTypeObj) {
-    return;
-  }
-
-  ByteString field_type = pFieldTypeObj->GetString();
-  if (field_type == pdfium::form_fields::kTx) {
-    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict,
-                                    CPDF_GenerateAP::kTextField);
-    return;
-  }
-
-  RetainPtr<const CPDF_Object> pFieldFlagsObj =
-      CPDF_FormField::GetFieldAttrForDict(pAnnotDict, pdfium::form_fields::kFf);
-  uint32_t flags = pFieldFlagsObj ? pFieldFlagsObj->GetInteger() : 0;
-  if (field_type == pdfium::form_fields::kCh) {
-    auto type = (flags & pdfium::form_flags::kChoiceCombo)
-                    ? CPDF_GenerateAP::kComboBox
-                    : CPDF_GenerateAP::kListBox;
-    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict, type);
-    return;
-  }
-
-  if (field_type != pdfium::form_fields::kBtn) {
-    return;
-  }
-  if (flags & pdfium::form_flags::kButtonPushbutton) {
-    return;
-  }
-  if (pAnnotDict->KeyExist(pdfium::annotation::kAS)) {
-    return;
-  }
-
-  RetainPtr<const CPDF_Dictionary> pParentDict =
-      pAnnotDict->GetDictFor(pdfium::form_fields::kParent);
-  if (!pParentDict || !pParentDict->KeyExist(pdfium::annotation::kAS)) {
-    return;
-  }
-
-  pAnnotDict->SetNewFor<CPDF_String>(
-      pdfium::annotation::kAS,
-      pParentDict->GetByteStringFor(pdfium::annotation::kAS));
-}
-
 }  // namespace
 
 CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
@@ -185,10 +130,6 @@ CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
     return;
   }
 
-  const CPDF_Dictionary* pRoot = document_->GetRoot();
-  RetainPtr<const CPDF_Dictionary> pAcroForm = pRoot->GetDictFor("AcroForm");
-  bool bRegenerateAP =
-      pAcroForm && pAcroForm->GetBooleanFor("NeedAppearances", false);
   for (size_t i = 0; i < pAnnots->size(); ++i) {
     RetainPtr<CPDF_Dictionary> dict =
         ToDictionary(pAnnots->GetMutableDirectObjectAt(i));
@@ -204,11 +145,6 @@ CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
     }
     pAnnots->ConvertToIndirectObjectAt(i, document_);
     annot_list_.push_back(std::make_unique<CPDF_Annot>(dict, document_));
-    if (bRegenerateAP && subtype == "Widget" &&
-        CPDF_InteractiveForm::IsUpdateAPEnabled() &&
-        !dict->GetDictFor(pdfium::annotation::kAP)) {
-      GenerateAP(document_, dict.Get());
-    }
   }
 
   annot_count_ = annot_list_.size();

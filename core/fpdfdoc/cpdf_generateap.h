@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFDOC_CPDF_GENERATEAP_H_
 #define CORE_FPDFDOC_CPDF_GENERATEAP_H_
 
+#include <optional>
+
 #include "core/fpdfdoc/cpdf_annot.h"
 
 class CPDF_Dictionary;
@@ -38,6 +40,28 @@ class CPDF_GenerateAP {
                               CPDF_Dictionary* annot_dict,
                               CPDF_Annot::Subtype subtype,
                               BlendMode blend_mode);
+
+  struct GeneratedAP {
+    RetainPtr<CPDF_Stream> normal_stream;
+  };
+
+  static std::optional<GeneratedAP> GenerateEphemeralAnnotAP(
+      CPDF_Document* doc,
+      const CPDF_Dictionary* annot_dict,
+      CPDF_Annot::Subtype subtype);
+
+  static std::optional<GeneratedAP> GenerateEphemeralAnnotAP(
+      CPDF_Document* doc,
+      const CPDF_Dictionary* annot_dict,
+      CPDF_Annot::Subtype subtype,
+      BlendMode blend_mode);
+
+  static std::optional<GeneratedAP> GenerateEphemeralFormAP(
+      CPDF_Document* doc,
+      const CPDF_Dictionary* annot_dict,
+      FormType type);
+
+  static bool CanGenerateEphemeralAnnotAP(CPDF_Annot::Subtype subtype);
 
   static bool GenerateDefaultAppearanceWithColor(CPDF_Document* doc,
                                                  CPDF_Dictionary* annot_dict,

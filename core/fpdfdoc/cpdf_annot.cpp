@@ -133,8 +133,11 @@ CPDF_Annot::CPDF_Annot(RetainPtr<CPDF_Dictionary> dict, CPDF_Document* document)
           annot_dict_->GetByteStringFor(pdfium::annotation::kSubtype))),
       is_text_markup_annotation_(IsTextMarkupAnnotation(subtype_)),
       has_generated_ap_(
-          annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false)) {
-  GenerateAPIfNeeded();
+          annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false) ||
+          (CanGenerateEphemeralAP() && ShouldGenerateAP())) {
+  if (!CanGenerateEphemeralAP()) {
+    GenerateAPIfNeeded();
+  }
 }
 
 CPDF_Annot::~CPDF_Annot() {
@@ -166,6 +169,39 @@ bool CPDF_Annot::ShouldGenerateAP() const {
   return !IsHidden();
 }
 
+bool CPDF_Annot::CanGenerateEphemeralAP() const {
+  return CPDF_GenerateAP::CanGenerateEphemeralAnnotAP(subtype_);
+}
+
+RetainPtr<CPDF_Stream> CPDF_Annot::GetOrBuildEphemeralAP(AppearanceMode mode) {
+  if (mode != AppearanceMode::kNormal || !CanGenerateEphemeralAP()) {
+    return nullptr;
+  }
+
+  if (ephemeral_built_) {
+    return ephemeral_normal_ap_;
+  }
+
+  ephemeral_built_ = true;
+  if (!ShouldGenerateAP()) {
+    return nullptr;
+  }
+
+  std::optional<CPDF_GenerateAP::GeneratedAP> generated =
+      CPDF_GenerateAP::GenerateEphemeralAnnotAP(document_, annot_dict_.Get(),
+                                                subtype_);
+  if (!generated.has_value()) {
+    return nullptr;
+  }
+
+  ephemeral_normal_ap_ = std::move(generated->normal_stream);
+  if (subtype_ == CPDF_Annot::Subtype::INK) {
+    ephemeral_rect_ = ephemeral_normal_ap_->GetDict()->GetRectFor("BBox");
+  }
+  has_generated_ap_ = true;
+  return ephemeral_normal_ap_;
+}
+
 bool CPDF_Annot::ShouldDrawAnnotation() const {
   if (IsHidden()) {
     return false;
@@ -175,6 +211,12 @@ bool CPDF_Annot::ShouldDrawAnnotation() const {
 
 void CPDF_Annot::ClearCachedAP() {
   ap_map_.clear();
+  ephemeral_normal_ap_.Reset();
+  ephemeral_rect_.reset();
+  ephemeral_built_ = false;
+  has_generated_ap_ =
+      annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false) ||
+      (CanGenerateEphemeralAP() && ShouldGenerateAP());
 }
 
 CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
@@ -182,6 +224,10 @@ CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
 }
 
 CFX_FloatRect CPDF_Annot::RectForDrawing() const {
+  if (ephemeral_rect_.has_value()) {
+    return ephemeral_rect_.value();
+  }
+
   bool bShouldUseQuadPointsCoords =
       is_text_markup_annotation_ && has_generated_ap_;
   if (bShouldUseQuadPointsCoords) {
@@ -218,6 +264,9 @@ RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
 
 CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
   RetainPtr<CPDF_Stream> pStream = GetAnnotAP(annot_dict_.Get(), mode);
+  if (!pStream) {
+    pStream = GetOrBuildEphemeralAP(mode);
+  }
   if (!pStream) {
     return nullptr;
   }
@@ -890,12 +939,14 @@ bool CPDF_Annot::DrawAppearance(CPDF_Page* pPage,
     return false;
   }
 
-  // It might happen that by the time this annotation instance was created,
-  // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
-  // to not "generate" its AP.
-  // If for a reason the object is no longer hidden, but still does not have
-  // its "AP" generated, generate it now.
-  GenerateAPIfNeeded();
+  if (!CanGenerateEphemeralAP()) {
+    // It might happen that by the time this annotation instance was created,
+    // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
+    // to not "generate" its AP.
+    // If for a reason the object is no longer hidden, but still does not have
+    // its "AP" generated, generate it now.
+    GenerateAPIfNeeded();
+  }
 
   CFX_Matrix matrix;
   CPDF_Form* pForm = AnnotGetMatrix(pPage, this, mode, mtUser2Device, &matrix);
@@ -919,12 +970,14 @@ bool CPDF_Annot::DrawInContext(CPDF_Page* pPage,
     return false;
   }
 
-  // It might happen that by the time this annotation instance was created,
-  // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
-  // to not "generate" its AP.
-  // If for a reason the object is no longer hidden, but still does not have
-  // its "AP" generated, generate it now.
-  GenerateAPIfNeeded();
+  if (!CanGenerateEphemeralAP()) {
+    // It might happen that by the time this annotation instance was created,
+    // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
+    // to not "generate" its AP.
+    // If for a reason the object is no longer hidden, but still does not have
+    // its "AP" generated, generate it now.
+    GenerateAPIfNeeded();
+  }
 
   CFX_Matrix matrix;
   CPDF_Form* pForm = AnnotGetMatrix(pPage, this, mode, mtUser2Device, &matrix);
