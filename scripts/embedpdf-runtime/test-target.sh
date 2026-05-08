@@ -55,7 +55,7 @@ if [[ "$TARGET" == linux-* ]]; then
   )
 fi
 
-OUT="$SOURCE_DIR/out/embedpdf-runtime-tests/$TARGET"
+OUT="$SOURCE_DIR/out/embedpdf-runtime-tests-$TARGET"
 RESULTS="$SOURCE_DIR/out/embedpdf-runtime-test-results/$TARGET"
 mkdir -p "$OUT" "$RESULTS"
 

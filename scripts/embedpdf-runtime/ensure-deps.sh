@@ -10,10 +10,10 @@ STAMP_DIR="$SOURCE_DIR/.embedpdf-runtime"
 STAMP_FILE="$STAMP_DIR/deps-sync.stamp"
 
 case "$SYNC_MODE" in
-  auto | always | never | skip)
+  auto | always | never | skip | local)
     ;;
   *)
-    echo "PDF_RUNTIME_SYNC must be one of: auto, always, never, skip" >&2
+    echo "PDF_RUNTIME_SYNC must be one of: auto, always, never, skip, local" >&2
     exit 1
     ;;
 esac
@@ -52,6 +52,7 @@ needs_sync() {
 }
 
 run_sync() {
+  "$SOURCE_DIR/scripts/embedpdf-runtime/unapply-patches.sh"
   "$SOURCE_DIR/scripts/embedpdf-runtime/sync-deps.sh"
   if ! required_paths_exist; then
     echo "dependency sync completed, but required dependency paths are missing" >&2
@@ -77,6 +78,14 @@ case "$SYNC_MODE" in
       exit 1
     fi
     echo "Dependency sync skipped"
+    ;;
+  local)
+    if ! required_paths_exist; then
+      echo "dependencies are missing, but PDF_RUNTIME_SYNC=local" >&2
+      echo "run once with PDF_RUNTIME_SYNC=auto from a clean runtime-src checkout to fetch dependencies" >&2
+      exit 1
+    fi
+    echo "Dependency sync skipped for local workflow"
     ;;
   auto)
     if needs_sync; then

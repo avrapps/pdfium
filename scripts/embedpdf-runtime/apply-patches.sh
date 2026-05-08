@@ -64,6 +64,8 @@ copy_patch_file() {
   cp "$src" "$dst"
 }
 
+"$SOURCE_DIR/scripts/embedpdf-runtime/unapply-patches.sh"
+
 case "$TARGET" in
   wasm32)
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/wasm/build.patch"
