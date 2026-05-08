@@ -75,11 +75,11 @@ CPDF_Form* AnnotGetMatrix(CPDF_Page* pPage,
   return pForm;
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPInternal(const CPDF_Dictionary* pAnnotDict,
                                           CPDF_Annot::AppearanceMode eMode,
                                           bool bFallbackToNormal) {
-  RetainPtr<CPDF_Dictionary> pAP =
-      pAnnotDict->GetMutableDictFor(pdfium::annotation::kAP);
+  RetainPtr<const CPDF_Dictionary> pAP =
+      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
   if (!pAP) {
     return nullptr;
   }
@@ -94,17 +94,17 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
     ap_entry = "N";
   }
 
-  RetainPtr<CPDF_Object> psub = pAP->GetMutableDirectObjectFor(ap_entry);
+  RetainPtr<const CPDF_Object> psub = pAP->GetDirectObjectFor(ap_entry);
   if (!psub) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Stream> pStream(psub->AsMutableStream());
+  RetainPtr<const CPDF_Stream> pStream(psub->AsStream());
   if (pStream) {
-    return pStream;
+    return pdfium::WrapRetain(const_cast<CPDF_Stream*>(pStream.Get()));
   }
 
-  CPDF_Dictionary* dict = psub->AsMutableDictionary();
+  const CPDF_Dictionary* dict = psub->AsDictionary();
   if (!dict) {
     return nullptr;
   }
@@ -120,7 +120,8 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
     as = (!value.IsEmpty() && dict->KeyExist(value.AsStringView())) ? value
                                                                     : "Off";
   }
-  return dict->GetMutableStreamFor(as.AsStringView());
+  RetainPtr<const CPDF_Stream> stream = dict->GetStreamFor(as.AsStringView());
+  return pdfium::WrapRetain(const_cast<CPDF_Stream*>(stream.Get()));
 }
 
 }  // namespace
@@ -574,8 +575,9 @@ CPDF_Annot::Icon CPDF_Annot::StringToIcon(const ByteString& name) {
     ByteString prefix = name.First(2);
     if (prefix == "SB" || prefix == "SH") {
       Icon result = StringToIcon(name.Substr(2));
-      if (result != Icon::kUnknown && result != Icon::kStamp_Custom)
+      if (result != Icon::kUnknown && result != Icon::kStamp_Custom) {
         return result;
+      }
     }
   }
   return Icon::kStamp_Custom;
@@ -700,17 +702,17 @@ ByteString CPDF_Annot::LineEndingToString(CPDF_Annot::LineEnding le) {
       return "Circle";
     case LineEnding::kDiamond:
       return "Diamond";
-    case LineEnding::kOpenArrow:    
+    case LineEnding::kOpenArrow:
       return "OpenArrow";
-    case LineEnding::kClosedArrow:  
+    case LineEnding::kClosedArrow:
       return "ClosedArrow";
-    case LineEnding::kButt:         
+    case LineEnding::kButt:
       return "Butt";
-    case LineEnding::kROpenArrow:   
+    case LineEnding::kROpenArrow:
       return "ROpenArrow";
-    case LineEnding::kRClosedArrow: 
+    case LineEnding::kRClosedArrow:
       return "RClosedArrow";
-    case LineEnding::kSlash:        
+    case LineEnding::kSlash:
       return "Slash";
     case LineEnding::kUnknown:
       break;
@@ -752,7 +754,8 @@ CPDF_Annot::LineEnding CPDF_Annot::StringToLineEnding(const ByteString& n) {
   return LineEnding::kUnknown;
 }
 
-CPDF_Annot::StandardFont CPDF_Annot::StringToStandardFont(const ByteString& name) {
+CPDF_Annot::StandardFont CPDF_Annot::StringToStandardFont(
+    const ByteString& name) {
   // Full canonical names (PDF Reference, Table 5.17)
   if (name == "Courier" || name == "Cour") {
     return StandardFont::kCourier;
@@ -805,7 +808,7 @@ ByteString CPDF_Annot::StandardFontToString(CPDF_Annot::StandardFont font) {
       return "Courier";
     case StandardFont::kCourier_Bold:
       return "Courier-Bold";
-    case StandardFont::kCourier_BoldOblique: 
+    case StandardFont::kCourier_BoldOblique:
       return "Courier-BoldOblique";
     case StandardFont::kCourier_Oblique:
       return "Courier-Oblique";
@@ -838,11 +841,21 @@ ByteString CPDF_Annot::StandardFontToString(CPDF_Annot::StandardFont font) {
 // static
 CPDF_Annot::BorderStyle CPDF_Annot::StringToBorderStyle(
     const ByteString& sStyle) {
-  if (sStyle == "S") return CPDF_Annot::BorderStyle::kSolid;
-  if (sStyle == "D") return CPDF_Annot::BorderStyle::kDashed;
-  if (sStyle == "B") return CPDF_Annot::BorderStyle::kBeveled;
-  if (sStyle == "I") return CPDF_Annot::BorderStyle::kInset;
-  if (sStyle == "U") return CPDF_Annot::BorderStyle::kUnderline;
+  if (sStyle == "S") {
+    return CPDF_Annot::BorderStyle::kSolid;
+  }
+  if (sStyle == "D") {
+    return CPDF_Annot::BorderStyle::kDashed;
+  }
+  if (sStyle == "B") {
+    return CPDF_Annot::BorderStyle::kBeveled;
+  }
+  if (sStyle == "I") {
+    return CPDF_Annot::BorderStyle::kInset;
+  }
+  if (sStyle == "U") {
+    return CPDF_Annot::BorderStyle::kUnderline;
+  }
   return CPDF_Annot::BorderStyle::kUnknown;
 }
 

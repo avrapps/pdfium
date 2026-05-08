@@ -45,15 +45,15 @@ CPDF_Form::CPDF_Form(CPDF_Document* doc,
                      RetainPtr<CPDF_Dictionary> pPageResources,
                      RetainPtr<CPDF_Stream> pFormStream,
                      CPDF_Dictionary* pParentResources)
-    : CPDF_PageObjectHolder(doc,
-                            pFormStream->GetMutableDict(),
-                            pPageResources,
-                            pdfium::WrapRetain(ChooseResourcesDict(
-                                pFormStream->GetMutableDict()
-                                    ->GetMutableDictFor("Resources")
-                                    .Get(),
-                                pParentResources,
-                                pPageResources.Get()))),
+    : CPDF_PageObjectHolder(
+          doc,
+          pFormStream->GetMutableDict(),
+          pPageResources,
+          pdfium::WrapRetain(ChooseResourcesDict(
+              const_cast<CPDF_Dictionary*>(
+                  pFormStream->GetDict()->GetDictFor("Resources").Get()),
+              pParentResources,
+              pPageResources.Get()))),
       form_stream_(std::move(pFormStream)) {
   LoadTransparencyInfo();
 }
