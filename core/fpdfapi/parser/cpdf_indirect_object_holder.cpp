@@ -12,6 +12,7 @@
 
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fxcrt/check.h"
 
 namespace {
@@ -88,6 +89,7 @@ RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::ParseIndirectObject(
 
 uint32_t CPDF_IndirectObjectHolder::AddIndirectObject(
     RetainPtr<CPDF_Object> pObj) {
+  DCHECK_PDF_HOLDER_MUTABLE();
   CHECK(!pObj->GetObjNum());
   pObj->SetObjNum(++last_obj_num_);
   indirect_objs_[last_obj_num_] = std::move(pObj);
@@ -108,6 +110,7 @@ bool CPDF_IndirectObjectHolder::ReplaceIndirectObjectIfHigherGeneration(
     return false;
   }
 
+  DCHECK_PDF_HOLDER_MUTABLE();
   pObj->SetObjNum(objnum);
   obj_holder = std::move(pObj);
   last_obj_num_ = std::max(last_obj_num_, objnum);
@@ -120,5 +123,6 @@ void CPDF_IndirectObjectHolder::DeleteIndirectObject(uint32_t objnum) {
     return;
   }
 
+  DCHECK_PDF_HOLDER_MUTABLE();
   indirect_objs_.erase(it);
 }

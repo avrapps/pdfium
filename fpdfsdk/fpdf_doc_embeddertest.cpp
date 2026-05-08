@@ -9,6 +9,7 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -74,6 +75,25 @@ int CountStreamEntries(const std::string& data) {
 }  // namespace
 
 class FPDFDocEmbedderTest : public EmbedderTest {};
+
+TEST_F(FPDFDocEmbedderTest, ReadPurityLinkEnumeration) {
+  ASSERT_TRUE(OpenDocument("links_highlights_annots.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    int start_pos = 0;
+    FPDF_LINK link = nullptr;
+    while (FPDFLink_Enumerate(page.get(), &start_pos, &link)) {
+    }
+  }
+
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+}
 
 TEST_F(FPDFDocEmbedderTest, MultipleSamePage) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));

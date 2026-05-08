@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_crypto_handler.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -277,6 +278,7 @@ void CPDF_Dictionary::SetFor(const ByteString& key,
 CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
                                              RetainPtr<CPDF_Object> pObj) {
   CHECK(!IsLocked());
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   if (!pObj) {
     map_.erase(key);
     return nullptr;
@@ -297,6 +299,7 @@ void CPDF_Dictionary::ConvertToIndirectObjectFor(
     return;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   pHolder->AddIndirectObject(it->second);
   it->second = it->second->MakeReference(pHolder);
 }
@@ -307,6 +310,7 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::RemoveFor(ByteStringView key) {
   if (it == map_.end()) {
     return RetainPtr<CPDF_Object>();
   }
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   auto node = map_.extract(it);
   return std::move(node.mapped());
 }
@@ -324,6 +328,7 @@ void CPDF_Dictionary::ReplaceKey(const ByteString& oldkey,
     return;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   map_[MaybeIntern(newkey)] = std::move(old_it->second);
   map_.erase(old_it);
 }

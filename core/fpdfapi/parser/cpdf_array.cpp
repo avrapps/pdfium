@@ -13,6 +13,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -204,12 +205,14 @@ RetainPtr<const CPDF_String> CPDF_Array::GetStringAt(size_t index) const {
 
 void CPDF_Array::Clear() {
   CHECK(!IsLocked());
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   objects_.clear();
 }
 
 void CPDF_Array::RemoveAt(size_t index) {
   CHECK(!IsLocked());
   if (index < objects_.size()) {
+    DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
     objects_.erase(objects_.begin() + index);
   }
 }
@@ -225,6 +228,7 @@ void CPDF_Array::ConvertToIndirectObjectAt(size_t index,
     return;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   pHolder->AddIndirectObject(objects_[index]);
   objects_[index] = objects_[index]->MakeReference(pHolder);
 }
@@ -251,6 +255,7 @@ CPDF_Object* CPDF_Array::SetAtInternal(size_t index,
     return nullptr;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   CPDF_Object* pRet = pObj.Get();
   objects_[index] = std::move(pObj);
   return pRet;
@@ -266,6 +271,7 @@ CPDF_Object* CPDF_Array::InsertAtInternal(size_t index,
     return nullptr;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   CPDF_Object* pRet = pObj.Get();
   objects_.insert(objects_.begin() + index, std::move(pObj));
   return pRet;
@@ -276,6 +282,7 @@ CPDF_Object* CPDF_Array::AppendInternal(RetainPtr<CPDF_Object> pObj) {
   CHECK(pObj);
   CHECK(pObj->IsInline());
   CHECK(!pObj->IsStream());
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   CPDF_Object* pRet = pObj.Get();
   objects_.push_back(std::move(pObj));
   return pRet;

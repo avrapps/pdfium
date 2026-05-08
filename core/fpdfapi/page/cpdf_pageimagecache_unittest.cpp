@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/cfx_fileaccess_stream.h"
@@ -139,12 +140,20 @@ TEST(CPDFDocPageDataTest, GetImageDoesNotMutateDocument) {
   const uint32_t last_objnum = document.GetLastObjNum();
 
   CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(&document);
-  RetainPtr<CPDF_Image> image = page_data->GetImage(stream_objnum);
+  RetainPtr<CPDF_Image> image;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    image = page_data->GetImage(stream_objnum);
+  }
 
   EXPECT_EQ(last_objnum, document.GetLastObjNum());
   EXPECT_EQ(stream.Get(), image->GetStream().Get());
 
-  RetainPtr<CPDF_Image> cached_image = page_data->GetImage(stream_objnum);
+  RetainPtr<CPDF_Image> cached_image;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    cached_image = page_data->GetImage(stream_objnum);
+  }
   EXPECT_EQ(last_objnum, document.GetLastObjNum());
   EXPECT_EQ(image.Get(), cached_image.Get());
 }

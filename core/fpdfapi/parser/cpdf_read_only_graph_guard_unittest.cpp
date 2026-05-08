@@ -28,3 +28,17 @@ TEST(CPDFReadOnlyGraphGuardTest, AllowsInlineObjects) {
   CPDF_ReadOnlyGraphGuard guard;
   DCHECK_PDF_GRAPH_MUTABLE_FOR(dict.Get());
 }
+
+TEST(CPDFReadOnlyGraphGuardTest, InlineRewriteStateStacks) {
+  EXPECT_FALSE(CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive());
+  {
+    CPDF_ScopedInlineRewrite rewrite;
+    EXPECT_TRUE(CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive());
+    {
+      CPDF_ScopedInlineRewrite nested_rewrite;
+      EXPECT_TRUE(CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive());
+    }
+    EXPECT_TRUE(CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive());
+  }
+  EXPECT_FALSE(CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive());
+}

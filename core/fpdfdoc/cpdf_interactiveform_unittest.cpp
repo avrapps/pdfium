@@ -11,6 +11,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -61,18 +62,22 @@ TEST_F(CPDFInteractiveFormTest, LoadFieldsWithReferencedNames) {
   const uint32_t last_obj_num = doc->GetLastObjNum();
 
   // Let `interactive_form` parse the dictionaries above.
-  CPDF_InteractiveForm interactive_form(doc.get());
+  std::unique_ptr<CPDF_InteractiveForm> interactive_form;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    interactive_form = std::make_unique<CPDF_InteractiveForm>(doc.get());
+  }
 
   EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
   EXPECT_TRUE(ToReference(good_string_field_dict->GetObjectFor("T")));
   EXPECT_TRUE(ToReference(bad_name_field_dict->GetObjectFor("T")));
   EXPECT_TRUE(ToReference(bad_stream_field_dict->GetObjectFor("T")));
 
-  EXPECT_EQ(1u,
-            interactive_form.CountFields(WideString::FromASCII("good_string")));
+  EXPECT_EQ(
+      1u, interactive_form->CountFields(WideString::FromASCII("good_string")));
   EXPECT_EQ(0u,
-            interactive_form.CountFields(WideString::FromASCII("bad_name")));
-  EXPECT_EQ(1u, interactive_form.CountFields(WideString()));
+            interactive_form->CountFields(WideString::FromASCII("bad_name")));
+  EXPECT_EQ(1u, interactive_form->CountFields(WideString()));
 }
 
 TEST_F(CPDFInteractiveFormTest, LoadFieldDoesNotCopyInheritedTypeToParent) {
@@ -101,14 +106,19 @@ TEST_F(CPDFInteractiveFormTest, LoadFieldDoesNotCopyInheritedTypeToParent) {
   ASSERT_FALSE(parent_dict->KeyExist("Ff"));
   const uint32_t last_obj_num = doc->GetLastObjNum();
 
-  CPDF_InteractiveForm interactive_form(doc.get());
+  std::unique_ptr<CPDF_InteractiveForm> interactive_form;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    interactive_form = std::make_unique<CPDF_InteractiveForm>(doc.get());
+  }
 
   EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
   EXPECT_FALSE(parent_dict->KeyExist("FT"));
   EXPECT_FALSE(parent_dict->KeyExist("Ff"));
-  EXPECT_EQ(1u, interactive_form.CountFields(WideString::FromASCII("Parent")));
+  EXPECT_EQ(1u,
+            interactive_form->CountFields(WideString::FromASCII("Parent")));
   CPDF_FormField* field =
-      interactive_form.GetField(0, WideString::FromASCII("Parent"));
+      interactive_form->GetField(0, WideString::FromASCII("Parent"));
   ASSERT_TRUE(field);
   EXPECT_EQ(FormFieldType::kTextField, field->GetFieldType());
   EXPECT_EQ(1, field->CountControls());

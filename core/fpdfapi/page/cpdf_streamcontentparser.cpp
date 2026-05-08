@@ -33,6 +33,7 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -187,6 +188,7 @@ ByteStringView FindFullName(pdfium::span<const AbbrPair> table,
 void ReplaceAbbr(RetainPtr<CPDF_Object> pObj);
 
 void ReplaceAbbrInDictionary(CPDF_Dictionary* dict) {
+  CPDF_ScopedInlineRewrite inline_rewrite;
   std::vector<AbbrReplacementOp> replacements;
   {
     CPDF_DictionaryLocker locker(dict);
@@ -228,6 +230,7 @@ void ReplaceAbbrInDictionary(CPDF_Dictionary* dict) {
 }
 
 void ReplaceAbbrInArray(CPDF_Array* pArray) {
+  CPDF_ScopedInlineRewrite inline_rewrite;
   for (size_t i = 0; i < pArray->size(); ++i) {
     RetainPtr<CPDF_Object> pElement = pArray->GetMutableObjectAt(i);
     if (pElement->IsName()) {

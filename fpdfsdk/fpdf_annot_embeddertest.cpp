@@ -16,6 +16,8 @@
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
@@ -411,6 +413,41 @@ TEST_F(FPDFAnnotEmbedderTest, RenderMultilineMarkupAnnotWithoutAP) {
   ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
   CompareBitmapWithExpectationSuffix(bitmap.get(),
                                      "annotation_markup_multiline_no_ap");
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ReadPurityRenderMarkupAnnotWithoutAP) {
+  ASSERT_TRUE(OpenDocument("annotation_markup_multiline_no_ap.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    EXPECT_GT(FPDFPage_GetAnnotCount(page.get()), 0);
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
+    ASSERT_TRUE(bitmap);
+  }
+
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ExplicitGenerateAppearanceAllowed) {
+  ASSERT_TRUE(OpenDocument("annotation_markup_multiline_no_ap.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  const uint32_t before = doc->GetLastObjNum();
+
+  EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  EXPECT_GT(doc->GetLastObjNum(), before);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, ExtractHighlightLongContent) {

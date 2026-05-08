@@ -13,14 +13,23 @@ class CPDF_ReadOnlyGraphGuard {
   ~CPDF_ReadOnlyGraphGuard();
 
   static bool IsActive();
+  static bool IsInlineRewriteActive();
 
  private:
   const bool previous_;
 };
 
+class CPDF_ScopedInlineRewrite {
+ public:
+  CPDF_ScopedInlineRewrite();
+  ~CPDF_ScopedInlineRewrite();
+};
+
 #if DCHECK_IS_ON()
 #define DCHECK_PDF_GRAPH_MUTABLE_FOR(obj) \
-  DCHECK(!CPDF_ReadOnlyGraphGuard::IsActive() || (obj)->GetObjNum() == 0)
+  DCHECK(!CPDF_ReadOnlyGraphGuard::IsActive() || \
+         CPDF_ReadOnlyGraphGuard::IsInlineRewriteActive() || \
+         (obj)->GetObjNum() == 0)
 #define DCHECK_PDF_HOLDER_MUTABLE() DCHECK(!CPDF_ReadOnlyGraphGuard::IsActive())
 #else
 #define DCHECK_PDF_GRAPH_MUTABLE_FOR(obj) ((void)0)

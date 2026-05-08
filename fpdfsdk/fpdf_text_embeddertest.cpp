@@ -9,8 +9,11 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxge/fx_font.h"
+#include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_doc.h"
 #include "public/fpdf_text.h"
@@ -2111,6 +2114,23 @@ TEST_F(FPDFTextEmbedderTest, SmallType3Glyph) {
   EXPECT_DOUBLE_EQ(101.36000061035156, right);
   EXPECT_DOUBLE_EQ(50.0, bottom);
   EXPECT_DOUBLE_EQ(61.520000457763672, top);
+}
+
+TEST_F(FPDFTextEmbedderTest, ReadPurityRenderType3Font) {
+  ASSERT_TRUE(OpenDocument("bug_1591.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
+    ASSERT_TRUE(bitmap);
+  }
+
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
 }
 
 TEST_F(FPDFTextEmbedderTest, BigtableTextExtraction) {
