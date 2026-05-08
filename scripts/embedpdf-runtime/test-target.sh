@@ -101,9 +101,17 @@ run_gtest() {
   local xml="$RESULTS/$binary.xml"
   local log="$RESULTS/$binary.log"
   local cmd=("$OUT/$binary" "--gtest_output=xml:$xml")
+  local extra_gtest_args=()
 
   if [[ -n "$filter" ]]; then
     cmd+=("--gtest_filter=$filter")
+  fi
+
+  if [[ -n "${PDFIUM_GTEST_ARGS:-}" ]]; then
+    # Intentionally shell-split simple gtest flags such as "--write-pngs".
+    # Do not use this for arguments containing spaces.
+    extra_gtest_args=($PDFIUM_GTEST_ARGS)
+    cmd+=("${extra_gtest_args[@]}")
   fi
 
   echo "=== running $binary ==="
