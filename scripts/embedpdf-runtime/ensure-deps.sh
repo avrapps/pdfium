@@ -10,10 +10,10 @@ STAMP_DIR="$SOURCE_DIR/.embedpdf-runtime"
 STAMP_FILE="$STAMP_DIR/deps-sync.stamp"
 
 case "$SYNC_MODE" in
-  auto | always | never)
+  auto | always | never | skip)
     ;;
   *)
-    echo "PDF_RUNTIME_SYNC must be one of: auto, always, never" >&2
+    echo "PDF_RUNTIME_SYNC must be one of: auto, always, never, skip" >&2
     exit 1
     ;;
 esac
@@ -69,6 +69,14 @@ case "$SYNC_MODE" in
       echo "dependencies are missing or stale, but PDF_RUNTIME_SYNC=never" >&2
       exit 1
     fi
+    ;;
+  skip)
+    if ! required_paths_exist; then
+      echo "dependencies are missing, but PDF_RUNTIME_SYNC=skip" >&2
+      echo "run once with PDF_RUNTIME_SYNC=auto to fetch dependencies" >&2
+      exit 1
+    fi
+    echo "Dependency sync skipped"
     ;;
   auto)
     if needs_sync; then
