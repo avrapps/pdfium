@@ -14,11 +14,44 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  source-tests:
+    name: Source tests (Linux x64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Install Linux base deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang lld curl g++ pkg-config tar
+
+      - name: Run PDFium unit and embedder tests
+        shell: bash
+        run: scripts/embedpdf-runtime/test-target.sh linux-x64
+
+      - name: Upload PDFium test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pdfium-source-test-results-linux-x64
+          path: out/embedpdf-runtime-test-results/linux-x64/
+          if-no-files-found: ignore
+
   build:
     name: Build ${{ matrix.target }}
+    needs: source-tests
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -132,7 +165,9 @@ jobs:
     name: Publish release
     runs-on: ubuntu-24.04
     needs: build
-    if: inputs.release == true
+    if: github.event_name == 'workflow_dispatch' && inputs.release == true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:

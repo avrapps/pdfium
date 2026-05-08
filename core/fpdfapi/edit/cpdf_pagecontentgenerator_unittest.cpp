@@ -6,6 +6,7 @@
 
 #include <iterator>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "core/fpdfapi/font/cpdf_font.h"
@@ -49,6 +50,32 @@ class CPDFPageContentGeneratorTest : public TestWithPageModule {
                        fxcrt::ostringstream* buf,
                        CPDF_TextObject* pTextObj) {
     pGen->ProcessText(buf, pTextObj);
+  }
+
+  ByteString GetResourceNameBeforeOperator(const ByteString& stream,
+                                           const std::string& op) {
+    std::string text(stream.c_str(), stream.GetLength());
+    size_t op_pos = text.find(op);
+    EXPECT_NE(std::string::npos, op_pos);
+    if (op_pos == std::string::npos) {
+      return ByteString();
+    }
+
+    size_t slash_pos = text.rfind('/', op_pos);
+    EXPECT_NE(std::string::npos, slash_pos);
+    if (slash_pos == std::string::npos) {
+      return ByteString();
+    }
+
+    size_t name_start = slash_pos + 1;
+    size_t name_end = text.find(' ', name_start);
+    EXPECT_NE(std::string::npos, name_end);
+    EXPECT_LE(name_end, op_pos);
+    if (name_end == std::string::npos || name_end > op_pos) {
+      return ByteString();
+    }
+
+    return ByteString(text.substr(name_start, name_end - name_start).c_str());
   }
 };
 
@@ -286,42 +313,30 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessStandardText) {
   fxcrt::ostringstream buf;
   TestProcessText(&generator, &buf, pTextObj.get());
   ByteString text_string(buf);
-  auto first_resource_at = text_string.Find('/');
-  ASSERT_TRUE(first_resource_at.has_value());
-  first_resource_at = first_resource_at.value() + 1;
-  auto second_resource_at = text_string.ReverseFind('/');
-  ASSERT_TRUE(second_resource_at.has_value());
-  second_resource_at = second_resource_at.value() + 1;
-  ByteString first_string = text_string.First(first_resource_at.value());
-  ByteString mid_string = text_string.Substr(
-      first_resource_at.value(),
-      second_resource_at.value() - first_resource_at.value());
-  ByteString last_string =
-      text_string.Last(text_string.GetLength() - second_resource_at.value());
-  // q and Q must be outside the BT .. ET operations
-  const ByteString kCompareString1 =
+  ByteString gs_name = GetResourceNameBeforeOperator(text_string, " gs ");
+  ByteString font_name = GetResourceNameBeforeOperator(text_string, " 10 Tf ");
+
+  std::string expected =
       "q .5 .69999999 .34999999 rg 1 .89999998 0 RG /";
-  // Color RGB values used are integers divided by 255.
-  const ByteString kCompareString2 = " gs BT 1 0 0 1 100 100 Tm /";
-  const ByteString kCompareString3 =
-      " 10 Tf 0 Tr <48656C6C6F20576F726C64> Tj ET Q\n";
-  EXPECT_LT(kCompareString1.GetLength() + kCompareString2.GetLength() +
-                kCompareString3.GetLength(),
-            text_string.GetLength());
-  EXPECT_EQ(kCompareString1, first_string.First(kCompareString1.GetLength()));
-  EXPECT_EQ(kCompareString2, mid_string.Last(kCompareString2.GetLength()));
-  EXPECT_EQ(kCompareString3, last_string.Last(kCompareString3.GetLength()));
+  expected += gs_name.c_str();
+  expected +=
+      " gs 1 0 0 1 100 100 cm BT 1 0 0 1 0 0 Tm /";
+  expected += font_name.c_str();
+  expected += " 10 Tf 0 Tr <48656C6C6F20576F726C64> Tj ET Q\n";
+  EXPECT_EQ(ByteString(expected.c_str()), text_string);
+
+  std::string text_output(text_string.c_str(), text_string.GetLength());
+  EXPECT_LT(text_output.find("100 100 cm "), text_output.find("BT "));
+  EXPECT_EQ(std::string::npos,
+            text_output.find(" cm ", text_output.find("BT ")));
+
   RetainPtr<const CPDF_Dictionary> external_gs = TestGetResource(
-      &generator, "ExtGState",
-      mid_string.AsStringView().First(mid_string.GetLength() -
-                                      kCompareString2.GetLength()));
+      &generator, "ExtGState", gs_name.AsStringView());
   ASSERT_TRUE(external_gs);
   EXPECT_EQ(0.5f, external_gs->GetFloatFor("ca"));
   EXPECT_EQ(0.8f, external_gs->GetFloatFor("CA"));
-  RetainPtr<const CPDF_Dictionary> font_dict = TestGetResource(
-      &generator, "Font",
-      last_string.AsStringView().First(last_string.GetLength() -
-                                       kCompareString3.GetLength()));
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      TestGetResource(&generator, "Font", font_name.AsStringView());
   ASSERT_TRUE(font_dict);
   EXPECT_EQ("Font", font_dict->GetNameFor("Type"));
   EXPECT_EQ("Type1", font_dict->GetNameFor("Subtype"));
@@ -374,26 +389,16 @@ TEST_F(CPDFPageContentGeneratorTest, ProcessText) {
   }
 
   ByteString text_string(buf);
-  auto first_resource_at = text_string.Find('/');
-  ASSERT_TRUE(first_resource_at.has_value());
-  first_resource_at = first_resource_at.value() + 1;
-  ByteString first_string = text_string.First(first_resource_at.value());
-  ByteString last_string =
-      text_string.Last(text_string.GetLength() - first_resource_at.value());
-  // q and Q must be outside the BT .. ET operations
-  ByteString compare_string1 = "q 0 0 5 4 re W* n BT /";
-  ByteString compare_string2 =
-      " 15.5 Tf 4 Tr <4920616D20696E646972656374> Tj ET Q\n";
-  EXPECT_LT(compare_string1.GetLength() + compare_string2.GetLength(),
-            text_string.GetLength());
-  EXPECT_EQ(compare_string1, text_string.First(compare_string1.GetLength()));
-  EXPECT_EQ(compare_string2, text_string.Last(compare_string2.GetLength()));
-  RetainPtr<const CPDF_Dictionary> font_dict = TestGetResource(
-      &generator, "Font",
-      text_string.AsStringView().Substr(compare_string1.GetLength(),
-                                        text_string.GetLength() -
-                                            compare_string1.GetLength() -
-                                            compare_string2.GetLength()));
+  ByteString font_name =
+      GetResourceNameBeforeOperator(text_string, " 15.5 Tf ");
+
+  std::string expected = "q 0 0 5 4 re W* n BT 1 0 0 1 0 0 Tm /";
+  expected += font_name.c_str();
+  expected += " 15.5 Tf 4 Tr <4920616D20696E646972656374> Tj ET Q\n";
+  EXPECT_EQ(ByteString(expected.c_str()), text_string);
+
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      TestGetResource(&generator, "Font", font_name.AsStringView());
   ASSERT_TRUE(font_dict);
   EXPECT_TRUE(font_dict->GetObjNum());
   EXPECT_EQ("Font", font_dict->GetNameFor("Type"));

@@ -136,14 +136,16 @@ void RecordPageObjectResourceUsage(const CPDF_PageObject* page_object,
     seen_resources["ExtGState"].insert(name);
   }
   const CPDF_ColorState& cs = page_object->color_state();
-  if (!cs.GetFillColorSpaceResName().IsEmpty())
-    seen_resources["ColorSpace"].insert(cs.GetFillColorSpaceResName());
-  if (!cs.GetStrokeColorSpaceResName().IsEmpty())
-    seen_resources["ColorSpace"].insert(cs.GetStrokeColorSpaceResName());
-  if (!cs.GetFillPatternResName().IsEmpty())
-    seen_resources["Pattern"].insert(cs.GetFillPatternResName());
-  if (!cs.GetStrokePatternResName().IsEmpty())
-    seen_resources["Pattern"].insert(cs.GetStrokePatternResName());
+  if (cs.HasRef()) {
+    if (!cs.GetFillColorSpaceResName().IsEmpty())
+      seen_resources["ColorSpace"].insert(cs.GetFillColorSpaceResName());
+    if (!cs.GetStrokeColorSpaceResName().IsEmpty())
+      seen_resources["ColorSpace"].insert(cs.GetStrokeColorSpaceResName());
+    if (!cs.GetFillPatternResName().IsEmpty())
+      seen_resources["Pattern"].insert(cs.GetFillPatternResName());
+    if (!cs.GetStrokePatternResName().IsEmpty())
+      seen_resources["Pattern"].insert(cs.GetStrokePatternResName());
+  }
 }
 
 CPDF_PageObjectHolder::RemovedResourceMap RemoveUnusedResources(
@@ -1180,13 +1182,14 @@ ByteString CPDF_PageContentGenerator::GetOrCreateDefaultGraphics() const {
 void CPDF_PageContentGenerator::ProcessText(fxcrt::ostringstream* buf,
                                             CPDF_TextObject* pTextObj) {
   ProcessGraphics(buf, pTextObj);
-  *buf << "BT ";
 
   // Separate translation (cm) from pure text matrix (Tm)
   const CFX_Matrix& M = pTextObj->GetTextMatrix();
   if (M.e != 0 || M.f != 0) {
     WriteMatrix(*buf, CFX_Matrix(1, 0, 0, 1, M.e, M.f)) << " cm ";
   }
+
+  *buf << "BT ";
 
   CFX_Matrix TmNoTranslate(M.a, M.b, M.c, M.d, 0, 0);
   if (!TmNoTranslate.IsIdentity()) {
