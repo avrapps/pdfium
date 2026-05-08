@@ -2548,6 +2548,26 @@ TEST_F(FPDFAnnotEmbedderTest, GetFontSizeNegative) {
   }
 }
 
+TEST_F(FPDFAnnotEmbedderTest, DirectAnnotationObjectNumberStaysZeroAfterRender) {
+  ASSERT_TRUE(OpenDocument("freetext_annotation_without_da.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+  EXPECT_EQ(0u, EPDFAnnot_GetObjectNumber(annot.get()));
+  EXPECT_FALSE(EPDFPage_GetAnnotByObjectNumber(page.get(), 0));
+
+  ScopedFPDFBitmap bitmap = RenderLoadedPageWithFlags(page.get(), FPDF_ANNOT);
+  ASSERT_TRUE(bitmap);
+  EXPECT_EQ(0u, EPDFAnnot_GetObjectNumber(annot.get()));
+
+  ASSERT_TRUE(EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 10,
+                                 20, 30));
+  EXPECT_EQ(0u, EPDFAnnot_GetObjectNumber(annot.get()));
+}
+
 TEST_F(FPDFAnnotEmbedderTest, SetFontColor) {
   ASSERT_TRUE(OpenDocument("freetext_annotation_without_da.pdf"));
   ScopedPage page = LoadScopedPage(0);

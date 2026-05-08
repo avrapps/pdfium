@@ -125,25 +125,28 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
 
 CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
     : page_(pPage), document_(page_->GetDocument()) {
-  RetainPtr<CPDF_Array> pAnnots = page_->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> pAnnots = page_->GetAnnotsArray();
   if (!pAnnots) {
     return;
   }
 
   for (size_t i = 0; i < pAnnots->size(); ++i) {
-    RetainPtr<CPDF_Dictionary> dict =
-        ToDictionary(pAnnots->GetMutableDirectObjectAt(i));
-    if (!dict) {
+    RetainPtr<const CPDF_Dictionary> const_dict = pAnnots->GetDictAt(i);
+    if (!const_dict) {
       continue;
     }
     const ByteString subtype =
-        dict->GetByteStringFor(pdfium::annotation::kSubtype);
+        const_dict->GetByteStringFor(pdfium::annotation::kSubtype);
     if (subtype == "Popup") {
       // Skip creating Popup annotations in the PDF document since PDFium
       // provides its own Popup annotations.
       continue;
     }
-    pAnnots->ConvertToIndirectObjectAt(i, document_);
+    // CPDF_Annot still owns a mutable dictionary handle because explicit edit
+    // APIs mutate annotation dictionaries. Listing/rendering must not promote
+    // direct annotations to indirect objects.
+    RetainPtr<CPDF_Dictionary> dict =
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
     annot_list_.push_back(std::make_unique<CPDF_Annot>(dict, document_));
   }
 

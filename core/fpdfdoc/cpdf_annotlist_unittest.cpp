@@ -52,6 +52,13 @@ class CPDFAnnotListTest : public TestWithPageModule {
     annotation->SetNewFor<CPDF_String>(pdfium::annotation::kContents, contents);
   }
 
+  RetainPtr<CPDF_Dictionary> AddDirectAnnotation(const ByteString& subtype) {
+    RetainPtr<CPDF_Dictionary> annotation =
+        page_->GetOrCreateAnnotsArray()->AppendNew<CPDF_Dictionary>();
+    annotation->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, subtype);
+    return annotation;
+  }
+
   std::unique_ptr<CPDF_TestDocument> document_;
   RetainPtr<CPDF_Page> page_;
 };
@@ -123,4 +130,22 @@ TEST_F(CPDFAnnotListTest, CreatePopupAnnotFromEmptyUnicodedWithEscape) {
   CPDF_AnnotList list(page_);
 
   EXPECT_EQ(1u, list.Count());
+}
+
+TEST_F(CPDFAnnotListTest, ConstructionPreservesDirectAnnotations) {
+  RetainPtr<CPDF_Dictionary> annotation = AddDirectAnnotation("FreeText");
+  RetainPtr<const CPDF_Array> annots = page_->GetAnnotsArray();
+  ASSERT_TRUE(annots);
+  ASSERT_EQ(1u, annots->size());
+  ASSERT_EQ(annotation.Get(), annots->GetObjectAt(0).Get());
+  ASSERT_EQ(0u, annotation->GetObjNum());
+  const uint32_t last_obj_num = document_->GetLastObjNum();
+
+  CPDF_AnnotList list(page_);
+
+  ASSERT_EQ(1u, list.Count());
+  EXPECT_EQ(annotation.Get(), list.GetAt(0)->GetAnnotDict());
+  EXPECT_EQ(0u, annotation->GetObjNum());
+  EXPECT_EQ(annotation.Get(), annots->GetObjectAt(0).Get());
+  EXPECT_EQ(last_obj_num, document_->GetLastObjNum());
 }
