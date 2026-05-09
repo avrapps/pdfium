@@ -166,6 +166,7 @@ class CPDF_Array final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
       std::set<const CPDF_Object*>* pVisited) const override;
+  void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
 
   std::vector<RetainPtr<CPDF_Object>> objects_;
   WeakPtr<ByteStringPool> pool_;

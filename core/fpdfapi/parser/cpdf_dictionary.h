@@ -148,6 +148,7 @@ class CPDF_Dictionary final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
       std::set<const CPDF_Object*>* visited) const override;
+  void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
 
   mutable uint32_t lock_count_ = 0;
   WeakPtr<ByteStringPool> pool_;

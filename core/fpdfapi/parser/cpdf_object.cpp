@@ -7,6 +7,7 @@
 #include "core/fpdfapi/parser/cpdf_object.h"
 
 #include <algorithm>
+#include <set>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -33,6 +34,22 @@ uint64_t CPDF_Object::KeyForCache() const {
   return (static_cast<uint64_t>(obj_num_) << 32) |
          static_cast<uint64_t>(gen_num_);
 }
+
+void CPDF_Object::Freeze() {
+  std::set<const CPDF_Object*> visited;
+  FreezeForHolder(&visited);
+}
+
+void CPDF_Object::FreezeForHolder(std::set<const CPDF_Object*>* visited) {
+  if (!visited->insert(this).second) {
+    return;
+  }
+
+  frozen_ = true;
+  FreezeChildren(visited);
+}
+
+void CPDF_Object::FreezeChildren(std::set<const CPDF_Object*>*) {}
 
 RetainPtr<CPDF_Object> CPDF_Object::GetMutableDirect() {
   return pdfium::WrapRetain(const_cast<CPDF_Object*>(GetDirectInternal()));

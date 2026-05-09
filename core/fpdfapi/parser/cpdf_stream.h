@@ -90,6 +90,7 @@ class CPDF_Stream final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
       std::set<const CPDF_Object*>* pVisited) const override;
+  void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
 
   void SetLengthInDict(int length);
 

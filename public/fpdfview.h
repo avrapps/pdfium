@@ -67,6 +67,7 @@ typedef struct fpdf_bitmap_t__* FPDF_BITMAP;
 typedef struct fpdf_bookmark_t__* FPDF_BOOKMARK;
 typedef struct fpdf_clippath_t__* FPDF_CLIPPATH;
 typedef struct fpdf_dest_t__* FPDF_DEST;
+typedef struct fpdf_base_document_t__* EPDF_BASE_DOCUMENT;
 typedef struct fpdf_document_t__* FPDF_DOCUMENT;
 typedef struct fpdf_font_t__* FPDF_FONT;
 typedef struct fpdf_form_handle_t__* FPDF_FORMHANDLE;
@@ -561,6 +562,23 @@ typedef struct FPDF_FILEHANDLER_ {
 //          fields defined in the fpdfformfill.h file.
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 FPDF_LoadCustomDocument(FPDF_FILEACCESS* pFileAccess, FPDF_BYTESTRING password);
+
+// Function: EPDF_LoadBaseDocument
+//          Load and freeze a shareable base PDF document from a custom access
+//          descriptor. The returned handle is distinct from FPDF_DOCUMENT and
+//          cannot be used with ordinary document APIs such as FPDF_LoadPage().
+// Parameters:
+//          pFileAccess -   A structure for accessing the file.
+//          password    -   Optional password for decrypting the PDF file.
+// Return value:
+//          A handle to the loaded base document, or NULL on failure.
+FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
+EPDF_LoadBaseDocument(FPDF_FILEACCESS* pFileAccess, FPDF_BYTESTRING password);
+
+// Function: EPDF_ReleaseBaseDocument
+//          Release a base document returned by EPDF_LoadBaseDocument().
+FPDF_EXPORT void FPDF_CALLCONV
+EPDF_ReleaseBaseDocument(EPDF_BASE_DOCUMENT base);
 
 // Function: FPDF_GetFileVersion
 //          Get the file version of the given PDF document.

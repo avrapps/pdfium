@@ -6,6 +6,7 @@
 
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 
+#include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 
 CPDF_Boolean::CPDF_Boolean() = default;
@@ -31,6 +32,7 @@ int CPDF_Boolean::GetInteger() const {
 }
 
 void CPDF_Boolean::SetString(const ByteString& str) {
+  DCHECK(!IsFrozen());
   value_ = (str == "true");
 }
 

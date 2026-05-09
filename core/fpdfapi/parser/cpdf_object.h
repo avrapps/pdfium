@@ -74,6 +74,10 @@ class CPDF_Object : public Retainable {
   // Create a deep copy of the object.
   virtual RetainPtr<CPDF_Object> Clone() const = 0;
 
+  void Freeze();
+  void FreezeForHolder(std::set<const CPDF_Object*>* visited);
+  bool IsFrozen() const { return frozen_; }
+
   // Create a deep copy of the object except any reference object be
   // copied to the object it points to directly.
   RetainPtr<CPDF_Object> CloneDirectObject() const;
@@ -114,6 +118,8 @@ class CPDF_Object : public Retainable {
   // The object must be direct (!IsInlined).
   virtual RetainPtr<CPDF_Reference> MakeReference(
       CPDF_IndirectObjectHolder* holder) const;
+
+  virtual void FreezeChildren(std::set<const CPDF_Object*>* visited);
 
   RetainPtr<const CPDF_Object> GetDirect() const;    // Wraps virtual method.
   RetainPtr<CPDF_Object> GetMutableDirect();         // Wraps virtual method.
@@ -156,6 +162,7 @@ class CPDF_Object : public Retainable {
 
   uint32_t obj_num_ = 0;
   uint32_t gen_num_ = 0;
+  bool frozen_ = false;
 };
 
 template <typename T>

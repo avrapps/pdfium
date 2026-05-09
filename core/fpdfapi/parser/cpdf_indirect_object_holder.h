@@ -64,6 +64,8 @@ class CPDF_IndirectObjectHolder {
 
   uint32_t GetLastObjNum() const { return last_obj_num_; }
   void SetLastObjNum(uint32_t objnum) { last_obj_num_ = objnum; }
+  void Freeze();
+  bool IsHolderFrozen() const { return frozen_; }
 
   WeakPtr<ByteStringPool> GetByteStringPool() const {
     return byte_string_pool_;
@@ -83,6 +85,7 @@ class CPDF_IndirectObjectHolder {
   friend class CPDF_Reference;
 
   uint32_t last_obj_num_ = 0;
+  bool frozen_ = false;
   std::map<uint32_t, RetainPtr<CPDF_Object>> indirect_objs_;
   WeakPtr<ByteStringPool> byte_string_pool_;
 };

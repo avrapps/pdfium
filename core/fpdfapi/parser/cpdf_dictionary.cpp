@@ -70,6 +70,13 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::CloneNonCyclic(
   return pCopy;
 }
 
+void CPDF_Dictionary::FreezeChildren(std::set<const CPDF_Object*>* visited) {
+  CPDF_DictionaryLocker locker(this);
+  for (const auto& item : locker) {
+    item.second->FreezeForHolder(visited);
+  }
+}
+
 const CPDF_Object* CPDF_Dictionary::GetObjectForInternal(
     ByteStringView key) const {
   auto it = map_.find(key);
@@ -278,6 +285,7 @@ void CPDF_Dictionary::SetFor(const ByteString& key,
 CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
                                              RetainPtr<CPDF_Object> pObj) {
   CHECK(!IsLocked());
+  DCHECK(!IsFrozen());
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   if (!pObj) {
     map_.erase(key);
@@ -300,6 +308,7 @@ void CPDF_Dictionary::ConvertToIndirectObjectFor(
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   pHolder->AddIndirectObject(it->second);
   it->second = it->second->MakeReference(pHolder);
 }
@@ -310,6 +319,7 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::RemoveFor(ByteStringView key) {
   if (it == map_.end()) {
     return RetainPtr<CPDF_Object>();
   }
+  DCHECK(!IsFrozen());
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   auto node = map_.extract(it);
   return std::move(node.mapped());
@@ -329,6 +339,7 @@ void CPDF_Dictionary::ReplaceKey(const ByteString& oldkey,
   }
 
   DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   map_[MaybeIntern(newkey)] = std::move(old_it->second);
   map_.erase(old_it);
 }
