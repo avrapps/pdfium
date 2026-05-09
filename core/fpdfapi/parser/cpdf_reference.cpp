@@ -49,6 +49,11 @@ RetainPtr<CPDF_Object> CPDF_Reference::Clone() const {
   return CloneObjectNonCyclic(false);
 }
 
+RetainPtr<CPDF_Object> CPDF_Reference::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  return pdfium::MakeRetain<CPDF_Reference>(holder, ref_obj_num_);
+}
+
 RetainPtr<CPDF_Object> CPDF_Reference::GetMutableDirect() {
   return obj_list_ ? obj_list_->GetMutableIndirectObject(ref_obj_num_)
                    : nullptr;
@@ -65,6 +70,13 @@ RetainPtr<CPDF_Object> CPDF_Reference::CloneNonCyclic(
   return pDirect && !pdfium::Contains(*pVisited, pDirect.Get())
              ? pDirect->CloneNonCyclic(true, pVisited)
              : nullptr;
+}
+
+RetainPtr<CPDF_Object> CPDF_Reference::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  pVisited->insert(this);
+  return pdfium::MakeRetain<CPDF_Reference>(holder, ref_obj_num_);
 }
 
 const CPDF_Object* CPDF_Reference::FastGetDirect() const {

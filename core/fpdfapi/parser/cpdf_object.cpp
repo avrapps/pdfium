@@ -72,10 +72,22 @@ RetainPtr<CPDF_Object> CPDF_Object::CloneDirectObject() const {
   return CloneObjectNonCyclic(true);
 }
 
+RetainPtr<CPDF_Object> CPDF_Object::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited_objs;
+  return CloneForHolderNonCyclic(holder, &visited_objs);
+}
+
 RetainPtr<CPDF_Object> CPDF_Object::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {
   return Clone();
+}
+
+RetainPtr<CPDF_Object> CPDF_Object::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  return CloneNonCyclic(/*bDirect=*/false, pVisited);
 }
 
 ByteString CPDF_Object::GetString() const {

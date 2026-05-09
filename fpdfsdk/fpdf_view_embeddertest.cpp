@@ -716,6 +716,34 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerAnnotHandleDoesNotPromote) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  {
+    FileAccessForTesting layer_access("rectangles.pdf");
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+    EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+    EXPECT_EQ(2u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+  }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, Page) {
   ASSERT_TRUE(OpenDocument("about_blank.pdf"));
   ScopedPage page = LoadScopedPage(0);

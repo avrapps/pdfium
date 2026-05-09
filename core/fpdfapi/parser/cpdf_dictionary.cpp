@@ -52,6 +52,12 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::Clone() const {
   return CloneObjectNonCyclic(false);
 }
 
+RetainPtr<CPDF_Object> CPDF_Dictionary::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited;
+  return CloneForHolderNonCyclic(holder, &visited);
+}
+
 RetainPtr<CPDF_Object> CPDF_Dictionary::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {
@@ -62,6 +68,24 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::CloneNonCyclic(
     if (!pdfium::Contains(*pVisited, it.second.Get())) {
       std::set<const CPDF_Object*> visited(*pVisited);
       auto obj = it.second->CloneNonCyclic(bDirect, &visited);
+      if (obj) {
+        pCopy->map_.insert(std::make_pair(it.first, std::move(obj)));
+      }
+    }
+  }
+  return pCopy;
+}
+
+RetainPtr<CPDF_Object> CPDF_Dictionary::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  pVisited->insert(this);
+  auto pCopy = pdfium::MakeRetain<CPDF_Dictionary>(pool_);
+  CPDF_DictionaryLocker locker(this);
+  for (const auto& it : locker) {
+    if (!pdfium::Contains(*pVisited, it.second.Get())) {
+      std::set<const CPDF_Object*> visited(*pVisited);
+      auto obj = it.second->CloneForHolderNonCyclic(holder, &visited);
       if (obj) {
         pCopy->map_.insert(std::make_pair(it.first, std::move(obj)));
       }

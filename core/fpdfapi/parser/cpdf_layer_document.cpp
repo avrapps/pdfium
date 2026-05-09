@@ -101,8 +101,10 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::ParseIndirectObject(
 
 RetainPtr<CPDF_Object> CPDF_LayerDocument::GetMutableIndirectObject(
     uint32_t objnum) {
-  NOTREACHED();
-  return nullptr;
+  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(objnum)) {
+    return local;
+  }
+  return PromoteFromBase(objnum);
 }
 
 void CPDF_LayerDocument::DeleteIndirectObject(uint32_t objnum) {
@@ -192,4 +194,38 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
     // closed instead of silently ignoring a caller-provided delta.
     ingest_status_ = OpenStatus::kMalformedDelta;
   }
+}
+
+RetainPtr<CPDF_Object> CPDF_LayerDocument::PromoteFromBase(uint32_t objnum) {
+  if (!objnum || objnum == CPDF_Object::kInvalidObjNum) {
+    return nullptr;
+  }
+  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(objnum)) {
+    return local;
+  }
+
+  RetainPtr<const CPDF_Object> base_object =
+      base_->GetFrozenObjectForLayer(objnum);
+  if (!base_object) {
+    return nullptr;
+  }
+
+  RetainPtr<CPDF_Object> clone = base_object->CloneForHolder(this);
+  if (!clone) {
+    return nullptr;
+  }
+  clone->SetGenNum(base_object->GetGenNum());
+  AddPromotedObject(objnum, clone);
+
+  CPDF_Parser* parser = base_->GetParser();
+  if (parser) {
+    if (parser->GetRootObjNum() == objnum) {
+      InvalidateCachedRootDict();
+    }
+    if (parser->GetInfoObjNum() == objnum) {
+      InvalidateCachedInfoDict();
+    }
+  }
+
+  return clone;
 }

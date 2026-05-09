@@ -80,6 +80,7 @@ class CPDF_IndirectObjectHolder {
   virtual CPDF_Object* GetOrParseIndirectObjectInternal(uint32_t objnum);
 
   RetainPtr<CPDF_Object> FindLocalIndirectObject(uint32_t objnum) const;
+  void AddPromotedObject(uint32_t objnum, RetainPtr<CPDF_Object> object);
 
  private:
   friend class CPDF_Reference;

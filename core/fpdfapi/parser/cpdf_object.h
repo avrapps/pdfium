@@ -74,6 +74,12 @@ class CPDF_Object : public Retainable {
   // Create a deep copy of the object.
   virtual RetainPtr<CPDF_Object> Clone() const = 0;
 
+  // Create a deep copy of the object for `holder`. References in the clone are
+  // retargeted to `holder`, so promoted layer objects resolve through the
+  // layer overlay rather than the frozen base.
+  virtual RetainPtr<CPDF_Object> CloneForHolder(
+      CPDF_IndirectObjectHolder* holder) const;
+
   void Freeze();
   void FreezeForHolder(std::set<const CPDF_Object*>* visited);
   bool IsFrozen() const { return frozen_; }
@@ -112,6 +118,10 @@ class CPDF_Object : public Retainable {
   // function to properly check for possible loop.
   virtual RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
+      std::set<const CPDF_Object*>* pVisited) const;
+
+  virtual RetainPtr<CPDF_Object> CloneForHolderNonCyclic(
+      CPDF_IndirectObjectHolder* holder,
       std::set<const CPDF_Object*>* pVisited) const;
 
   // Return a reference to itself.

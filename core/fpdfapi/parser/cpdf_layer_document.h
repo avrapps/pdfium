@@ -65,6 +65,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
  private:
   void InitializeFromBase();
   void IngestCurrentDelta();
+  RetainPtr<CPDF_Object> PromoteFromBase(uint32_t objnum);
 
   RetainPtr<CPDF_BaseDocument> const base_;
   RetainPtr<IFX_SeekableReadStream> const file_access_;

@@ -100,6 +100,12 @@ RetainPtr<CPDF_Object> CPDF_Stream::Clone() const {
   return CloneObjectNonCyclic(false);
 }
 
+RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited;
+  return CloneForHolderNonCyclic(holder, &visited);
+}
+
 RetainPtr<CPDF_Object> CPDF_Stream::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {
@@ -112,6 +118,23 @@ RetainPtr<CPDF_Object> CPDF_Stream::CloneNonCyclic(
   if (!pdfium::Contains(*pVisited, dict.Get())) {
     pNewDict = ToDictionary(static_cast<const CPDF_Object*>(dict.Get())
                                 ->CloneNonCyclic(bDirect, pVisited));
+  }
+  return pdfium::MakeRetain<CPDF_Stream>(pAcc->DetachData(),
+                                         std::move(pNewDict));
+}
+
+RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  pVisited->insert(this);
+  auto pAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(this));
+  pAcc->LoadAllDataRaw();
+
+  RetainPtr<const CPDF_Dictionary> dict = GetDict();
+  RetainPtr<CPDF_Dictionary> pNewDict;
+  if (!pdfium::Contains(*pVisited, dict.Get())) {
+    pNewDict = ToDictionary(static_cast<const CPDF_Object*>(dict.Get())
+                                ->CloneForHolderNonCyclic(holder, pVisited));
   }
   return pdfium::MakeRetain<CPDF_Stream>(pAcc->DetachData(),
                                          std::move(pNewDict));
