@@ -4,6 +4,37 @@
 
 import("../../pdfium.gni")
 
+source_set("epdf_layer_tool_support") {
+  testonly = true
+  sources = [ "epdf_layer_tool_common.h" ]
+  deps = [ "../../:pdfium_public_headers" ]
+  configs += [ "../../:pdfium_common_config" ]
+}
+
+executable("epdf_layer_memory_benchmark") {
+  testonly = true
+  sources = [ "epdf_layer_memory_benchmark.cpp" ]
+  deps = [
+    ":epdf_layer_tool_support",
+    "../../:pdfium_public_headers",
+    "../../fpdfsdk",
+    "//build/win:default_exe_manifest",
+  ]
+  configs += [ "../../:pdfium_common_config" ]
+}
+
+executable("epdf_layer_replay_soak") {
+  testonly = true
+  sources = [ "epdf_layer_replay_soak.cpp" ]
+  deps = [
+    ":epdf_layer_tool_support",
+    "../../:pdfium_public_headers",
+    "../../fpdfsdk",
+    "//build/win:default_exe_manifest",
+  ]
+  configs += [ "../../:pdfium_common_config" ]
+}
+
 if (pdf_is_standalone) {
   # Generates the list of inputs required by `test_runner.py` tests.
   action("test_runner_py") {

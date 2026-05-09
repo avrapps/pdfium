@@ -794,6 +794,67 @@ TEST_F(FPDFViewEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, LayerDiagnosticsRejectPlainDocuments) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  EXPECT_FALSE(EPDFLayer_GetBaseDocument(document()));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(document(), 1));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(document()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSuccess;
+  EXPECT_FALSE(EPDFLayer_SaveDeltaToBuffer(document(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSaveFailed, save_status);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  ASSERT_FALSE(pdf_path.empty());
+  std::vector<uint8_t> base_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(base_bytes.empty());
+
+  for (int expected_annots = 1; expected_annots <= 3; ++expected_annots) {
+    std::string materialized;
+    {
+      FileAccessForTesting layer_access("rectangles.pdf");
+      EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+      ScopedFPDFDocument layer(
+          EPDFLayer_OpenLayer(base, &layer_access, nullptr, &open_status));
+      ASSERT_TRUE(layer);
+      EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+      ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+      ASSERT_TRUE(page);
+      for (int i = 0; i < expected_annots; ++i) {
+        ScopedFPDFAnnotation annot(
+            EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+        ASSERT_TRUE(annot);
+      }
+      EXPECT_EQ(expected_annots, FPDFPage_GetAnnotCount(page.get()));
+
+      ClearString();
+      EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+      ASSERT_TRUE(EPDFLayer_SaveDeltaToBuffer(layer.get(), this, &save_status));
+      EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+      materialized.assign(reinterpret_cast<const char*>(base_bytes.data()),
+                          base_bytes.size());
+      materialized += GetString();
+    }
+
+    ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
+        materialized.data(), materialized.size(), nullptr));
+    ASSERT_TRUE(reopened);
+    ScopedFPDFPage reopened_page(FPDF_LoadPage(reopened.get(), 0));
+    ASSERT_TRUE(reopened_page);
+    EXPECT_EQ(expected_annots, FPDFPage_GetAnnotCount(reopened_page.get()));
+  }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, Page) {
   ASSERT_TRUE(OpenDocument("about_blank.pdf"));
   ScopedPage page = LoadScopedPage(0);
