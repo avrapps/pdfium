@@ -277,7 +277,10 @@ CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
   }
 
   auto pNewForm = std::make_unique<CPDF_Form>(
-      document_, pPage->GetMutableResources(), pStream);
+      document_,
+      pdfium::WrapRetain(
+          const_cast<CPDF_Dictionary*>(pPage->GetResources().Get())),
+      pStream);
   pNewForm->ParseContent();
 
   CPDF_Form* pResult = pNewForm.get();
@@ -955,7 +958,8 @@ bool CPDF_Annot::DrawAppearance(CPDF_Page* pPage,
   }
 
   CPDF_RenderContext context(pPage->GetDocument(),
-                             pPage->GetMutablePageResources(),
+                             pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+                                 pPage->GetPageResources().Get())),
                              pPage->GetPageImageCache());
   context.AppendLayer(pForm, matrix);
   context.Render(pDevice, nullptr, nullptr, nullptr);

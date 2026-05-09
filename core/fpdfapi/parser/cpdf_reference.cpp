@@ -49,6 +49,11 @@ RetainPtr<CPDF_Object> CPDF_Reference::Clone() const {
   return CloneObjectNonCyclic(false);
 }
 
+RetainPtr<CPDF_Object> CPDF_Reference::GetMutableDirect() {
+  return obj_list_ ? obj_list_->GetMutableIndirectObject(ref_obj_num_)
+                   : nullptr;
+}
+
 RetainPtr<CPDF_Object> CPDF_Reference::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {

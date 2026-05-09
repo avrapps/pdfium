@@ -32,9 +32,10 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   };
 
   // Helper method to choose the first non-null resources dictionary.
-  static CPDF_Dictionary* ChooseResourcesDict(CPDF_Dictionary* pResources,
-                                              CPDF_Dictionary* pParentResources,
-                                              CPDF_Dictionary* pPageResources);
+  static const CPDF_Dictionary* ChooseResourcesDict(
+      const CPDF_Dictionary* pResources,
+      const CPDF_Dictionary* pParentResources,
+      const CPDF_Dictionary* pPageResources);
 
   CPDF_Form(CPDF_Document* document,
             RetainPtr<CPDF_Dictionary> pPageResources,
@@ -64,13 +65,16 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   RetainPtr<const CPDF_Stream> GetStream() const;
 
  private:
+  // CPDF_PageObjectHolder:
+  void EnsureMutableBackingObjectForDict() override;
+
   void ParseContentInternal(const CPDF_AllStates* pGraphicStates,
                             const CFX_Matrix* pParentMatrix,
                             CPDF_Type3Char* pType3Char,
                             RecursionState* recursion_state);
 
   RecursionState recursion_state_;
-  RetainPtr<CPDF_Stream> const form_stream_;
+  RetainPtr<CPDF_Stream> form_stream_;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_FORM_H_

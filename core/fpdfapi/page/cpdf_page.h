@@ -106,6 +106,10 @@ class CPDF_Page final : public IPDF_Page, public CPDF_PageObjectHolder {
   CPDF_Page(CPDF_Document* document, RetainPtr<CPDF_Dictionary> pPageDict);
   ~CPDF_Page() override;
 
+  // CPDF_PageObjectHolder:
+  void EnsureMutableBackingObjectForResources() override;
+  void EnsureMutableBackingObjectForPageResources() override;
+
   RetainPtr<CPDF_Object> GetMutablePageAttr(ByteStringView name);
   RetainPtr<const CPDF_Object> GetPageAttr(ByteStringView name) const;
   CFX_FloatRect GetBox(ByteStringView name) const;

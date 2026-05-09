@@ -97,9 +97,11 @@ CPDF_ContentParser::CPDF_ContentParser(
       page_object_holder_->GetDict()->GetDictFor("Resources");
   parser_ = std::make_unique<CPDF_StreamContentParser>(
       page_object_holder_->GetDocument(),
-      page_object_holder_->GetMutablePageResources(),
-      page_object_holder_->GetMutableResources(), pParentMatrix,
-      page_object_holder_,
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          page_object_holder_->GetPageResources().Get())),
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          page_object_holder_->GetResources().Get())),
+      pParentMatrix, page_object_holder_,
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pResources.Get())),
       form_bbox, pGraphicStates, recursion_state);
   parser_->GetCurStates()->set_current_transformation_matrix(form_matrix);

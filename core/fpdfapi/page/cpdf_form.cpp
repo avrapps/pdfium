@@ -14,6 +14,8 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
@@ -23,10 +25,10 @@ CPDF_Form::RecursionState::RecursionState() = default;
 CPDF_Form::RecursionState::~RecursionState() = default;
 
 // static
-CPDF_Dictionary* CPDF_Form::ChooseResourcesDict(
-    CPDF_Dictionary* pResources,
-    CPDF_Dictionary* pParentResources,
-    CPDF_Dictionary* pPageResources) {
+const CPDF_Dictionary* CPDF_Form::ChooseResourcesDict(
+    const CPDF_Dictionary* pResources,
+    const CPDF_Dictionary* pParentResources,
+    const CPDF_Dictionary* pPageResources) {
   if (pResources) {
     return pResources;
   }
@@ -47,13 +49,13 @@ CPDF_Form::CPDF_Form(CPDF_Document* doc,
                      CPDF_Dictionary* pParentResources)
     : CPDF_PageObjectHolder(
           doc,
-          pFormStream->GetMutableDict(),
+          pdfium::WrapRetain(
+              const_cast<CPDF_Dictionary*>(pFormStream->GetDict().Get())),
           pPageResources,
-          pdfium::WrapRetain(ChooseResourcesDict(
-              const_cast<CPDF_Dictionary*>(
-                  pFormStream->GetDict()->GetDictFor("Resources").Get()),
+          pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(ChooseResourcesDict(
+              pFormStream->GetDict()->GetDictFor("Resources").Get(),
               pParentResources,
-              pPageResources.Get()))),
+              pPageResources.Get())))),
       form_stream_(std::move(pFormStream)) {
   LoadTransparencyInfo();
 }
@@ -118,7 +120,25 @@ CFX_FloatRect CPDF_Form::CalcBoundingBox() const {
 }
 
 RetainPtr<CPDF_Stream> CPDF_Form::GetMutableFormStream() {
+  CPDF_Document* doc = GetDocument();
+  if (!doc || !form_stream_) {
+    return form_stream_;
+  }
+
+  const uint32_t objnum = form_stream_->GetObjNum();
+  DCHECK(objnum);
+  RetainPtr<CPDF_Object> live = doc->GetMutableIndirectObject(objnum);
+  if (live && live.Get() != form_stream_.Get()) {
+    form_stream_ = pdfium::WrapRetain(live->AsMutableStream());
+  }
   return form_stream_;
+}
+
+void CPDF_Form::EnsureMutableBackingObjectForDict() {
+  RetainPtr<CPDF_Stream> live_stream = GetMutableFormStream();
+  if (live_stream) {
+    dict_ = live_stream->GetMutableDict();
+  }
 }
 
 RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {

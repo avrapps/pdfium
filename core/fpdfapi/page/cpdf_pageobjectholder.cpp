@@ -15,11 +15,13 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
 #include "core/fxcrt/fx_extension.h"
+#include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
 
 bool GraphicsData::operator<(const GraphicsData& other) const {
@@ -59,6 +61,136 @@ bool CPDF_PageObjectHolder::IsPage() const {
 
 RetainPtr<CPDF_Stream> CPDF_PageObjectHolder::GetMutableFormStream() {
   return nullptr;
+}
+
+RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetDict() const {
+  if (!document_) {
+    return dict_;
+  }
+
+  const uint32_t objnum = dict_->GetObjNum();
+  if (objnum == 0) {
+    return dict_;
+  }
+
+  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  if (live && live.Get() != dict_.Get()) {
+    const_cast<CPDF_PageObjectHolder*>(this)->dict_ =
+        pdfium::WrapRetain(live->AsMutableDictionary());
+  }
+  return dict_;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableDict() {
+  if (!document_) {
+    return dict_;
+  }
+
+  const uint32_t objnum = dict_->GetObjNum();
+  if (objnum != 0) {
+    RetainPtr<CPDF_Object> live = document_->GetMutableIndirectObject(objnum);
+    if (live && live.Get() != dict_.Get()) {
+      dict_ = pdfium::WrapRetain(live->AsMutableDictionary());
+    }
+    return dict_;
+  }
+
+  if (dict_->IsFrozen()) {
+    EnsureMutableBackingObjectForDict();
+  }
+  return dict_;
+}
+
+RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetResources() const {
+  if (!document_ || !resources_) {
+    return resources_;
+  }
+
+  const uint32_t objnum = resources_->GetObjNum();
+  if (objnum == 0) {
+    return resources_;
+  }
+
+  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  if (live && live.Get() != resources_.Get()) {
+    const_cast<CPDF_PageObjectHolder*>(this)->resources_ =
+        pdfium::WrapRetain(live->AsMutableDictionary());
+  }
+  return resources_;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableResources() {
+  if (!document_ || !resources_) {
+    return resources_;
+  }
+
+  const uint32_t objnum = resources_->GetObjNum();
+  if (objnum != 0) {
+    RetainPtr<CPDF_Object> live = document_->GetMutableIndirectObject(objnum);
+    if (live && live.Get() != resources_.Get()) {
+      resources_ = pdfium::WrapRetain(live->AsMutableDictionary());
+    }
+    return resources_;
+  }
+
+  if (resources_->IsFrozen()) {
+    EnsureMutableBackingObjectForResources();
+  }
+  return resources_;
+}
+
+RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetPageResources()
+    const {
+  if (!document_ || !page_resources_) {
+    return page_resources_;
+  }
+
+  const uint32_t objnum = page_resources_->GetObjNum();
+  if (objnum == 0) {
+    return page_resources_;
+  }
+
+  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  if (live && live.Get() != page_resources_.Get()) {
+    const_cast<CPDF_PageObjectHolder*>(this)->page_resources_ =
+        pdfium::WrapRetain(live->AsMutableDictionary());
+  }
+  return page_resources_;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutablePageResources() {
+  if (!document_ || !page_resources_) {
+    return page_resources_;
+  }
+
+  const uint32_t objnum = page_resources_->GetObjNum();
+  if (objnum != 0) {
+    RetainPtr<CPDF_Object> live = document_->GetMutableIndirectObject(objnum);
+    if (live && live.Get() != page_resources_.Get()) {
+      page_resources_ = pdfium::WrapRetain(live->AsMutableDictionary());
+    }
+    return page_resources_;
+  }
+
+  if (page_resources_->IsFrozen()) {
+    EnsureMutableBackingObjectForPageResources();
+  }
+  return page_resources_;
+}
+
+void CPDF_PageObjectHolder::EnsureMutableBackingObjectForDict() {
+  NOTREACHED();
+  CHECK(false);
+}
+
+void CPDF_PageObjectHolder::EnsureMutableBackingObjectForResources() {
+  RetainPtr<CPDF_Dictionary> dict = GetMutableDict();
+  resources_ = dict ? dict->GetMutableDictFor("Resources") : nullptr;
+}
+
+void CPDF_PageObjectHolder::EnsureMutableBackingObjectForPageResources() {
+  RetainPtr<CPDF_Dictionary> dict = GetMutableDict();
+  page_resources_ = dict ? dict->GetMutableDictFor("Resources") : nullptr;
 }
 
 void CPDF_PageObjectHolder::StartParse(

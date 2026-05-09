@@ -401,9 +401,10 @@ CPDF_StreamContentParser::CPDF_StreamContentParser(
     : document_(document),
       page_resources_(pPageResources),
       parent_resources_(pParentResources),
-      resources_(CPDF_Form::ChooseResourcesDict(pResources.Get(),
-                                                pParentResources.Get(),
-                                                pPageResources.Get())),
+      resources_(pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          CPDF_Form::ChooseResourcesDict(pResources.Get(),
+                                         pParentResources.Get(),
+                                         pPageResources.Get())))),
       object_holder_(pObjHolder),
       recursion_state_(recursion_state),
       bbox_(rcBBox),

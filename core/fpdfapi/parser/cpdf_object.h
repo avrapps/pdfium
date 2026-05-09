@@ -121,8 +121,9 @@ class CPDF_Object : public Retainable {
 
   virtual void FreezeChildren(std::set<const CPDF_Object*>* visited);
 
-  RetainPtr<const CPDF_Object> GetDirect() const;    // Wraps virtual method.
-  RetainPtr<CPDF_Object> GetMutableDirect();         // Wraps virtual method.
+  RetainPtr<const CPDF_Object> GetDirect() const;  // Wraps virtual method.
+  virtual RetainPtr<CPDF_Object> GetMutableDirect();
+  // Wraps virtual method.
   RetainPtr<const CPDF_Dictionary> GetDict() const;  // Wraps virtual method.
   RetainPtr<CPDF_Dictionary> GetMutableDict();       // Wraps virtual method.
 

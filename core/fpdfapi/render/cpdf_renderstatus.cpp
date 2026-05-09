@@ -1438,7 +1438,9 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderStatus::LoadSMask(
   CFX_Matrix matrix = smask_matrix;
   matrix.Translate(-clip_rect.left, -clip_rect.top);
 
-  CPDF_Form form(context_->GetDocument(), context_->GetMutablePageResources(),
+  CPDF_Form form(context_->GetDocument(),
+                 pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+                     context_->GetPageResources())),
                  pGroup);
   form.ParseContent();
 

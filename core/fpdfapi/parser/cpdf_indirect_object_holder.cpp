@@ -38,7 +38,7 @@ RetainPtr<const CPDF_Object> CPDF_IndirectObjectHolder::GetIndirectObject(
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::GetMutableIndirectObject(
     uint32_t objnum) {
   return pdfium::WrapRetain(
-      const_cast<CPDF_Object*>(GetIndirectObjectInternal(objnum)));
+      const_cast<CPDF_Object*>(GetOrParseIndirectObjectInternal(objnum)));
 }
 
 const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(

@@ -79,8 +79,9 @@ class CPDF_PageObjectHolder {
 
   virtual bool IsPage() const;
 
-  // Returns the mutable Form XObject stream for CPDF_Form, or nullptr for Pages.
-  // Used by CPDF_PageContentManager to update Form XObject content directly.
+  // Returns the mutable Form XObject stream for CPDF_Form, or nullptr for
+  // Pages. Used by CPDF_PageContentManager to update Form XObject content
+  // directly.
   virtual RetainPtr<CPDF_Stream> GetMutableFormStream();
 
   void StartParse(std::unique_ptr<CPDF_ContentParser> pParser);
@@ -88,19 +89,15 @@ class CPDF_PageObjectHolder {
   ParseState GetParseState() const { return parse_state_; }
 
   CPDF_Document* GetDocument() const { return document_; }
-  RetainPtr<const CPDF_Dictionary> GetDict() const { return dict_; }
-  RetainPtr<CPDF_Dictionary> GetMutableDict() { return dict_; }
-  RetainPtr<const CPDF_Dictionary> GetResources() const { return resources_; }
-  RetainPtr<CPDF_Dictionary> GetMutableResources() { return resources_; }
+  RetainPtr<const CPDF_Dictionary> GetDict() const;
+  RetainPtr<CPDF_Dictionary> GetMutableDict();
+  RetainPtr<const CPDF_Dictionary> GetResources() const;
+  RetainPtr<CPDF_Dictionary> GetMutableResources();
   void SetResources(RetainPtr<CPDF_Dictionary> dict) {
     resources_ = std::move(dict);
   }
-  RetainPtr<const CPDF_Dictionary> GetPageResources() const {
-    return page_resources_;
-  }
-  RetainPtr<CPDF_Dictionary> GetMutablePageResources() {
-    return page_resources_;
-  }
+  RetainPtr<const CPDF_Dictionary> GetPageResources() const;
+  RetainPtr<CPDF_Dictionary> GetMutablePageResources();
   size_t GetPageObjectCount() const { return page_object_list_.size(); }
   size_t GetActivePageObjectCount() const;
   CPDF_PageObject* GetPageObjectByIndex(size_t index) const;
@@ -159,9 +156,13 @@ class CPDF_PageObjectHolder {
 
  protected:
   void LoadTransparencyInfo();
+  virtual void EnsureMutableBackingObjectForDict();
+  virtual void EnsureMutableBackingObjectForResources();
+  virtual void EnsureMutableBackingObjectForPageResources();
 
   RetainPtr<CPDF_Dictionary> page_resources_;
   RetainPtr<CPDF_Dictionary> resources_;
+  RetainPtr<CPDF_Dictionary> dict_;
   std::map<GraphicsData, ByteString> graphics_map_;
   std::map<FontData, ByteString> fonts_map_;
   std::map<uint32_t, ByteString> fonts_by_objnum_;
@@ -172,7 +173,6 @@ class CPDF_PageObjectHolder {
  private:
   bool background_alpha_needed_ = false;
   ParseState parse_state_ = ParseState::kNotParsed;
-  RetainPtr<CPDF_Dictionary> const dict_;
   UnownedPtr<CPDF_Document> document_;
   std::vector<CFX_FloatRect> mask_bounding_boxes_;
   std::unique_ptr<CPDF_ContentParser> parser_;

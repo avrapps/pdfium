@@ -58,6 +58,28 @@ CPDF_Parser* CPDF_LayerDocument::GetParser() const {
   return base_->GetParser();
 }
 
+RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableRoot() {
+  const uint32_t root_objnum = base_->GetParser()->GetRootObjNum();
+  RetainPtr<CPDF_Object> live = GetMutableIndirectObject(root_objnum);
+  RetainPtr<CPDF_Dictionary> root =
+      live ? pdfium::WrapRetain(live->AsMutableDictionary()) : nullptr;
+  SetCachedRootDict(root);
+  return root;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableInfo() {
+  CPDF_Parser* parser = base_->GetParser();
+  const uint32_t info_objnum = parser ? parser->GetInfoObjNum() : 0;
+  if (!info_objnum || info_objnum == CPDF_Object::kInvalidObjNum) {
+    return nullptr;
+  }
+  RetainPtr<CPDF_Object> live = GetMutableIndirectObject(info_objnum);
+  RetainPtr<CPDF_Dictionary> info =
+      live ? pdfium::WrapRetain(live->AsMutableDictionary()) : nullptr;
+  SetCachedInfoDict(info);
+  return info;
+}
+
 uint32_t CPDF_LayerDocument::GetUserPermissions(bool get_owner_perms) const {
   return base_->GetUserPermissions(get_owner_perms);
 }

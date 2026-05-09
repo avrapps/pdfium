@@ -1120,7 +1120,7 @@ FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV FPDFPage_GetAnnot(FPDF_PAGE page,
   }
 
   auto pNewAnnot = std::make_unique<CPDF_AnnotContext>(
-      std::move(dict), IPDFPageFromFPDFPage(page));
+      std::move(dict), IPDFPageFromFPDFPage(page), index);
 
   // Caller takes ownership.
   return FPDFAnnotationFromCPDFAnnotContext(pNewAnnot.release());
@@ -3547,7 +3547,8 @@ EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
         pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
     if (d && d->GetUnicodeTextFor("NM") == target) {
       auto ctx = std::make_unique<CPDF_AnnotContext>(
-          std::move(d), IPDFPageFromFPDFPage(page));
+          std::move(d), IPDFPageFromFPDFPage(page),
+          pdfium::checked_cast<int>(i));
       return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
     }
   }

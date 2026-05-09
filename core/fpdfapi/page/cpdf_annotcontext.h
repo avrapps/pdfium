@@ -19,7 +19,9 @@ class IPDF_Page;
 
 class CPDF_AnnotContext {
  public:
-  CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict, IPDF_Page* pPage);
+  CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
+                    IPDF_Page* pPage,
+                    int annot_index = -1);
   ~CPDF_AnnotContext();
 
   void SetForm(RetainPtr<CPDF_Stream> pStream);
@@ -27,16 +29,19 @@ class CPDF_AnnotContext {
   CPDF_Form* GetForm() const { return annot_form_.get(); }
 
   // Never nullptr.
-  RetainPtr<CPDF_Dictionary> GetMutableAnnotDict() { return annot_dict_; }
+  RetainPtr<CPDF_Dictionary> GetMutableAnnotDict();
   const CPDF_Dictionary* GetAnnotDict() const { return annot_dict_.Get(); }
 
   // Never nullptr.
   IPDF_Page* GetPage() const { return page_; }
 
  private:
+  void EnsureMutableBackingForAnnotDict();
+
   std::unique_ptr<CPDF_Form> annot_form_;
-  RetainPtr<CPDF_Dictionary> const annot_dict_;
+  RetainPtr<CPDF_Dictionary> annot_dict_;
   UnownedPtr<IPDF_Page> const page_;
+  const int annot_index_ = -1;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_

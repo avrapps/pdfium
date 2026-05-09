@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pagemodule.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -135,5 +136,13 @@ TEST_F(CPDFLayerDocumentTest, MutatorsDcheckUntilCowSliceLands) {
 
   EXPECT_DEATH_IF_SUPPORTED(layer->GetMutableIndirectObject(1), "");
   EXPECT_DEATH_IF_SUPPORTED(layer->ParseIndirectObject(1), "");
+
+  RetainPtr<const CPDF_Dictionary> page_dict = layer->GetPageDictionary(0);
+  ASSERT_TRUE(page_dict);
+  auto page = pdfium::MakeRetain<CPDF_Page>(
+      layer.get(),
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(page_dict.Get())));
+  EXPECT_EQ(0u, layer->GetPromotedObjectCount());
+  EXPECT_DEATH_IF_SUPPORTED(page->GetMutableDict(), "");
 }
 #endif  // DCHECK_IS_ON()

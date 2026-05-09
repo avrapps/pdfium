@@ -11,6 +11,7 @@
 
 #include "build/build_config.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_progressiverenderer.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
@@ -62,7 +63,9 @@ void RenderPageImpl(CPDF_PageRenderContext* context,
   context->device_->SetBaseClip(clipping_rect);
   context->device_->SetClip_Rect(clipping_rect);
   context->context_ = std::make_unique<CPDF_RenderContext>(
-      pPage->GetDocument(), pPage->GetMutablePageResources(),
+      pPage->GetDocument(),
+      pdfium::WrapRetain(
+          const_cast<CPDF_Dictionary*>(pPage->GetPageResources().Get())),
       pPage->GetPageImageCache());
 
   context->context_->AppendLayer(pPage, matrix);
