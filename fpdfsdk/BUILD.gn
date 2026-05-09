@@ -8,6 +8,7 @@ import("../testing/test.gni")
 source_set("fpdfsdk") {
   sources = [
     "epdf_base_document.cpp",
+    "epdf_layer.cpp",
     "epdf_outline.cpp",
     "epdf_png_shim.cpp",
     "epdf_jpeg_shim.cpp",

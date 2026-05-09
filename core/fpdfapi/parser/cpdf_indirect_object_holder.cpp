@@ -53,8 +53,13 @@ const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(
 
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::FindLocalIndirectObject(
     uint32_t objnum) const {
+  auto it = indirect_objs_.find(objnum);
+  if (it == indirect_objs_.end()) {
+    return nullptr;
+  }
+
   return pdfium::WrapRetain(
-      const_cast<CPDF_Object*>(GetIndirectObjectInternal(objnum)));
+      const_cast<CPDF_Object*>(FilterInvalidObjNum(it->second.Get())));
 }
 
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::GetOrParseIndirectObject(

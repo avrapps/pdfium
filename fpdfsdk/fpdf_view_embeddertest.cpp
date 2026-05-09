@@ -18,6 +18,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/fpdf_annot.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -657,6 +658,36 @@ TEST_F(FPDFViewEmbedderTest, LoadCustomDocumentWithShortLivedFileAccess) {
   ASSERT_TRUE(page);
   EXPECT_FLOAT_EQ(200.0f, FPDF_GetPageWidthF(page.get()));
   EXPECT_FLOAT_EQ(300.0f, FPDF_GetPageHeightF(page.get()));
+}
+
+TEST_F(FPDFViewEmbedderTest, OpenFreshLayerRendersWithEmptyOverlay) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  {
+    FileAccessForTesting layer_access("rectangles.pdf");
+    EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+    EXPECT_EQ(base, EPDFLayer_GetBaseDocument(layer.get()));
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+    EXPECT_FALSE(EPDFLayer_IsObjectPromoted(layer.get(), 1));
+    EXPECT_EQ(1, FPDF_GetPageCount(layer.get()));
+
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    EXPECT_FLOAT_EQ(200.0f, FPDF_GetPageWidthF(page.get()));
+    EXPECT_FLOAT_EQ(300.0f, FPDF_GetPageHeightF(page.get()));
+    EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+  }
+
+  EPDF_ReleaseBaseDocument(base);
 }
 
 TEST_F(FPDFViewEmbedderTest, Page) {

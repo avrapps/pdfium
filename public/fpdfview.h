@@ -580,6 +580,50 @@ EPDF_LoadBaseDocument(FPDF_FILEACCESS* pFileAccess, FPDF_BYTESTRING password);
 FPDF_EXPORT void FPDF_CALLCONV
 EPDF_ReleaseBaseDocument(EPDF_BASE_DOCUMENT base);
 
+// Runtime-side status for opening a layer on top of a base document.
+typedef enum {
+  EPDFLayerOpenStatus_kSuccess = 0,
+  EPDFLayerOpenStatus_kPasswordRequired = 1,
+  EPDFLayerOpenStatus_kMalformedDelta = 2,
+  EPDFLayerOpenStatus_kBaseLayerMismatch = 3,
+  EPDFLayerOpenStatus_kOpenFailed = 4,
+} EPDFLayerOpenStatus;
+
+// Function: EPDFLayer_OpenLayer
+//          Open a layer view on top of a previously loaded base document.
+//          The returned handle is an ordinary FPDF_DOCUMENT and must be closed
+//          with FPDF_CloseDocument().
+// Parameters:
+//          base        -   A base document returned by EPDF_LoadBaseDocument().
+//          pFileAccess -   A structure for accessing the materialized layer
+//                          bytes. For Slice 7.2 this must be the base bytes
+//                          with no appended delta.
+//          password    -   Reserved for future delta-password handling.
+//          out_status  -   Optional detailed open status.
+// Return value:
+//          A layer document handle, or NULL on failure.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFLayer_OpenLayer(EPDF_BASE_DOCUMENT base,
+                    FPDF_FILEACCESS* pFileAccess,
+                    FPDF_BYTESTRING password,
+                    EPDFLayerOpenStatus* out_status);
+
+// Function: EPDFLayer_IsObjectPromoted
+//          Return whether the object exists in the layer overlay.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_IsObjectPromoted(FPDF_DOCUMENT layer, unsigned long obj_num);
+
+// Function: EPDFLayer_GetPromotedObjectCount
+//          Return the number of objects currently stored in the layer overlay.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFLayer_GetPromotedObjectCount(FPDF_DOCUMENT layer);
+
+// Function: EPDFLayer_GetBaseDocument
+//          Return the layer's borrowed base document handle. The caller MUST
+//          NOT release the returned handle.
+FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
+EPDFLayer_GetBaseDocument(FPDF_DOCUMENT layer);
+
 // Function: FPDF_GetFileVersion
 //          Get the file version of the given PDF document.
 // Parameters:

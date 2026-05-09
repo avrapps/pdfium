@@ -535,6 +535,10 @@ int CheckPDFiumCApi() {
     CHK(FPDF_InitLibrary);
     CHK(FPDF_InitLibraryWithConfig);
     CHK(EPDF_LoadBaseDocument);
+    CHK(EPDFLayer_GetBaseDocument);
+    CHK(EPDFLayer_GetPromotedObjectCount);
+    CHK(EPDFLayer_IsObjectPromoted);
+    CHK(EPDFLayer_OpenLayer);
     CHK(EPDF_ReleaseBaseDocument);
     CHK(FPDF_LoadCustomDocument);
     CHK(FPDF_LoadDocument);
