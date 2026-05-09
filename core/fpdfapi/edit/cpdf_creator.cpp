@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <inttypes.h>
 #include <set>
 #include <utility>
 
@@ -44,10 +45,12 @@ constexpr Mask<CPDF_Creator::CreateFlags> kAllValidFlags{
     CPDF_Creator::CreateFlags::kIncremental,
     CPDF_Creator::CreateFlags::kNoOriginal,
     CPDF_Creator::CreateFlags::kRemoveSecurity,
-    CPDF_Creator::CreateFlags::kSubsetNewFonts};
+    CPDF_Creator::CreateFlags::kSubsetNewFonts,
+    CPDF_Creator::CreateFlags::kIncrementalAppendOnly};
 constexpr Mask<CPDF_Creator::CreateFlags> kConflictingFlags{
     CPDF_Creator::CreateFlags::kIncremental,
     CPDF_Creator::CreateFlags::kNoOriginal};
+constexpr FX_FILESIZE kMaxFourByteXrefOffset = 0xffffffff;
 
 class CFX_FileBufferArchive final : public IFX_ArchiveStream {
  public:
@@ -56,6 +59,7 @@ class CFX_FileBufferArchive final : public IFX_ArchiveStream {
 
   bool WriteBlock(pdfium::span<const uint8_t> buffer) override;
   FX_FILESIZE CurrentOffset() const override { return offset_; }
+  void SetNotionalStartOffset(FX_FILESIZE offset) { offset_ = offset; }
 
  private:
   bool Flush();
@@ -128,6 +132,10 @@ bool OutputIndex(IFX_ArchiveStream* archive, FX_FILESIZE offset) {
          archive->WriteByte(0);
 }
 
+ByteString FormatXrefOffset10(FX_FILESIZE offset) {
+  return ByteString::Format("%010" PRId64, static_cast<int64_t>(offset));
+}
+
 }  // namespace
 
 CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
@@ -140,6 +148,11 @@ CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
       archive_(std::make_unique<CFX_FileBufferArchive>(std::move(archive))) {}
 
 CPDF_Creator::~CPDF_Creator() = default;
+
+// static
+ByteString CPDF_Creator::FormatXrefOffset10ForTesting(FX_FILESIZE offset) {
+  return FormatXrefOffset10(offset);
+}
 
 bool CPDF_Creator::WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj) {
   if (!archive_->WriteDWord(objnum) || !archive_->WriteString(" 0 obj\r\n")) {
@@ -225,6 +238,14 @@ bool CPDF_Creator::WriteNewObjs() {
   return true;
 }
 
+bool CPDF_Creator::CheckEmittedOffset(FX_FILESIZE offset) {
+  if (offset <= kMaxFourByteXrefOffset) {
+    return true;
+  }
+  failure_reason_ = FailureReason::kAppendOnlyOffsetTooLarge;
+  return false;
+}
+
 void CPDF_Creator::InitNewObjNumOffsets() {
   for (const auto& pair : *document_) {
     const uint32_t objnum = pair.first;
@@ -274,8 +295,9 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
     }
   }
   if (stage_ == Stage::kWriteIncremental15) {
-    if (is_original_ && saved_offset_ > 0) {
+    if (is_original_ && !is_incremental_append_only_ && saved_offset_ > 0) {
       if (!parser_->WriteToArchive(archive_.get(), saved_offset_)) {
+        failure_reason_ = FailureReason::kArchiveError;
         return Stage::kInvalid;
       }
     }
@@ -401,7 +423,11 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
       }
 
       while (i < j) {
-        str = ByteString::Format("%010d 00000 n\r\n", object_offsets_[i++]);
+        const FX_FILESIZE offset = object_offsets_[i++];
+        if (!CheckEmittedOffset(offset)) {
+          return Stage::kInvalid;
+        }
+        str = FormatXrefOffset10(offset) + " 00000 n\r\n";
         if (!archive_->WriteString(str.AsStringView())) {
           return Stage::kInvalid;
         }
@@ -442,7 +468,11 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
 
       while (i < j) {
         objnum = new_obj_num_array_[i++];
-        str = ByteString::Format("%010d 00000 n\r\n", object_offsets_[objnum]);
+        const FX_FILESIZE offset = object_offsets_[objnum];
+        if (!CheckEmittedOffset(offset)) {
+          return Stage::kInvalid;
+        }
+        str = FormatXrefOffset10(offset) + " 00000 n\r\n";
         if (!archive_->WriteString(str.AsStringView())) {
           return Stage::kInvalid;
         }
@@ -562,6 +592,9 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
         if (it == object_offsets_.end()) {
           continue;
         }
+        if (!CheckEmittedOffset(it->second)) {
+          return Stage::kInvalid;
+        }
         if (!OutputIndex(archive_.get(), it->second)) {
           return Stage::kInvalid;
         }
@@ -581,8 +614,11 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
         return Stage::kInvalid;
       }
       for (i = 0; i < count; ++i) {
-        if (!OutputIndex(archive_.get(),
-                         object_offsets_[new_obj_num_array_[i]])) {
+        const FX_FILESIZE offset = object_offsets_[new_obj_num_array_[i]];
+        if (!CheckEmittedOffset(offset)) {
+          return Stage::kInvalid;
+        }
+        if (!OutputIndex(archive_.get(), offset)) {
           return Stage::kInvalid;
         }
       }
@@ -603,6 +639,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
 }
 
 bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
+  failure_reason_ = FailureReason::kNone;
   if (flags & ~kAllValidFlags) {
     flags = CreateFlags::kNone;
   }
@@ -617,7 +654,17 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   }
 
   is_incremental_ = !!(flags & CreateFlags::kIncremental);
+  is_incremental_append_only_ =
+      !!(flags & CreateFlags::kIncrementalAppendOnly);
+  if (is_incremental_append_only_ && !is_incremental_) {
+    failure_reason_ = FailureReason::kOther;
+    return false;
+  }
   is_original_ = !(flags & CreateFlags::kNoOriginal);
+  if (is_incremental_append_only_ && parser_) {
+    static_cast<CFX_FileBufferArchive*>(archive_.get())
+        ->SetNotionalStartOffset(parser_->GetDocumentSize());
+  }
 
   if (file_version >= 10 && file_version <= 17) {
     file_version_ = file_version;
@@ -629,7 +676,11 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   new_obj_num_array_.clear();
 
   InitID();
-  return Continue();
+  const bool result = Continue();
+  if (!result && failure_reason_ == FailureReason::kNone) {
+    failure_reason_ = FailureReason::kOther;
+  }
+  return result;
 }
 
 void CPDF_Creator::InitID() {

@@ -86,6 +86,27 @@ FPDF_SaveWithVersion(FPDF_DOCUMENT document,
                      FPDF_DWORD flags,
                      int file_version);
 
+// Runtime-side status for saving a layer delta.
+typedef enum {
+  EPDFLayerSaveStatus_kSuccess = 0,
+  EPDFLayerSaveStatus_kAppendOnlyOffsetTooLarge = 1,
+  EPDFLayerSaveStatus_kSaveFailed = 2,
+} EPDFLayerSaveStatus;
+
+// Function: EPDFLayer_SaveDeltaToBuffer
+//          Saves only a layer document's current overlay delta. The caller can
+//          materialize the layer as base bytes followed by this returned delta.
+// Parameters:
+//          layer      -   A layer document returned by EPDFLayer_OpenLayer().
+//          file_write -   A pointer to a custom file write structure.
+//          out_status -   Optional detailed save status.
+// Return value:
+//          TRUE if succeed, FALSE if failed.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveDeltaToBuffer(FPDF_DOCUMENT layer,
+                            FPDF_FILEWRITE* file_write,
+                            EPDFLayerSaveStatus* out_status);
+
 #ifdef __cplusplus
 }
 #endif

@@ -13,6 +13,7 @@
 #include <memory>
 #include <vector>
 
+#include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -36,6 +37,14 @@ class CPDF_Creator {
     kRemoveSecurity = (1 << 2),
     // TODO(crbug.com/42270430): Implement font subsetting.
     kSubsetNewFonts = (1 << 3),
+    kIncrementalAppendOnly = (1 << 4),
+  };
+
+  enum class FailureReason {
+    kNone,
+    kAppendOnlyOffsetTooLarge,
+    kArchiveError,
+    kOther,
   };
 
   CPDF_Creator(CPDF_Document* doc,
@@ -43,6 +52,9 @@ class CPDF_Creator {
   ~CPDF_Creator();
 
   bool Create(Mask<CreateFlags> flags, int32_t file_version);
+  FailureReason GetFailureReason() const { return failure_reason_; }
+
+  static ByteString FormatXrefOffset10ForTesting(FX_FILESIZE offset);
 
   // Experimental EmbedPDF Extension: Set encryption for documents that weren't
   // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
@@ -83,6 +95,7 @@ class CPDF_Creator {
   bool WriteOldObjs();
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
+  bool CheckEmittedOffset(FX_FILESIZE offset);
 
   void RemoveSecurity();
 
@@ -106,6 +119,8 @@ class CPDF_Creator {
   bool security_changed_ = false;
   bool is_incremental_ = false;
   bool is_original_ = false;
+  bool is_incremental_append_only_ = false;
+  FailureReason failure_reason_ = FailureReason::kNone;
 };
 
 #endif  // CORE_FPDFAPI_EDIT_CPDF_CREATOR_H_

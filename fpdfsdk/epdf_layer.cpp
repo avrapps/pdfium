@@ -8,13 +8,21 @@
 #include <memory>
 #include <utility>
 
+#include "core/fpdfapi/edit/cpdf_creator.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
+#include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "fpdfsdk/cpdfsdk_customaccess.h"
+#include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "public/fpdf_save.h"
 
 namespace {
+
+constexpr FX_FILESIZE kReservedDeltaHeadroom = 16 * 1024 * 1024;
+constexpr FX_FILESIZE kSafeNotionalStartOffsetMax =
+    0xffffffff - kReservedDeltaHeadroom;
 
 CPDF_BaseDocument* CPDFBaseDocumentFromEPDFBaseDocument(
     EPDF_BASE_DOCUMENT base) {
@@ -99,4 +107,50 @@ EPDFLayer_GetBaseDocument(FPDF_DOCUMENT layer) {
   return layer_doc ? EPDFBaseDocumentFromCPDFBaseDocument(
                          layer_doc->GetBaseDocument())
                    : nullptr;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveDeltaToBuffer(FPDF_DOCUMENT layer,
+                            FPDF_FILEWRITE* file_write,
+                            EPDFLayerSaveStatus* out_status) {
+  if (out_status) {
+    *out_status = EPDFLayerSaveStatus_kSaveFailed;
+  }
+  CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
+  CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
+  if (!layer_doc || !file_write) {
+    return false;
+  }
+
+  CPDF_Parser* parser = layer_doc->GetParser();
+  if (!parser) {
+    return false;
+  }
+  if (parser->GetDocumentSize() > kSafeNotionalStartOffsetMax) {
+    if (out_status) {
+      *out_status = EPDFLayerSaveStatus_kAppendOnlyOffsetTooLarge;
+    }
+    return false;
+  }
+
+  CPDF_Creator creator(
+      layer_doc, pdfium::MakeRetain<CPDFSDK_FileWriteAdapter>(file_write));
+  const bool ok = creator.Create(
+      Mask<CPDF_Creator::CreateFlags>(
+          CPDF_Creator::CreateFlags::kIncremental,
+          CPDF_Creator::CreateFlags::kIncrementalAppendOnly),
+      /*file_version=*/0);
+  if (ok) {
+    if (out_status) {
+      *out_status = EPDFLayerSaveStatus_kSuccess;
+    }
+    return true;
+  }
+
+  if (out_status &&
+      creator.GetFailureReason() ==
+          CPDF_Creator::FailureReason::kAppendOnlyOffsetTooLarge) {
+    *out_status = EPDFLayerSaveStatus_kAppendOnlyOffsetTooLarge;
+  }
+  return false;
 }

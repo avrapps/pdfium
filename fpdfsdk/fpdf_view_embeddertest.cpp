@@ -19,6 +19,7 @@
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -740,6 +741,55 @@ TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
     EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
     EXPECT_EQ(2u, EPDFLayer_GetPromotedObjectCount(layer.get()));
   }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  std::string materialized;
+  {
+    FileAccessForTesting layer_access("rectangles.pdf");
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &open_status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+    EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDeltaToBuffer(layer.get(), this, &save_status));
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    const std::string delta = GetString();
+    EXPECT_FALSE(delta.empty());
+    EXPECT_FALSE(delta.starts_with("%PDF-"));
+
+    const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+    ASSERT_FALSE(pdf_path.empty());
+    std::vector<uint8_t> base_bytes = GetFileContents(pdf_path.c_str());
+    ASSERT_FALSE(base_bytes.empty());
+    EXPECT_LT(delta.size(), base_bytes.size());
+    materialized.assign(reinterpret_cast<const char*>(base_bytes.data()),
+                        base_bytes.size());
+    materialized += delta;
+  }
+
+  ScopedFPDFDocument reopened(FPDF_LoadMemDocument64(
+      materialized.data(), materialized.size(), nullptr));
+  ASSERT_TRUE(reopened);
+  ScopedFPDFPage reopened_page(FPDF_LoadPage(reopened.get(), 0));
+  ASSERT_TRUE(reopened_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(reopened_page.get()));
 
   EPDF_ReleaseBaseDocument(base);
 }
