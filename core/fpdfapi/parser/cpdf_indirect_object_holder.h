@@ -26,10 +26,10 @@ class CPDF_IndirectObjectHolder {
   CPDF_IndirectObjectHolder();
   virtual ~CPDF_IndirectObjectHolder();
 
-  RetainPtr<CPDF_Object> GetOrParseIndirectObject(uint32_t objnum);
-  RetainPtr<const CPDF_Object> GetIndirectObject(uint32_t objnum) const;
-  RetainPtr<CPDF_Object> GetMutableIndirectObject(uint32_t objnum);
-  void DeleteIndirectObject(uint32_t objnum);
+  virtual RetainPtr<CPDF_Object> GetOrParseIndirectObject(uint32_t objnum);
+  virtual RetainPtr<const CPDF_Object> GetIndirectObject(uint32_t objnum) const;
+  virtual RetainPtr<CPDF_Object> GetMutableIndirectObject(uint32_t objnum);
+  virtual void DeleteIndirectObject(uint32_t objnum);
 
   // Creates and adds a new object retained by the indirect object holder,
   // and returns a retained pointer to it.
@@ -74,12 +74,13 @@ class CPDF_IndirectObjectHolder {
 
  protected:
   virtual RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum);
+  virtual const CPDF_Object* GetIndirectObjectInternal(uint32_t objnum) const;
+  virtual CPDF_Object* GetOrParseIndirectObjectInternal(uint32_t objnum);
+
+  RetainPtr<CPDF_Object> FindLocalIndirectObject(uint32_t objnum) const;
 
  private:
   friend class CPDF_Reference;
-
-  const CPDF_Object* GetIndirectObjectInternal(uint32_t objnum) const;
-  CPDF_Object* GetOrParseIndirectObjectInternal(uint32_t objnum);
 
   uint32_t last_obj_num_ = 0;
   std::map<uint32_t, RetainPtr<CPDF_Object>> indirect_objs_;

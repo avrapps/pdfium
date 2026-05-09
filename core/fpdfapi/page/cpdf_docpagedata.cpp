@@ -178,6 +178,9 @@ CPDF_DocPageData* CPDF_DocPageData::FromDocument(const CPDF_Document* doc) {
 
 CPDF_DocPageData::CPDF_DocPageData() = default;
 
+CPDF_DocPageData::CPDF_DocPageData(CPDF_DocPageData* fallback)
+    : fallback_(fallback) {}
+
 CPDF_DocPageData::~CPDF_DocPageData() {
   for (auto& it : image_map_) {
     it.second->WillBeDestroyed();
@@ -218,6 +221,10 @@ RetainPtr<CPDF_Font> CPDF_DocPageData::GetFont(
   auto it = font_map_.find(font_dict);
   if (it != font_map_.end() && it->second) {
     return pdfium::WrapRetain(it->second.Get());
+  }
+
+  if (fallback_ && CanUseFallbackForObject(font_dict.Get())) {
+    return fallback_->GetFont(font_dict);
   }
 
   RetainPtr<CPDF_Font> font = CPDF_Font::Create(GetDocument(), font_dict, this);
@@ -370,6 +377,10 @@ RetainPtr<CPDF_ColorSpace> CPDF_DocPageData::GetColorSpaceInternal(
     return pdfium::WrapRetain(it->second.Get());
   }
 
+  if (fallback_ && CanUseFallbackForObject(pArray.Get())) {
+    return fallback_->GetColorSpaceGuarded(pCSObj, pResources, pVisited);
+  }
+
   RetainPtr<CPDF_ColorSpace> pCS =
       CPDF_ColorSpace::Load(GetDocument(), pArray.Get(), pVisited);
   if (!pCS) {
@@ -388,6 +399,10 @@ RetainPtr<CPDF_Pattern> CPDF_DocPageData::GetPattern(
   auto it = pattern_map_.find(pPatternObj);
   if (it != pattern_map_.end() && it->second) {
     return pdfium::WrapRetain(it->second.Get());
+  }
+
+  if (fallback_ && CanUseFallbackForObject(pPatternObj.Get())) {
+    return fallback_->GetPattern(pPatternObj, matrix);
   }
 
   RetainPtr<CPDF_Pattern> pattern;
@@ -417,6 +432,10 @@ RetainPtr<CPDF_ShadingPattern> CPDF_DocPageData::GetShading(
     return pdfium::WrapRetain(it->second->AsShadingPattern());
   }
 
+  if (fallback_ && CanUseFallbackForObject(pPatternObj.Get())) {
+    return fallback_->GetShading(pPatternObj, matrix);
+  }
+
   auto pPattern = pdfium::MakeRetain<CPDF_ShadingPattern>(
       GetDocument(), pPatternObj, true, matrix);
   pattern_map_[pPatternObj].Reset(pPattern.Get());
@@ -431,6 +450,10 @@ RetainPtr<CPDF_Image> CPDF_DocPageData::GetImage(uint32_t dwStreamObjNum) {
       it->second->RebindStreamIfPromoted();
     }
     return it->second;
+  }
+
+  if (fallback_ && !GetDocument()->IsObjectPromoted(dwStreamObjNum)) {
+    return fallback_->GetImage(dwStreamObjNum);
   }
 
   auto pImage = pdfium::MakeRetain<CPDF_Image>(GetDocument(), dwStreamObjNum);
@@ -453,6 +476,10 @@ RetainPtr<CPDF_IccProfile> CPDF_DocPageData::GetIccProfile(
   auto it = icc_profile_map_.find(pProfileStream);
   if (it != icc_profile_map_.end()) {
     return it->second;
+  }
+
+  if (fallback_ && CanUseFallbackForObject(pProfileStream.Get())) {
+    return fallback_->GetIccProfile(pProfileStream);
   }
 
   auto pAccessor = pdfium::MakeRetain<CPDF_StreamAcc>(pProfileStream);
@@ -489,6 +516,10 @@ RetainPtr<CPDF_StreamAcc> CPDF_DocPageData::GetFontFileStreamAcc(
     return it->second;
   }
 
+  if (fallback_ && CanUseFallbackForObject(font_stream.Get())) {
+    return fallback_->GetFontFileStreamAcc(font_stream);
+  }
+
   RetainPtr<const CPDF_Dictionary> font_dict = font_stream->GetDict();
   int32_t len1 = font_dict->GetIntegerFor("Length1");
   int32_t len2 = font_dict->GetIntegerFor("Length2");
@@ -523,6 +554,16 @@ void CPDF_DocPageData::MaybePurgeFontFileStreamAcc(
   if (it != font_file_map_.end() && it->second->HasOneRef()) {
     font_file_map_.erase(it);
   }
+}
+
+bool CPDF_DocPageData::CanUseFallbackForObject(
+    const CPDF_Object* object) const {
+  if (!object) {
+    return false;
+  }
+
+  const uint32_t objnum = object->GetObjNum();
+  return objnum != 0 && !GetDocument()->IsObjectPromoted(objnum);
 }
 
 std::unique_ptr<CPDF_Font::FormIface> CPDF_DocPageData::CreateForm(

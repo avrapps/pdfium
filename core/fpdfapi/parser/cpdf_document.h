@@ -94,10 +94,11 @@ class CPDF_Document : public Observable,
     extension_ = std::move(pExt);
   }
 
-  CPDF_Parser* GetParser() const { return parser_.get(); }
-  const CPDF_Dictionary* GetRoot() const { return root_dict_.Get(); }
-  RetainPtr<CPDF_Dictionary> GetMutableRoot() { return root_dict_; }
-  RetainPtr<CPDF_Dictionary> GetInfo();
+  virtual CPDF_Parser* GetParser() const;
+  virtual const CPDF_Dictionary* GetRoot() const;
+  virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
+  virtual RetainPtr<CPDF_Dictionary> GetInfo();
+  virtual RetainPtr<CPDF_Dictionary> GetMutableInfo();
   RetainPtr<CPDF_Dictionary> GetOrCreateInfo();
   RetainPtr<const CPDF_Array> GetFileIdentifier() const;
 
@@ -111,12 +112,12 @@ class CPDF_Document : public Observable,
 
   int GetPageCount() const;
   bool IsPageLoaded(int iPage) const;
-  RetainPtr<const CPDF_Dictionary> GetPageDictionary(int iPage);
-  RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage);
+  virtual RetainPtr<const CPDF_Dictionary> GetPageDictionary(int iPage);
+  virtual RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage);
   int GetPageIndex(uint32_t objnum);
   // When `get_owner_perms` is true, returns full permissions if unlocked by
   // owner.
-  uint32_t GetUserPermissions(bool get_owner_perms) const;
+  virtual uint32_t GetUserPermissions(bool get_owner_perms) const;
 
   // PageDataIface wrappers, try to avoid explicit getter calls.
   RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
@@ -146,7 +147,9 @@ class CPDF_Document : public Observable,
 
   // Returns whether `objnum` has been promoted from its base storage into a
   // document overlay. Always false for ordinary documents.
-  virtual bool IsObjectPromoted(uint32_t objnum) const;
+  virtual RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const;
+  bool IsObjectPromoted(uint32_t objnum) const;
+  virtual bool IsLayerDocument() const;
 
   // CPDF_Parser::ParsedObjectsHolder:
   bool TryInit() override;
@@ -173,6 +176,18 @@ class CPDF_Document : public Observable,
   void SetParser(std::unique_ptr<CPDF_Parser> pParser);
 
   void ResizePageListForTesting(size_t size);
+
+  virtual uint32_t GetPageObjNumAt(size_t index) const;
+  virtual void SetPageObjNumAt(size_t index, uint32_t objnum);
+  virtual void InsertPageObjNum(size_t index, uint32_t objnum);
+  virtual void ErasePageObjNum(size_t index);
+  virtual void ResizePageList(size_t size);
+  virtual size_t GetPageListSize() const;
+
+  void SetCachedRootDict(RetainPtr<CPDF_Dictionary> root);
+  void InvalidateCachedRootDict();
+  void SetCachedInfoDict(RetainPtr<CPDF_Dictionary> info);
+  void InvalidateCachedInfoDict();
 
  private:
   class StockFontClearer {

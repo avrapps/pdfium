@@ -57,8 +57,11 @@ class PromotedImageDocument final : public CPDF_Document {
 
   void SetPromotedObject(uint32_t objnum) { promoted_objnum_ = objnum; }
 
-  bool IsObjectPromoted(uint32_t objnum) const override {
-    return objnum == promoted_objnum_;
+  RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override {
+    return objnum == promoted_objnum_
+               ? const_cast<PromotedImageDocument*>(this)
+                     ->GetMutableIndirectObject(objnum)
+               : nullptr;
   }
 
  private:

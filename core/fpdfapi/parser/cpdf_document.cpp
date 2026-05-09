@@ -28,6 +28,7 @@
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_codepage.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/scoped_set_insertion.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/stl_util.h"
@@ -195,17 +196,31 @@ bool CPDF_Document::IsValidPageObject(const CPDF_Object* obj) {
   return ValidateDictType(ToDictionary(obj), "Page");
 }
 
+CPDF_Parser* CPDF_Document::GetParser() const {
+  return parser_.get();
+}
+
+const CPDF_Dictionary* CPDF_Document::GetRoot() const {
+  return root_dict_.Get();
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutableRoot() {
+  return root_dict_;
+}
+
 RetainPtr<CPDF_Object> CPDF_Document::ParseIndirectObject(uint32_t objnum) {
-  return parser_ ? parser_->ParseIndirectObject(objnum) : nullptr;
+  CPDF_Parser* parser = GetParser();
+  return parser ? parser->ParseIndirectObject(objnum) : nullptr;
 }
 
 bool CPDF_Document::TryInit() {
-  SetLastObjNum(parser_->GetLastObjNum());
+  CPDF_Parser* parser = GetParser();
+  SetLastObjNum(parser->GetLastObjNum());
 
   RetainPtr<CPDF_Object> pRootObj =
-      GetOrParseIndirectObject(parser_->GetRootObjNum());
+      GetOrParseIndirectObject(parser->GetRootObjNum());
   if (pRootObj) {
-    root_dict_ = pRootObj->GetMutableDict();
+    SetCachedRootDict(pRootObj->GetMutableDict());
   }
 
   LoadPages();
@@ -215,44 +230,44 @@ bool CPDF_Document::TryInit() {
 CPDF_Parser::Error CPDF_Document::LoadDoc(
     RetainPtr<IFX_SeekableReadStream> pFileAccess,
     const ByteString& password) {
-  if (!parser_) {
+  if (!GetParser()) {
     SetParser(std::make_unique<CPDF_Parser>(this));
   }
 
   return HandleLoadResult(
-      parser_->StartParse(std::move(pFileAccess), password));
+      GetParser()->StartParse(std::move(pFileAccess), password));
 }
 
 CPDF_Parser::Error CPDF_Document::LoadLinearizedDoc(
     RetainPtr<CPDF_ReadValidator> validator,
     const ByteString& password) {
-  if (!parser_) {
+  if (!GetParser()) {
     SetParser(std::make_unique<CPDF_Parser>(this));
   }
 
   return HandleLoadResult(
-      parser_->StartLinearizedParse(std::move(validator), password));
+      GetParser()->StartLinearizedParse(std::move(validator), password));
 }
 
 void CPDF_Document::LoadPages() {
   const CPDF_LinearizedHeader* linearized_header =
-      parser_->GetLinearizedHeader();
+      GetParser()->GetLinearizedHeader();
   if (!linearized_header) {
-    page_list_.resize(RetrievePageCount());
+    ResizePageList(RetrievePageCount());
     return;
   }
 
   uint32_t objnum = linearized_header->GetFirstPageObjNum();
   if (!IsValidPageObject(GetOrParseIndirectObject(objnum).Get())) {
-    page_list_.resize(RetrievePageCount());
+    ResizePageList(RetrievePageCount());
     return;
   }
 
   uint32_t first_page_num = linearized_header->GetFirstPageNo();
   uint32_t page_count = linearized_header->GetPageCount();
   DCHECK(first_page_num < page_count);
-  page_list_.resize(page_count);
-  page_list_[first_page_num] = objnum;
+  ResizePageList(page_count);
+  SetPageObjNumAt(first_page_num, objnum);
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
@@ -269,7 +284,7 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
     if (*nPagesToGo != 1) {
       return nullptr;
     }
-    page_list_[iPage] = pPages->GetObjNum();
+    SetPageObjNumAt(iPage, pPages->GetObjNum());
     return pPages;
   }
   if (level >= kMaxPageLevel) {
@@ -294,7 +309,7 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::TraversePDFPages(int iPage,
       continue;
     }
     if (!pKid->KeyExist("Kids")) {
-      page_list_[iPage - (*nPagesToGo) + 1] = pKid->GetObjNum();
+      SetPageObjNumAt(iPage - (*nPagesToGo) + 1, pKid->GetObjNum());
       (*nPagesToGo)--;
       tree_traversal_[level].second++;
       if (*nPagesToGo == 0) {
@@ -340,7 +355,7 @@ void CPDF_Document::SetParser(std::unique_ptr<CPDF_Parser> pParser) {
 
 CPDF_Parser::Error CPDF_Document::HandleLoadResult(CPDF_Parser::Error error) {
   if (error == CPDF_Parser::SUCCESS) {
-    has_valid_cross_reference_table_ = !parser_->xref_table_rebuilt();
+    has_valid_cross_reference_table_ = !GetParser()->xref_table_rebuilt();
   }
   return error;
 }
@@ -356,15 +371,15 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutablePagesDict() {
 }
 
 bool CPDF_Document::IsPageLoaded(int iPage) const {
-  return !!page_list_[iPage];
+  return !!GetPageObjNumAt(iPage);
 }
 
 RetainPtr<const CPDF_Dictionary> CPDF_Document::GetPageDictionary(int iPage) {
-  if (!fxcrt::IndexInBounds(page_list_, iPage)) {
+  if (iPage < 0 || static_cast<size_t>(iPage) >= GetPageListSize()) {
     return nullptr;
   }
 
-  const uint32_t objnum = page_list_[iPage];
+  const uint32_t objnum = GetPageObjNumAt(iPage);
   if (objnum) {
     RetainPtr<CPDF_Dictionary> result =
         ToDictionary(GetOrParseIndirectObject(objnum));
@@ -394,7 +409,7 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutablePageDictionary(int iPage) {
 }
 
 void CPDF_Document::SetPageObjNum(int iPage, uint32_t objNum) {
-  page_list_[iPage] = objNum;
+  SetPageObjNumAt(iPage, objNum);
 }
 
 JBig2_DocumentContext* CPDF_Document::GetOrCreateCodecContext() {
@@ -416,20 +431,29 @@ bool CPDF_Document::IsModifiedAPStream(const CPDF_Stream* stream) const {
          pdfium::Contains(modified_apstream_ids_, stream->GetObjNum());
 }
 
+RetainPtr<CPDF_Object> CPDF_Document::FindPromotedObject(
+    uint32_t objnum) const {
+  return nullptr;
+}
+
 bool CPDF_Document::IsObjectPromoted(uint32_t objnum) const {
+  return !!FindPromotedObject(objnum);
+}
+
+bool CPDF_Document::IsLayerDocument() const {
   return false;
 }
 
 int CPDF_Document::GetPageIndex(uint32_t objnum) {
   uint32_t skip_count = 0;
   bool bSkipped = false;
-  for (uint32_t i = 0; i < page_list_.size(); ++i) {
-    if (page_list_[i] == objnum) {
-      return i;
+  for (size_t i = 0; i < GetPageListSize(); ++i) {
+    if (GetPageObjNumAt(i) == objnum) {
+      return pdfium::checked_cast<int>(i);
     }
 
-    if (!bSkipped && page_list_[i] == 0) {
-      skip_count = i;
+    if (!bSkipped && GetPageObjNumAt(i) == 0) {
+      skip_count = pdfium::checked_cast<uint32_t>(i);
       bSkipped = true;
     }
   }
@@ -442,19 +466,19 @@ int CPDF_Document::GetPageIndex(uint32_t objnum) {
   int found_index = FindPageIndex(pPages, &skip_count, objnum, &start_index, 0);
 
   // Corrupt page tree may yield out-of-range results.
-  if (!fxcrt::IndexInBounds(page_list_, found_index)) {
+  if (found_index < 0 || static_cast<size_t>(found_index) >= GetPageListSize()) {
     return -1;
   }
 
   // Only update |page_list_| when |objnum| points to a /Page object.
   if (IsValidPageObject(GetOrParseIndirectObject(objnum).Get())) {
-    page_list_[found_index] = objnum;
+    SetPageObjNumAt(found_index, objnum);
   }
   return found_index;
 }
 
 int CPDF_Document::GetPageCount() const {
-  return fxcrt::CollectionSize<int>(page_list_);
+  return pdfium::checked_cast<int>(GetPageListSize());
 }
 
 int CPDF_Document::RetrievePageCount() {
@@ -472,7 +496,8 @@ int CPDF_Document::RetrievePageCount() {
 }
 
 uint32_t CPDF_Document::GetUserPermissions(bool get_owner_perms) const {
-  return parser_ ? parser_->GetPermissions(get_owner_perms) : 0;
+  CPDF_Parser* parser = GetParser();
+  return parser ? parser->GetPermissions(get_owner_perms) : 0;
 }
 
 RetainPtr<CPDF_StreamAcc> CPDF_Document::GetFontFileStreamAcc(
@@ -490,17 +515,18 @@ void CPDF_Document::MaybePurgeImage(uint32_t objnum) {
 }
 
 void CPDF_Document::CreateNewDoc() {
-  DCHECK(!root_dict_);
-  DCHECK(!info_dict_);
-  root_dict_ = NewIndirect<CPDF_Dictionary>();
-  root_dict_->SetNewFor<CPDF_Name>("Type", "Catalog");
+  DCHECK(!GetRoot());
+  DCHECK(!GetInfo());
+  RetainPtr<CPDF_Dictionary> root = NewIndirect<CPDF_Dictionary>();
+  SetCachedRootDict(root);
+  root->SetNewFor<CPDF_Name>("Type", "Catalog");
 
   auto pPages = NewIndirect<CPDF_Dictionary>();
   pPages->SetNewFor<CPDF_Name>("Type", "Pages");
   pPages->SetNewFor<CPDF_Number>("Count", 0);
   pPages->SetNewFor<CPDF_Array>("Kids");
-  root_dict_->SetNewFor<CPDF_Reference>("Pages", this, pPages->GetObjNum());
-  info_dict_ = NewIndirect<CPDF_Dictionary>();
+  root->SetNewFor<CPDF_Reference>("Pages", this, pPages->GetObjNum());
+  SetCachedInfoDict(NewIndirect<CPDF_Dictionary>());
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::CreateNewPage(int iPage) {
@@ -598,7 +624,7 @@ bool CPDF_Document::InsertNewPage(int iPage,
       return false;
     }
   }
-  page_list_.insert(page_list_.begin() + iPage, pPageDict->GetObjNum());
+  InsertPageObjNum(iPage, pPageDict->GetObjNum());
   return true;
 }
 
@@ -607,18 +633,23 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetInfo() {
     return info_dict_;
   }
 
-  if (!parser_) {
+  CPDF_Parser* parser = GetParser();
+  if (!parser) {
     return nullptr;
   }
 
-  uint32_t info_obj_num = parser_->GetInfoObjNum();
+  uint32_t info_obj_num = parser->GetInfoObjNum();
   if (info_obj_num == 0) {
     return nullptr;
   }
 
   auto ref = pdfium::MakeRetain<CPDF_Reference>(this, info_obj_num);
-  info_dict_ = ToDictionary(ref->GetMutableDirect());
+  SetCachedInfoDict(ToDictionary(ref->GetMutableDirect()));
   return info_dict_;
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutableInfo() {
+  return GetInfo();
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
@@ -630,12 +661,13 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
     return existing;
 
   // No Info present: create a new indirect dictionary and cache it.
-  info_dict_ = NewIndirect<CPDF_Dictionary>();
+  SetCachedInfoDict(NewIndirect<CPDF_Dictionary>());
   return info_dict_;
 }
 
 RetainPtr<const CPDF_Array> CPDF_Document::GetFileIdentifier() const {
-  return parser_ ? parser_->GetIDArray() : nullptr;
+  CPDF_Parser* parser = GetParser();
+  return parser ? parser->GetIDArray() : nullptr;
 }
 
 uint32_t CPDF_Document::DeletePage(int iPage) {
@@ -659,22 +691,24 @@ uint32_t CPDF_Document::DeletePage(int iPage) {
     return 0;
   }
 
-  page_list_.erase(page_list_.begin() + iPage);
+  ErasePageObjNum(iPage);
   return page_dict->GetObjNum();
 }
 
 void CPDF_Document::SetPageToNullObject(uint32_t page_obj_num) {
-  if (!page_obj_num || page_list_.empty()) {
+  if (!page_obj_num || GetPageListSize() == 0) {
     return;
   }
 
   // Load all pages so `page_list_` has all the object numbers.
-  for (size_t i = 0; i < page_list_.size(); ++i) {
-    GetPageDictionary(i);
+  for (size_t i = 0; i < GetPageListSize(); ++i) {
+    GetPageDictionary(pdfium::checked_cast<int>(i));
   }
 
-  if (pdfium::Contains(page_list_, page_obj_num)) {
-    return;
+  for (size_t i = 0; i < GetPageListSize(); ++i) {
+    if (GetPageObjNumAt(i) == page_obj_num) {
+      return;
+    }
   }
 
   // If `page_dict` is no longer in the page tree, replace it with an object of
@@ -689,7 +723,7 @@ void CPDF_Document::SetPageToNullObject(uint32_t page_obj_num) {
 }
 
 void CPDF_Document::SetRootForTesting(RetainPtr<CPDF_Dictionary> root) {
-  root_dict_ = std::move(root);
+  SetCachedRootDict(std::move(root));
 }
 
 bool CPDF_Document::MovePages(pdfium::span<const int> page_indices,
@@ -773,7 +807,47 @@ bool CPDF_Document::MovePages(pdfium::span<const int> page_indices,
 }
 
 void CPDF_Document::ResizePageListForTesting(size_t size) {
+  ResizePageList(size);
+}
+
+uint32_t CPDF_Document::GetPageObjNumAt(size_t index) const {
+  return page_list_[index];
+}
+
+void CPDF_Document::SetPageObjNumAt(size_t index, uint32_t objnum) {
+  page_list_[index] = objnum;
+}
+
+void CPDF_Document::InsertPageObjNum(size_t index, uint32_t objnum) {
+  page_list_.insert(page_list_.begin() + index, objnum);
+}
+
+void CPDF_Document::ErasePageObjNum(size_t index) {
+  page_list_.erase(page_list_.begin() + index);
+}
+
+void CPDF_Document::ResizePageList(size_t size) {
   page_list_.resize(size);
+}
+
+size_t CPDF_Document::GetPageListSize() const {
+  return page_list_.size();
+}
+
+void CPDF_Document::SetCachedRootDict(RetainPtr<CPDF_Dictionary> root) {
+  root_dict_ = std::move(root);
+}
+
+void CPDF_Document::InvalidateCachedRootDict() {
+  root_dict_.Reset();
+}
+
+void CPDF_Document::SetCachedInfoDict(RetainPtr<CPDF_Dictionary> info) {
+  info_dict_ = std::move(info);
+}
+
+void CPDF_Document::InvalidateCachedInfoDict() {
+  info_dict_.Reset();
 }
 
 CPDF_Document::StockFontClearer::StockFontClearer(
