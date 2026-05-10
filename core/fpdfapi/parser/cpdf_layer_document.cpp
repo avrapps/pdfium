@@ -131,6 +131,20 @@ RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableInfo() {
   return info;
 }
 
+RetainPtr<const CPDF_Dictionary> CPDF_LayerDocument::GetPageDictionary(
+    int iPage) {
+  if (iPage < 0 || static_cast<size_t>(iPage) >= GetPageListSize()) {
+    return nullptr;
+  }
+
+  const uint32_t objnum = GetPageObjNumAt(iPage);
+  if (!objnum) {
+    return nullptr;
+  }
+
+  return ToDictionary(GetOrParseIndirectObject(objnum));
+}
+
 uint32_t CPDF_LayerDocument::GetUserPermissions(bool get_owner_perms) const {
   return base_->GetUserPermissions(get_owner_perms);
 }

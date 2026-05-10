@@ -27,7 +27,7 @@ FPDFDoc_GetJavaScriptActionCount(FPDF_DOCUMENT document) {
     return -1;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "JavaScript");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "JavaScript");
   return name_tree ? pdfium::checked_cast<int>(name_tree->GetCount()) : 0;
 }
 
@@ -38,7 +38,7 @@ FPDFDoc_GetJavaScriptAction(FPDF_DOCUMENT document, int index) {
     return nullptr;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "JavaScript");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "JavaScript");
   if (!name_tree || static_cast<size_t>(index) >= name_tree->GetCount()) {
     return nullptr;
   }

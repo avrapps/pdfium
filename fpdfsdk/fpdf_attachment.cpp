@@ -43,7 +43,7 @@ FPDFDoc_GetAttachmentCount(FPDF_DOCUMENT document) {
     return 0;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "EmbeddedFiles");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "EmbeddedFiles");
   return name_tree ? pdfium::checked_cast<int>(name_tree->GetCount()) : 0;
 }
 
@@ -87,7 +87,7 @@ FPDFDoc_GetAttachment(FPDF_DOCUMENT document, int index) {
     return nullptr;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "EmbeddedFiles");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "EmbeddedFiles");
   if (!name_tree || static_cast<size_t>(index) >= name_tree->GetCount()) {
     return nullptr;
   }
@@ -334,38 +334,44 @@ FPDFAttachment_GetSubtype(FPDF_ATTACHMENT attachment,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_SetSubtype(FPDF_ATTACHMENT attachment, FPDF_BYTESTRING subtype) {
   CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
-  if (!file)
+  if (!file) {
     return false;
+  }
 
   CPDF_FileSpec spec(pdfium::WrapRetain(file));
   RetainPtr<const CPDF_Stream> file_stream = spec.GetFileStream();
-  if (!file_stream)
+  if (!file_stream) {
     return false;
+  }
 
   CPDF_Stream* s = const_cast<CPDF_Stream*>(file_stream.Get());
   CPDF_Dictionary* dict = s->GetMutableDict();
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // Ensure /Type is present (defensive).
-  if (dict->GetNameFor("Type").IsEmpty())
+  if (dict->GetNameFor("Type").IsEmpty()) {
     dict->SetNewFor<CPDF_Name>("Type", "EmbeddedFile");
+  }
 
   // Convert to ByteString.
   ByteString bs = subtype ? ByteString(subtype) : ByteString();
   if (bs.IsEmpty()) {
     dict->RemoveFor("Subtype");
   } else {
-    dict->SetNewFor<CPDF_Name>("Subtype", bs); 
+    dict->SetNewFor<CPDF_Name>("Subtype", bs);
   }
   return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment, FPDF_WIDESTRING desc) {
+EPDFAttachment_SetDescription(FPDF_ATTACHMENT attachment,
+                              FPDF_WIDESTRING desc) {
   CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
-  if (!file || !file->IsDictionary())
+  if (!file || !file->IsDictionary()) {
     return false;
+  }
 
   // SAFETY: required from caller.
   WideString ws = UNSAFE_BUFFERS(WideStringFromFPDFWideString(desc));
@@ -384,42 +390,48 @@ EPDFAttachment_GetDescription(FPDF_ATTACHMENT attachment,
                               FPDF_WCHAR* buffer,
                               unsigned long buflen) {
   CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
-  if (!file || !file->IsDictionary())
+  if (!file || !file->IsDictionary()) {
     return 0;
+  }
 
-  RetainPtr<const CPDF_Object> obj =
-      file->AsDictionary()->GetObjectFor("Desc");
-  if (!obj || !obj->IsString())
-    return Utf16EncodeMaybeCopyAndReturnLength(WideString(),
-           UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+  RetainPtr<const CPDF_Object> obj = file->AsDictionary()->GetObjectFor("Desc");
+  if (!obj || !obj->IsString()) {
+    return Utf16EncodeMaybeCopyAndReturnLength(
+        WideString(), UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+  }
 
-  return Utf16EncodeMaybeCopyAndReturnLength(obj->GetUnicodeText(),
-         UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      obj->GetUnicodeText(),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAttachment_GetIntegerValue(FPDF_ATTACHMENT attachment,
                                FPDF_BYTESTRING key,
                                int* out_value) {
-  if (!out_value)
+  if (!out_value) {
     return false;
+  }
 
   CPDF_Object* file = CPDFObjectFromFPDFAttachment(attachment);
-  if (!file)
+  if (!file) {
     return false;
+  }
 
   CPDF_FileSpec spec(pdfium::WrapRetain(file));
   RetainPtr<const CPDF_Dictionary> params = spec.GetParamsDict();
-  if (!params)
+  if (!params) {
     return false;
+  }
 
   ByteStringView k(key);
   RetainPtr<const CPDF_Object> obj = params->GetObjectFor(k);
-  if (!obj || !obj->IsNumber())
+  if (!obj || !obj->IsNumber()) {
     return false;
+  }
 
   const CPDF_Number* num = obj->AsNumber();
-  *out_value = num->IsInteger() ? num->GetInteger()
-                                : static_cast<int>(num->GetNumber());
+  *out_value =
+      num->IsInteger() ? num->GetInteger() : static_cast<int>(num->GetNumber());
   return true;
 }

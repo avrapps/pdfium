@@ -20,7 +20,9 @@
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_attachment.h"
 #include "public/fpdf_doc.h"
+#include "public/fpdf_javascript.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
@@ -204,6 +206,51 @@ TEST(fpdf, CApiTest) {
 
 class FPDFViewEmbedderTest : public EmbedderTest {
  protected:
+  void CheckReadOnlyLayerWorkflowProducesEmptyDelta(const char* file_name) {
+    FileAccessForTesting base_access(file_name);
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+    ASSERT_TRUE(base) << file_name;
+
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer) << file_name;
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status) << file_name;
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    const int page_count = FPDF_GetPageCount(layer.get());
+    ASSERT_GT(page_count, 0) << file_name;
+    for (int page_index = 0; page_index < page_count; ++page_index) {
+      ScopedFPDFPage page(FPDF_LoadPage(layer.get(), page_index));
+      ASSERT_TRUE(page) << file_name << " page " << page_index;
+      ScopedFPDFBitmap bitmap = RenderPage(page.get());
+      ASSERT_TRUE(bitmap) << file_name << " page " << page_index;
+
+      const int annot_count = FPDFPage_GetAnnotCount(page.get());
+      for (int annot_index = 0; annot_index < annot_count; ++annot_index) {
+        ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), annot_index));
+        ASSERT_TRUE(annot) << file_name << " annot " << annot_index;
+      }
+
+      int link_pos = 0;
+      FPDF_LINK link = nullptr;
+      while (FPDFLink_Enumerate(page.get(), &link_pos, &link)) {
+        ASSERT_TRUE(link) << file_name << " page " << page_index;
+      }
+    }
+
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status))
+        << file_name;
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status) << file_name;
+    EXPECT_TRUE(GetString().empty()) << file_name;
+
+    EPDF_ReleaseBaseDocument(base);
+  }
+
   void TestRenderPageBitmapWithMatrix(FPDF_PAGE page,
                                       int bitmap_width,
                                       int bitmap_height,
@@ -768,49 +815,228 @@ TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerWorkflowsProduceEmptyDelta) {
   };
 
   for (const char* file_name : kFiles) {
-    FileAccessForTesting base_access(file_name);
+    CheckReadOnlyLayerWorkflowProducesEmptyDelta(file_name);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerRenderCacheMatrixProducesEmptyDelta) {
+  static constexpr const char* kFiles[] = {
+      "form_object.pdf",
+      "form_object_with_text.pdf",
+      "form_object_with_image.pdf",
+      "form_object_with_path.pdf",
+      "shared_form_xobject_matrix.pdf",
+      "hello_world_2_pages_shared_resources_dict.pdf",
+      "jpx_lzw.pdf",
+      "rotated_image.pdf",
+      "simple_thumbnail.pdf",
+      "thumbnail_with_no_filters.pdf",
+  };
+
+  for (const char* file_name : kFiles) {
+    CheckReadOnlyLayerWorkflowProducesEmptyDelta(file_name);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerAnnotMatrixProducesEmptyDelta) {
+  static constexpr const char* kFiles[] = {
+      "annots.pdf",
+      "annotation_markup_multiline_no_ap.pdf",
+      "annotation_highlight_rollover_ap.pdf",
+      "annotation_ink_multiple.pdf",
+      "polygon_annot.pdf",
+      "line_annot.pdf",
+      "redact_annot.pdf",
+      "annotation_fileattachment.pdf",
+  };
+
+  for (const char* file_name : kFiles) {
+    CheckReadOnlyLayerWorkflowProducesEmptyDelta(file_name);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerCatalogMatrixProducesEmptyDelta) {
+  static constexpr const char* kFiles[] = {
+      "embedded_attachments.pdf", "named_dests.pdf",    "page_labels.pdf",
+      "tagged_mcr_multipage.pdf", "two_signatures.pdf",
+  };
+
+  for (const char* file_name : kFiles) {
+    CheckReadOnlyLayerWorkflowProducesEmptyDelta(file_name);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       ReadOnlyLayerMalformedOldStyleNamedDestsProducesEmptyDelta) {
+  FileAccessForTesting plain_access("named_dests_old_style.pdf");
+  ScopedFPDFDocument plain(FPDF_LoadCustomDocument(&plain_access, nullptr));
+  ASSERT_TRUE(plain);
+  EXPECT_EQ(2, FPDF_GetPageCount(plain.get()));
+  ScopedFPDFPage plain_page_0(FPDF_LoadPage(plain.get(), 0));
+  EXPECT_TRUE(plain_page_0);
+  ScopedFPDFPage plain_page_1(FPDF_LoadPage(plain.get(), 1));
+  EXPECT_FALSE(plain_page_1);
+
+  FileAccessForTesting base_access("named_dests_old_style.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+  EXPECT_EQ(2, FPDF_GetPageCount(layer.get()));
+
+  EXPECT_EQ(2u, FPDF_CountNamedDests(layer.get()));
+  EXPECT_FALSE(FPDF_GetNamedDestByName(layer.get(), nullptr));
+  EXPECT_FALSE(FPDF_GetNamedDestByName(layer.get(), ""));
+  EXPECT_FALSE(FPDF_GetNamedDestByName(layer.get(), "NoSuchName"));
+  EXPECT_TRUE(FPDF_GetNamedDestByName(layer.get(), kFirstAlternate));
+  EXPECT_TRUE(FPDF_GetNamedDestByName(layer.get(), kLastAlternate));
+
+  char buffer[512];
+  long size = sizeof(buffer);
+  ASSERT_TRUE(FPDF_GetNamedDest(layer.get(), 0, buffer, &size));
+  ASSERT_EQ(static_cast<int>(sizeof(kFirstAlternate) * 2), size);
+  EXPECT_EQ(kFirstAlternate,
+            GetPlatformString(reinterpret_cast<FPDF_WIDESTRING>(buffer)));
+
+  ScopedFPDFPage layer_page_0(FPDF_LoadPage(layer.get(), 0));
+  EXPECT_TRUE(layer_page_0);
+  ScopedFPDFPage layer_page_1(FPDF_LoadPage(layer.get(), 1));
+  EXPECT_FALSE(layer_page_1);
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  EXPECT_TRUE(GetString().empty());
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerNameTreeApisProduceEmptyDelta) {
+  {
+    FileAccessForTesting base_access("embedded_attachments.pdf");
     EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
-    ASSERT_TRUE(base) << file_name;
+    ASSERT_TRUE(base);
 
     EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
     ScopedFPDFDocument layer(
         EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
-    ASSERT_TRUE(layer) << file_name;
-    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status) << file_name;
-    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
 
-    const int page_count = FPDF_GetPageCount(layer.get());
-    ASSERT_GT(page_count, 0) << file_name;
-    for (int page_index = 0; page_index < page_count; ++page_index) {
-      ScopedFPDFPage page(FPDF_LoadPage(layer.get(), page_index));
-      ASSERT_TRUE(page) << file_name << " page " << page_index;
-      ScopedFPDFBitmap bitmap = RenderPage(page.get());
-      ASSERT_TRUE(bitmap) << file_name << " page " << page_index;
-
-      const int annot_count = FPDFPage_GetAnnotCount(page.get());
-      for (int annot_index = 0; annot_index < annot_count; ++annot_index) {
-        ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), annot_index));
-        ASSERT_TRUE(annot) << file_name << " annot " << annot_index;
-      }
-
-      int link_pos = 0;
-      FPDF_LINK link = nullptr;
-      while (FPDFLink_Enumerate(page.get(), &link_pos, &link)) {
-        ASSERT_TRUE(link) << file_name << " page " << page_index;
-      }
-    }
-
-    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+    ASSERT_EQ(2, FPDFDoc_GetAttachmentCount(layer.get()));
+    EXPECT_TRUE(FPDFDoc_GetAttachment(layer.get(), 0));
+    EXPECT_TRUE(FPDFDoc_GetAttachment(layer.get(), 1));
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
 
     ClearString();
     EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status))
-        << file_name;
-    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status) << file_name;
-    EXPECT_TRUE(GetString().empty()) << file_name;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    EXPECT_TRUE(GetString().empty());
 
     EPDF_ReleaseBaseDocument(base);
   }
+
+  {
+    FileAccessForTesting base_access("bug_679649.pdf");
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+    ASSERT_TRUE(base);
+
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+    ASSERT_EQ(1, FPDFDoc_GetJavaScriptActionCount(layer.get()));
+    ScopedFPDFJavaScriptAction js(FPDFDoc_GetJavaScriptAction(layer.get(), 0));
+    EXPECT_TRUE(js);
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    EXPECT_TRUE(GetString().empty());
+
+    EPDF_ReleaseBaseDocument(base);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlySiblingLayersStayEmptyAfterPeerMutates) {
+  FileAccessForTesting base_access("embedded_images.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status_a = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_a(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_a));
+  ASSERT_TRUE(layer_a);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_a);
+
+  EPDFLayerOpenStatus status_b = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_b(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_b));
+  ASSERT_TRUE(layer_b);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_b);
+
+  EPDFLayerOpenStatus status_c = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_c(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_c));
+  ASSERT_TRUE(layer_c);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_c);
+
+  for (FPDF_DOCUMENT layer : {layer_a.get(), layer_b.get(), layer_c.get()}) {
+    ScopedFPDFPage page(FPDF_LoadPage(layer, 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer));
+  }
+
+  {
+    ScopedFPDFPage page_b(FPDF_LoadPage(layer_b.get(), 0));
+    ASSERT_TRUE(page_b);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page_b.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+    EXPECT_GT(EPDFLayer_GetPromotedObjectCount(layer_b.get()), 0u);
+  }
+
+  for (FPDF_DOCUMENT read_only_layer : {layer_a.get(), layer_c.get()}) {
+    ScopedFPDFPage page(FPDF_LoadPage(read_only_layer, 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFBitmap bitmap = RenderPage(page.get());
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(read_only_layer));
+  }
+
+  ClearString();
+  EPDFLayerSaveStatus save_status_a = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_a.get(), this, &save_status_a));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status_a);
+  EXPECT_TRUE(GetString().empty());
+
+  ClearString();
+  EPDFLayerSaveStatus save_status_b = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_b.get(), this, &save_status_b));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status_b);
+  EXPECT_FALSE(GetString().empty());
+
+  ClearString();
+  EPDFLayerSaveStatus save_status_c = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_c.get(), this, &save_status_c));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status_c);
+  EXPECT_TRUE(GetString().empty());
+
+  EPDF_ReleaseBaseDocument(base);
 }
 
 TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {

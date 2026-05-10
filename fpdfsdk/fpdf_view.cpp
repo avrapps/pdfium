@@ -1761,7 +1761,7 @@ FPDF_CountNamedDests(FPDF_DOCUMENT document) {
     return 0;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "Dests");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "Dests");
   FX_SAFE_UINT32 count = name_tree ? name_tree->GetCount() : 0;
   RetainPtr<const CPDF_Dictionary> pOldStyleDests = pRoot->GetDictFor("Dests");
   if (pOldStyleDests) {
@@ -1883,7 +1883,7 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
     return nullptr;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "Dests");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "Dests");
   size_t name_tree_count = name_tree ? name_tree->GetCount() : 0;
   RetainPtr<const CPDF_Object> pDestObj;
   WideString wsName;

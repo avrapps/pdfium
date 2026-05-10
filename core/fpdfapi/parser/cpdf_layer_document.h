@@ -40,6 +40,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
   CPDF_Parser* GetParser() const override;
   RetainPtr<CPDF_Dictionary> GetMutableRoot() override;
   RetainPtr<CPDF_Dictionary> GetMutableInfo() override;
+  RetainPtr<const CPDF_Dictionary> GetPageDictionary(int iPage) override;
   uint32_t GetUserPermissions(bool get_owner_perms) const override;
   RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override;
   bool IsLayerDocument() const override;
