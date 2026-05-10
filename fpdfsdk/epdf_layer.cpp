@@ -372,6 +372,11 @@ EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
     return false;
   }
 
+  if (layer_doc->GetPromotedObjectCount() == 0) {
+    SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
+    return true;
+  }
+
   if (!layer_doc->GetParser()) {
     return false;
   }

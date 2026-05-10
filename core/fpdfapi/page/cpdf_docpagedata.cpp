@@ -452,10 +452,9 @@ RetainPtr<CPDF_Image> CPDF_DocPageData::GetImage(uint32_t dwStreamObjNum) {
     return it->second;
   }
 
-  if (fallback_ && !GetDocument()->IsObjectPromoted(dwStreamObjNum)) {
-    return fallback_->GetImage(dwStreamObjNum);
-  }
-
+  // CPDF_Image carries a document back-pointer and CPDF_PageImageCache rejects
+  // cross-document images. Build a document-local CPDF_Image even when the
+  // underlying stream falls through to a shared base document.
   auto pImage = pdfium::MakeRetain<CPDF_Image>(GetDocument(), dwStreamObjNum);
   image_map_[dwStreamObjNum] = pImage;
   return pImage;

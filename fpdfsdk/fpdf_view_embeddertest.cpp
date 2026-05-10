@@ -20,6 +20,7 @@
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_doc.h"
 #include "public/fpdf_save.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
@@ -756,6 +757,60 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerAnnotHandleDoesNotPromote) {
   }
 
   EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerWorkflowsProduceEmptyDelta) {
+  static constexpr const char* kFiles[] = {
+      "links_highlights_annots.pdf",
+      "multiple_form_types.pdf",
+      "embedded_images.pdf",
+      "annotation_stamp_with_ap.pdf",
+  };
+
+  for (const char* file_name : kFiles) {
+    FileAccessForTesting base_access(file_name);
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+    ASSERT_TRUE(base) << file_name;
+
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer) << file_name;
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status) << file_name;
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    const int page_count = FPDF_GetPageCount(layer.get());
+    ASSERT_GT(page_count, 0) << file_name;
+    for (int page_index = 0; page_index < page_count; ++page_index) {
+      ScopedFPDFPage page(FPDF_LoadPage(layer.get(), page_index));
+      ASSERT_TRUE(page) << file_name << " page " << page_index;
+      ScopedFPDFBitmap bitmap = RenderPage(page.get());
+      ASSERT_TRUE(bitmap) << file_name << " page " << page_index;
+
+      const int annot_count = FPDFPage_GetAnnotCount(page.get());
+      for (int annot_index = 0; annot_index < annot_count; ++annot_index) {
+        ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), annot_index));
+        ASSERT_TRUE(annot) << file_name << " annot " << annot_index;
+      }
+
+      int link_pos = 0;
+      FPDF_LINK link = nullptr;
+      while (FPDFLink_Enumerate(page.get(), &link_pos, &link)) {
+        ASSERT_TRUE(link) << file_name << " page " << page_index;
+      }
+    }
+
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status))
+        << file_name;
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status) << file_name;
+    EXPECT_TRUE(GetString().empty()) << file_name;
+
+    EPDF_ReleaseBaseDocument(base);
+  }
 }
 
 TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
