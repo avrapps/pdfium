@@ -15,6 +15,8 @@ source_set("parser") {
     "cpdf_base_document.h",
     "cpdf_boolean.cpp",
     "cpdf_boolean.h",
+    "cpdf_concat_read_stream.cpp",
+    "cpdf_concat_read_stream.h",
     "cpdf_cross_ref_avail.cpp",
     "cpdf_cross_ref_avail.h",
     "cpdf_cross_ref_table.cpp",

@@ -5,11 +5,12 @@
 #include "core/fpdfapi/parser/cpdf_layer_document.h"
 
 #include <algorithm>
-#include <memory>
 #include <utility>
 
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
+#include "core/fpdfapi/parser/cpdf_concat_read_stream.h"
+#include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
@@ -17,6 +18,56 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/notreached.h"
+#include "core/fxcrt/unowned_ptr.h"
+
+namespace {
+
+class DeltaParseObjectHolder final : public CPDF_Parser::ParsedObjectsHolder {
+ public:
+  DeltaParseObjectHolder() = default;
+  ~DeltaParseObjectHolder() override = default;
+
+  void SetParser(CPDF_Parser* parser) { parser_ = parser; }
+  bool TryInit() override { return true; }
+
+ protected:
+  RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override {
+    return parser_ ? parser_->ParseIndirectObject(objnum) : nullptr;
+  }
+
+ private:
+  UnownedPtr<CPDF_Parser> parser_;
+};
+
+bool IsBaseObjectLive(const CPDF_Parser* base_parser, uint32_t objnum) {
+  return objnum != 0 && base_parser->IsValidObjectNumber(objnum) &&
+         !base_parser->IsObjectFree(objnum);
+}
+
+bool IsObjectOwnedByAppendedDelta(const CPDF_CrossRefTable* table,
+                                  uint32_t objnum,
+                                  const CPDF_CrossRefTable::ObjectInfo& info,
+                                  FX_FILESIZE layer_append_base_offset) {
+  if (objnum == table->trailer_object_number()) {
+    return false;
+  }
+
+  switch (info.type) {
+    case CPDF_CrossRefTable::ObjectType::kFree:
+      return false;
+    case CPDF_CrossRefTable::ObjectType::kNormal:
+      return info.pos >= layer_append_base_offset;
+    case CPDF_CrossRefTable::ObjectType::kCompressed: {
+      const CPDF_CrossRefTable::ObjectInfo* archive_info =
+          table->GetObjectInfo(info.archive.obj_num);
+      return archive_info &&
+             archive_info->type == CPDF_CrossRefTable::ObjectType::kNormal &&
+             archive_info->pos >= layer_append_base_offset;
+    }
+  }
+}
+
+}  // namespace
 
 CPDF_LayerDocument::CPDF_LayerDocument(
     RetainPtr<CPDF_BaseDocument> base,
@@ -91,6 +142,10 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::FindPromotedObject(
 
 bool CPDF_LayerDocument::IsLayerDocument() const {
   return true;
+}
+
+FX_FILESIZE CPDF_LayerDocument::GetLayerAppendBaseOffset() const {
+  return base_->GetLayerAppendBaseOffset();
 }
 
 RetainPtr<CPDF_Object> CPDF_LayerDocument::ParseIndirectObject(
@@ -179,21 +234,97 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
 
   CPDF_Parser* base_parser = base_->GetParser();
   if (!base_parser || !file_access_) {
-    ingest_status_ = OpenStatus::kOpenFailed;
+    if (!file_access_) {
+      return;
+    }
+    FailDeltaIngest(OpenStatus::kOpenFailed);
     return;
   }
 
-  const FX_FILESIZE base_end = base_parser->GetDocumentSize();
-  const FX_FILESIZE layer_size = file_access_->GetSize();
-  if (layer_size < base_end) {
-    ingest_status_ = OpenStatus::kBaseLayerMismatch;
+  const FX_FILESIZE delta_size = file_access_->GetSize();
+  if (delta_size == 0) {
+    file_access_.Reset();
     return;
   }
-  if (layer_size > base_end) {
-    // Full appended-xref ingest lands with the delta parser. Until then, fail
-    // closed instead of silently ignoring a caller-provided delta.
-    ingest_status_ = OpenStatus::kMalformedDelta;
+
+  RetainPtr<IFX_SeekableReadStream> base_file = base_parser->GetFileAccess();
+  if (!base_file) {
+    FailDeltaIngest(OpenStatus::kOpenFailed);
+    return;
   }
+
+  const FX_FILESIZE layer_append_base_offset =
+      base_->GetLayerAppendBaseOffset();
+  DeltaParseObjectHolder temp_holder;
+  CPDF_Parser parser(&temp_holder);
+  temp_holder.SetParser(&parser);
+  CPDF_Parser::Error parse_error =
+      parser.StartParse(pdfium::MakeRetain<CPDF_ConcatReadStream>(
+                            std::move(base_file), file_access_),
+                        base_parser->GetPassword());
+  if (parse_error != CPDF_Parser::SUCCESS) {
+    FailDeltaIngest(OpenStatus::kMalformedDelta);
+    return;
+  }
+  if (parser.GetLastXRefOffset() < layer_append_base_offset) {
+    FailDeltaIngest(OpenStatus::kMalformedDelta);
+    return;
+  }
+
+  const CPDF_CrossRefTable* table = parser.GetCrossRefTable();
+  if (!table) {
+    FailDeltaIngest(OpenStatus::kMalformedDelta);
+    return;
+  }
+
+  for (const auto& [objnum, info] : table->objects_info()) {
+    if (info.type == CPDF_CrossRefTable::ObjectType::kFree &&
+        IsBaseObjectLive(base_parser, objnum)) {
+      FailDeltaIngest(OpenStatus::kMalformedDelta);
+      return;
+    }
+  }
+
+  size_t selected_delta_object_count = 0;
+  for (const auto& [objnum, info] : table->objects_info()) {
+    if (!IsObjectOwnedByAppendedDelta(table, objnum, info,
+                                      layer_append_base_offset)) {
+      continue;
+    }
+
+    RetainPtr<CPDF_Object> parsed = parser.ParseIndirectObject(objnum);
+    if (!parsed) {
+      FailDeltaIngest(OpenStatus::kMalformedDelta);
+      return;
+    }
+
+    RetainPtr<CPDF_Object> clone = parsed->CloneForHolder(this);
+    if (!clone) {
+      FailDeltaIngest(OpenStatus::kMalformedDelta);
+      return;
+    }
+    clone->SetGenNum(info.gennum);
+    AddPromotedObject(objnum, std::move(clone));
+    ++selected_delta_object_count;
+  }
+
+  if (FindLocalIndirectObject(base_parser->GetRootObjNum())) {
+    InvalidateCachedRootDict();
+  }
+  if (FindLocalIndirectObject(base_parser->GetInfoObjNum())) {
+    InvalidateCachedInfoDict();
+  }
+  if (selected_delta_object_count > 0 &&
+      !RebuildPageListFromCurrentPageTree()) {
+    FailDeltaIngest(OpenStatus::kMalformedDelta);
+    return;
+  }
+  file_access_.Reset();
+}
+
+void CPDF_LayerDocument::FailDeltaIngest(OpenStatus status) {
+  ingest_status_ = status;
+  file_access_.Reset();
 }
 
 RetainPtr<CPDF_Object> CPDF_LayerDocument::PromoteFromBase(uint32_t objnum) {

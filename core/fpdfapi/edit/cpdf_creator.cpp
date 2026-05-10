@@ -8,9 +8,9 @@
 
 #include <stdint.h>
 
+#include <inttypes.h>
 #include <algorithm>
 #include <array>
-#include <inttypes.h>
 #include <set>
 #include <utility>
 
@@ -290,7 +290,9 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage1() {
       }
       stage_ = Stage::kInitWriteObjs20;
     } else {
-      saved_offset_ = parser_->GetDocumentSize();
+      saved_offset_ = is_incremental_append_only_
+                          ? document_->GetLayerAppendBaseOffset()
+                          : parser_->GetDocumentSize();
       stage_ = Stage::kWriteIncremental15;
     }
   }
@@ -370,7 +372,8 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
   uint32_t dwLastObjNum = last_obj_num_;
   if (stage_ == Stage::kInitWriteXRefs80) {
     xref_start_ = archive_->CurrentOffset();
-    if (!is_incremental_ || !parser_->IsXRefStream()) {
+    if (!is_incremental_ || is_incremental_append_only_ ||
+        !parser_->IsXRefStream()) {
       if (!is_incremental_ || parser_->GetLastXRefOffset() == 0) {
         ByteString str;
         str = pdfium::Contains(object_offsets_, 1)
@@ -486,7 +489,8 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage3() {
 CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
   DCHECK(stage_ >= Stage::kWriteTrailerAndFinish90);
 
-  bool bXRefStream = is_incremental_ && parser_->IsXRefStream();
+  bool bXRefStream = is_incremental_ && !is_incremental_append_only_ &&
+                     parser_->IsXRefStream();
   if (!bXRefStream) {
     if (!archive_->WriteString("trailer\r\n<<")) {
       return Stage::kInvalid;
@@ -654,8 +658,7 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   }
 
   is_incremental_ = !!(flags & CreateFlags::kIncremental);
-  is_incremental_append_only_ =
-      !!(flags & CreateFlags::kIncrementalAppendOnly);
+  is_incremental_append_only_ = !!(flags & CreateFlags::kIncrementalAppendOnly);
   if (is_incremental_append_only_ && !is_incremental_) {
     failure_reason_ = FailureReason::kOther;
     return false;
@@ -663,7 +666,7 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   is_original_ = !(flags & CreateFlags::kNoOriginal);
   if (is_incremental_append_only_ && parser_) {
     static_cast<CFX_FileBufferArchive*>(archive_.get())
-        ->SetNotionalStartOffset(parser_->GetDocumentSize());
+        ->SetNotionalStartOffset(document_->GetLayerAppendBaseOffset());
   }
 
   if (file_version >= 10 && file_version <= 17) {

@@ -40,6 +40,27 @@ TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocWithVersion) {
   EXPECT_EQ(805u, GetString().size());
 }
 
+TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocToOwnedBuffer) {
+  EPDF_FreeBuffer(nullptr);
+
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  unsigned long size = 0;
+  void* buffer = EPDF_SaveDocumentToOwnedBuffer(document(), 0, &size);
+  ASSERT_TRUE(buffer);
+  EXPECT_EQ(805u, size);
+  std::string saved(static_cast<const char*>(buffer), size);
+  EPDF_FreeBuffer(buffer);
+  EXPECT_THAT(saved, StartsWith("%PDF-1.7\r\n"));
+
+  size = 0;
+  buffer = EPDF_SaveDocumentToOwnedBufferWithVersion(document(), 0, &size, 14);
+  ASSERT_TRUE(buffer);
+  EXPECT_EQ(805u, size);
+  saved.assign(static_cast<const char*>(buffer), size);
+  EPDF_FreeBuffer(buffer);
+  EXPECT_THAT(saved, StartsWith("%PDF-1.4\r\n"));
+}
+
 TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocWithBadVersion) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   EXPECT_TRUE(FPDF_SaveWithVersion(document(), this, 0, -1));

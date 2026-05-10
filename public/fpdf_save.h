@@ -86,6 +86,36 @@ FPDF_SaveWithVersion(FPDF_DOCUMENT document,
                      FPDF_DWORD flags,
                      int file_version);
 
+// Function: EPDF_FreeBuffer
+//          Releases a buffer returned by an EPDF_*ToOwnedBuffer() API.
+// Parameters:
+//          buffer      -   Buffer returned by an EPDF owned-buffer API, or
+//                          NULL.
+FPDF_EXPORT void FPDF_CALLCONV EPDF_FreeBuffer(void* buffer);
+
+// Function: EPDF_SaveDocumentToOwnedBuffer
+//          Saves the copy of specified document into an owned memory buffer.
+//          The caller must release the returned buffer with EPDF_FreeBuffer().
+// Parameters:
+//          document    -   Handle to document.
+//          flags       -   Flags above that affect how the PDF gets saved.
+//          out_size    -   Receives the size of the returned buffer.
+// Return value:
+//          Owned buffer if successful, NULL if failed.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBuffer(FPDF_DOCUMENT document,
+                               FPDF_DWORD flags,
+                               unsigned long* out_size);
+
+// Function: EPDF_SaveDocumentToOwnedBufferWithVersion
+//          Same as EPDF_SaveDocumentToOwnedBuffer(), except the file version of
+//          the saved document can be specified by the caller.
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBufferWithVersion(FPDF_DOCUMENT document,
+                                          FPDF_DWORD flags,
+                                          unsigned long* out_size,
+                                          int file_version);
+
 // Runtime-side status for saving a layer delta.
 typedef enum {
   EPDFLayerSaveStatus_kSuccess = 0,
@@ -93,9 +123,9 @@ typedef enum {
   EPDFLayerSaveStatus_kSaveFailed = 2,
 } EPDFLayerSaveStatus;
 
-// Function: EPDFLayer_SaveDeltaToBuffer
+// Function: EPDFLayer_SaveDelta
 //          Saves only a layer document's current overlay delta. The caller can
-//          materialize the layer as base bytes followed by this returned delta.
+//          materialize the layer as base bytes followed by the written delta.
 // Parameters:
 //          layer      -   A layer document returned by EPDFLayer_OpenLayer().
 //          file_write -   A pointer to a custom file write structure.
@@ -103,9 +133,27 @@ typedef enum {
 // Return value:
 //          TRUE if succeed, FALSE if failed.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFLayer_SaveDeltaToBuffer(FPDF_DOCUMENT layer,
-                            FPDF_FILEWRITE* file_write,
-                            EPDFLayerSaveStatus* out_status);
+EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
+                    FPDF_FILEWRITE* file_write,
+                    EPDFLayerSaveStatus* out_status);
+
+// Function: EPDFLayer_SaveDeltaToOwnedBuffer
+//          Saves only a layer document's current overlay delta into an owned
+//          memory buffer. The caller must release the returned buffer with
+//          EPDF_FreeBuffer().
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveDeltaToOwnedBuffer(FPDF_DOCUMENT layer,
+                                 unsigned long* out_size,
+                                 EPDFLayerSaveStatus* out_status);
+
+// Function: EPDFLayer_SaveLayerArtifactToOwnedBuffer
+//          Saves a server-facing layer artifact containing base identity
+//          metadata and the raw layer delta. The caller must release the
+//          returned buffer with EPDF_FreeBuffer().
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
+                                         unsigned long* out_size,
+                                         EPDFLayerSaveStatus* out_status);
 
 #ifdef __cplusplus
 }

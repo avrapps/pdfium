@@ -5,6 +5,7 @@
 #include <math.h>
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -109,6 +110,48 @@ class MockDownloadHints final : public FX_DOWNLOADHINTS {
 
   ~MockDownloadHints() = default;
 };
+
+struct CountingStringFileAccess {
+  explicit CountingStringFileAccess(std::string data) : data(std::move(data)) {
+    file_access.m_FileLen = this->data.size();
+    file_access.m_GetBlock = &CountingStringFileAccess::GetBlock;
+    file_access.m_Param = this;
+  }
+
+  FPDF_FILEACCESS* get() { return &file_access; }
+  void ResetCounts() {
+    read_count = 0;
+    read_bytes = 0;
+  }
+
+  static int GetBlock(void* param,
+                      unsigned long pos,
+                      unsigned char* buf,
+                      unsigned long size) {
+    CountingStringFileAccess* file =
+        static_cast<CountingStringFileAccess*>(param);
+    if (!file || pos > file->data.size() || size > file->data.size() - pos) {
+      return 0;
+    }
+    memcpy(buf, file->data.data() + pos, size);
+    ++file->read_count;
+    file->read_bytes += size;
+    return 1;
+  }
+
+  std::string data;
+  FPDF_FILEACCESS file_access = {};
+  size_t read_count = 0;
+  size_t read_bytes = 0;
+};
+
+uint64_t ReadUint64LEForTest(const char* data) {
+  uint64_t value = 0;
+  for (size_t i = 0; i < 8; ++i) {
+    value |= static_cast<uint64_t>(static_cast<uint8_t>(data[i])) << (i * 8);
+  }
+  return value;
+}
 
 #if defined(PDF_USE_SKIA)
 ScopedFPDFBitmap SkImageToPdfiumBitmap(const SkImage& image) {
@@ -667,10 +710,9 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerRendersWithEmptyOverlay) {
   ASSERT_TRUE(base);
 
   {
-    FileAccessForTesting layer_access("rectangles.pdf");
     EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
     ScopedFPDFDocument layer(
-        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &status));
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
     ASSERT_TRUE(layer);
     EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
     EXPECT_EQ(base, EPDFLayer_GetBaseDocument(layer.get()));
@@ -697,10 +739,9 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerAnnotHandleDoesNotPromote) {
   ASSERT_TRUE(base);
 
   {
-    FileAccessForTesting layer_access("annotation_stamp_with_ap.pdf");
     EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
     ScopedFPDFDocument layer(
-        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &status));
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
     ASSERT_TRUE(layer);
     EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
     EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
@@ -723,10 +764,9 @@ TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
   ASSERT_TRUE(base);
 
   {
-    FileAccessForTesting layer_access("rectangles.pdf");
     EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
     ScopedFPDFDocument layer(
-        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &status));
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
     ASSERT_TRUE(layer);
     EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
     EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
@@ -752,10 +792,9 @@ TEST_F(FPDFViewEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
 
   std::string materialized;
   {
-    FileAccessForTesting layer_access("rectangles.pdf");
     EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
     ScopedFPDFDocument layer(
-        EPDFLayer_OpenLayer(base, &layer_access, nullptr, &open_status));
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
     ASSERT_TRUE(layer);
     EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
 
@@ -768,11 +807,24 @@ TEST_F(FPDFViewEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
 
     ClearString();
     EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-    ASSERT_TRUE(EPDFLayer_SaveDeltaToBuffer(layer.get(), this, &save_status));
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
     EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
     const std::string delta = GetString();
     EXPECT_FALSE(delta.empty());
     EXPECT_FALSE(delta.starts_with("%PDF-"));
+
+    FPDF_FILEACCESS delta_access = {};
+    delta_access.m_FileLen = delta.size();
+    delta_access.m_GetBlock = GetBlockFromString;
+    delta_access.m_Param = const_cast<std::string*>(&delta);
+    EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument replayed(
+        EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+    ASSERT_TRUE(replayed);
+    ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+    ASSERT_TRUE(replayed_page);
+    EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
 
     const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
     ASSERT_FALSE(pdf_path.empty());
@@ -794,6 +846,166 @@ TEST_F(FPDFViewEmbedderTest, SaveLayerDeltaMaterializesWithBaseBytes) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, LayerDeltaReplayWithLeadingBytesInBase) {
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  ASSERT_FALSE(pdf_path.empty());
+  std::vector<uint8_t> file_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(file_bytes.empty());
+
+  std::string base_bytes = "leading junk\n";
+  base_bytes.append(reinterpret_cast<const char*>(file_bytes.data()),
+                    file_bytes.size());
+  CountingStringFileAccess base_access(base_bytes);
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
+  ASSERT_TRUE(base);
+
+  std::string delta;
+  {
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer);
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    ASSERT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    delta = GetString();
+
+    unsigned long artifact_size = 0;
+    void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
+        layer.get(), &artifact_size, &save_status);
+    ASSERT_TRUE(artifact_buffer);
+    std::string artifact(static_cast<const char*>(artifact_buffer),
+                         artifact_size);
+    EPDF_FreeBuffer(artifact_buffer);
+    ASSERT_GE(artifact.size(), 40u);
+    EXPECT_EQ(base_bytes.size(), ReadUint64LEForTest(artifact.data() + 16));
+    EXPECT_LT(ReadUint64LEForTest(artifact.data() + 24),
+              ReadUint64LEForTest(artifact.data() + 16));
+  }
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
+
+  const std::string materialized = base_bytes + delta;
+  ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
+      materialized.data(), materialized.size(), nullptr));
+  ASSERT_TRUE(stock_reopened);
+  ScopedFPDFPage stock_page(FPDF_LoadPage(stock_reopened.get(), 0));
+  ASSERT_TRUE(stock_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(stock_page.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerDeltaReplayWithTrailingBytesInBase) {
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  ASSERT_FALSE(pdf_path.empty());
+  std::vector<uint8_t> file_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(file_bytes.empty());
+
+  std::string base_bytes(reinterpret_cast<const char*>(file_bytes.data()),
+                         file_bytes.size());
+  base_bytes += "\n% harmless trailing bytes\n";
+  CountingStringFileAccess base_access(base_bytes);
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  const std::string delta = GetString();
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = const_cast<std::string*>(&delta);
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
+
+  const std::string materialized = base_bytes + delta;
+  ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
+      materialized.data(), materialized.size(), nullptr));
+  ASSERT_TRUE(stock_reopened);
+  ScopedFPDFPage stock_page(FPDF_LoadPage(stock_reopened.get(), 0));
+  ASSERT_TRUE(stock_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(stock_page.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerArtifactSaveUsesCachedBaseIdentity) {
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  ASSERT_FALSE(pdf_path.empty());
+  std::vector<uint8_t> file_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(file_bytes.empty());
+  std::string base_bytes(reinterpret_cast<const char*>(file_bytes.data()),
+                         file_bytes.size());
+
+  CountingStringFileAccess base_access(base_bytes);
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(base_access.get(), nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+
+  base_access.ResetCounts();
+  unsigned long artifact_size = 0;
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
+      layer.get(), &artifact_size, &save_status);
+  ASSERT_TRUE(artifact_buffer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  EXPECT_EQ(0u, base_access.read_bytes);
+  EPDF_FreeBuffer(artifact_buffer);
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, LayerDiagnosticsRejectPlainDocuments) {
   ASSERT_TRUE(OpenDocument("rectangles.pdf"));
   EXPECT_FALSE(EPDFLayer_GetBaseDocument(document()));
@@ -802,8 +1014,75 @@ TEST_F(FPDFViewEmbedderTest, LayerDiagnosticsRejectPlainDocuments) {
 
   ClearString();
   EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSuccess;
-  EXPECT_FALSE(EPDFLayer_SaveDeltaToBuffer(document(), this, &save_status));
+  EXPECT_FALSE(EPDFLayer_SaveDelta(document(), this, &save_status));
   EXPECT_EQ(EPDFLayerSaveStatus_kSaveFailed, save_status);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerOwnedBufferAndArtifactReplay) {
+  EPDF_FreeBuffer(nullptr);
+
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  unsigned long delta_size = 0;
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  void* delta_buffer =
+      EPDFLayer_SaveDeltaToOwnedBuffer(layer.get(), &delta_size, &save_status);
+  ASSERT_TRUE(delta_buffer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta(static_cast<const char*>(delta_buffer), delta_size);
+  EPDF_FreeBuffer(delta_buffer);
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus delta_open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &delta_open_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, delta_open_status);
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(replayed_page.get()));
+
+  unsigned long artifact_size = 0;
+  save_status = EPDFLayerSaveStatus_kSaveFailed;
+  void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
+      layer.get(), &artifact_size, &save_status);
+  ASSERT_TRUE(artifact_buffer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string artifact(static_cast<const char*>(artifact_buffer),
+                       artifact_size);
+  EPDF_FreeBuffer(artifact_buffer);
+
+  FPDF_FILEACCESS artifact_access = {};
+  artifact_access.m_FileLen = artifact.size();
+  artifact_access.m_GetBlock = GetBlockFromString;
+  artifact_access.m_Param = &artifact;
+  EPDFLayerOpenStatus artifact_open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument artifact_replayed(EPDFLayer_OpenLayerArtifact(
+      base, &artifact_access, nullptr, &artifact_open_status));
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, artifact_open_status);
+  ASSERT_TRUE(artifact_replayed);
+  ScopedFPDFPage artifact_page(FPDF_LoadPage(artifact_replayed.get(), 0));
+  ASSERT_TRUE(artifact_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(artifact_page.get()));
+
+  EPDF_ReleaseBaseDocument(base);
 }
 
 TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
@@ -819,10 +1098,9 @@ TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
   for (int expected_annots = 1; expected_annots <= 3; ++expected_annots) {
     std::string materialized;
     {
-      FileAccessForTesting layer_access("rectangles.pdf");
       EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
       ScopedFPDFDocument layer(
-          EPDFLayer_OpenLayer(base, &layer_access, nullptr, &open_status));
+          EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
       ASSERT_TRUE(layer);
       EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
 
@@ -837,7 +1115,7 @@ TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
 
       ClearString();
       EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
-      ASSERT_TRUE(EPDFLayer_SaveDeltaToBuffer(layer.get(), this, &save_status));
+      ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
       EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
       materialized.assign(reinterpret_cast<const char*>(base_bytes.data()),
                           base_bytes.size());
@@ -851,6 +1129,112 @@ TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
     ASSERT_TRUE(reopened_page);
     EXPECT_EQ(expected_annots, FPDFPage_GetAnnotCount(reopened_page.get()));
   }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerDeltaReplaysMultipleAnnotRemoval) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  ASSERT_FALSE(pdf_path.empty());
+  std::vector<uint8_t> base_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(base_bytes.empty());
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  for (int i = 0; i < 3; ++i) {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+  }
+  ASSERT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
+
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 1));
+  ASSERT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  const std::string delta = GetString();
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = const_cast<std::string*>(&delta);
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  EXPECT_EQ(2, FPDFPage_GetAnnotCount(replayed_page.get()));
+
+  std::string materialized(reinterpret_cast<const char*>(base_bytes.data()),
+                           base_bytes.size());
+  materialized += delta;
+  ScopedFPDFDocument stock_reopened(FPDF_LoadMemDocument64(
+      materialized.data(), materialized.size(), nullptr));
+  ASSERT_TRUE(stock_reopened);
+  ScopedFPDFPage stock_page(FPDF_LoadPage(stock_reopened.get(), 0));
+  ASSERT_TRUE(stock_page);
+  EXPECT_EQ(2, FPDFPage_GetAnnotCount(stock_page.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerDeltaReplaysRemoveAllAnnots) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  for (int i = 0; i < 3; ++i) {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+  }
+  ASSERT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 2));
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 1));
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 0));
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  const std::string delta = GetString();
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = const_cast<std::string*>(&delta);
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(replayed_page.get()));
 
   EPDF_ReleaseBaseDocument(base);
 }

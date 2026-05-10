@@ -150,6 +150,7 @@ class CPDF_Document : public Observable,
   virtual RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const;
   bool IsObjectPromoted(uint32_t objnum) const;
   virtual bool IsLayerDocument() const;
+  virtual FX_FILESIZE GetLayerAppendBaseOffset() const;
 
   // CPDF_Parser::ParsedObjectsHolder:
   bool TryInit() override;
@@ -183,6 +184,7 @@ class CPDF_Document : public Observable,
   virtual void ErasePageObjNum(size_t index);
   virtual void ResizePageList(size_t size);
   virtual size_t GetPageListSize() const;
+  bool RebuildPageListFromCurrentPageTree();
 
   void SetCachedRootDict(RetainPtr<CPDF_Dictionary> root);
   void InvalidateCachedRootDict();

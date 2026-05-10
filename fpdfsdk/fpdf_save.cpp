@@ -6,10 +6,14 @@
 
 #include "public/fpdf_save.h"
 
-#include <mutex>
 #include <stdint.h>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <mutex>
 
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -229,7 +233,53 @@ bool DoDocSave(FPDF_DOCUMENT document,
   return create_result;
 }
 
+struct MemoryFileWriter : public FPDF_FILEWRITE {
+  std::string data;
+
+  MemoryFileWriter() {
+    version = 1;
+    WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
+                    unsigned long size) -> int {
+      static_cast<MemoryFileWriter*>(self)->data.append(
+          static_cast<const char*>(buf), size);
+      return 1;
+    };
+  }
+};
+
+void* SaveToOwnedBuffer(FPDF_DOCUMENT document,
+                        FPDF_DWORD flags,
+                        unsigned long* out_size,
+                        std::optional<int> version) {
+  if (!out_size) {
+    return nullptr;
+  }
+  *out_size = 0;
+
+  MemoryFileWriter writer;
+  const bool ok = version.has_value()
+                      ? DoDocSave(document, &writer, flags, version.value())
+                      : DoDocSave(document, &writer, flags, {});
+  if (!ok || writer.data.empty() ||
+      writer.data.size() > std::numeric_limits<unsigned long>::max()) {
+    return nullptr;
+  }
+
+  void* buffer = malloc(writer.data.size());
+  if (!buffer) {
+    return nullptr;
+  }
+
+  memcpy(buffer, writer.data.data(), writer.data.size());
+  *out_size = static_cast<unsigned long>(writer.data.size());
+  return buffer;
+}
+
 }  // namespace
+
+FPDF_EXPORT void FPDF_CALLCONV EPDF_FreeBuffer(void* buffer) {
+  free(buffer);
+}
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SaveAsCopy(FPDF_DOCUMENT document,
                                                     FPDF_FILEWRITE* file_write,
@@ -243,4 +293,19 @@ FPDF_SaveWithVersion(FPDF_DOCUMENT document,
                      FPDF_DWORD flags,
                      int fileVersion) {
   return DoDocSave(document, file_write, flags, fileVersion);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBuffer(FPDF_DOCUMENT document,
+                               FPDF_DWORD flags,
+                               unsigned long* out_size) {
+  return SaveToOwnedBuffer(document, flags, out_size, {});
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBufferWithVersion(FPDF_DOCUMENT document,
+                                          FPDF_DWORD flags,
+                                          unsigned long* out_size,
+                                          int file_version) {
+  return SaveToOwnedBuffer(document, flags, out_size, file_version);
 }

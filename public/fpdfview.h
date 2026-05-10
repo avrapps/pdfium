@@ -595,9 +595,9 @@ typedef enum {
 //          with FPDF_CloseDocument().
 // Parameters:
 //          base        -   A base document returned by EPDF_LoadBaseDocument().
-//          pFileAccess -   A structure for accessing the materialized layer
-//                          bytes. For Slice 7.2 this must be the base bytes
-//                          with no appended delta.
+//          pFileAccess -   Optional raw layer delta bytes as returned by
+//                          EPDFLayer_SaveDelta(). NULL or zero-length opens a
+//                          fresh empty layer.
 //          password    -   Reserved for future delta-password handling.
 //          out_status  -   Optional detailed open status.
 // Return value:
@@ -607,6 +607,16 @@ EPDFLayer_OpenLayer(EPDF_BASE_DOCUMENT base,
                     FPDF_FILEACCESS* pFileAccess,
                     FPDF_BYTESTRING password,
                     EPDFLayerOpenStatus* out_status);
+
+// Function: EPDFLayer_OpenLayerArtifact
+//          Open a layer view from a layer artifact produced by
+//          EPDFLayer_SaveLayerArtifactToOwnedBuffer(). Validates that the
+//          artifact belongs to |base| before ingesting its raw delta.
+FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
+EPDFLayer_OpenLayerArtifact(EPDF_BASE_DOCUMENT base,
+                            FPDF_FILEACCESS* pFileAccess,
+                            FPDF_BYTESTRING password,
+                            EPDFLayerOpenStatus* out_status);
 
 // Function: EPDFLayer_IsObjectPromoted
 //          Return whether the object exists in the layer overlay.

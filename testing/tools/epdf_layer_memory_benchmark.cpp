@@ -55,12 +55,11 @@ std::vector<size_t> ParseLayerCounts(const std::string& spec) {
   size_t start = 0;
   while (start <= spec.size()) {
     const size_t comma = spec.find(',', start);
-    const std::string token =
-        spec.substr(start, comma == std::string::npos ? std::string::npos
-                                                      : comma - start);
+    const std::string token = spec.substr(
+        start, comma == std::string::npos ? std::string::npos : comma - start);
     if (!token.empty()) {
-      result.push_back(static_cast<size_t>(std::strtoull(token.c_str(), nullptr,
-                                                        10)));
+      result.push_back(
+          static_cast<size_t>(std::strtoull(token.c_str(), nullptr, 10)));
     }
     if (comma == std::string::npos) {
       break;
@@ -77,8 +76,7 @@ bool AddTextAnnotation(FPDF_DOCUMENT layer) {
   if (!page) {
     return false;
   }
-  ScopedFPDFAnnotation annot(
-      EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
   return !!annot;
 }
 
@@ -126,17 +124,15 @@ int main(int argc, char** argv) {
   const size_t baseline_rss = CurrentRssBytes();
   std::vector<ScopedFPDFDocument> layers;
   layers.reserve(layer_counts.back());
-  std::vector<epdf_layer_tool::MemoryFile> layer_files;
-  layer_files.reserve(layer_counts.back());
 
-  std::puts("layers,rss_bytes,delta_from_base_rss,bytes_per_layer,"
-            "promoted_objects");
+  std::puts(
+      "layers,rss_bytes,delta_from_base_rss,bytes_per_layer,"
+      "promoted_objects");
   size_t next_report = 0;
   for (size_t i = 1; i <= layer_counts.back(); ++i) {
-    layer_files.emplace_back(&base_bytes);
     EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
-    ScopedFPDFDocument layer(EPDFLayer_OpenLayer(
-        base, layer_files.back().file_access(), nullptr, &status));
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, /*pFileAccess=*/nullptr, nullptr, &status));
     if (!layer || status != EPDFLayerOpenStatus_kSuccess) {
       std::fprintf(stderr, "Failed to open layer %zu.\n", i);
       EPDF_ReleaseBaseDocument(base);

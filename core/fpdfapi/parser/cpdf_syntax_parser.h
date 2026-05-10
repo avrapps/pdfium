@@ -70,6 +70,7 @@ class CPDF_SyntaxParser {
   ByteString PeekNextWord();
 
   RetainPtr<CPDF_ReadValidator> GetValidator() const;
+  RetainPtr<IFX_SeekableReadStream> GetFileAccess() const;
   uint32_t GetDirectNum();
   bool GetNextChar(uint8_t& ch);
 

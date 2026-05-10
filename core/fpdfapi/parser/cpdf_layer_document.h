@@ -43,6 +43,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
   uint32_t GetUserPermissions(bool get_owner_perms) const override;
   RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override;
   bool IsLayerDocument() const override;
+  FX_FILESIZE GetLayerAppendBaseOffset() const override;
 
   // CPDF_Parser::ParsedObjectsHolder:
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override;
@@ -65,10 +66,11 @@ class CPDF_LayerDocument final : public CPDF_Document {
  private:
   void InitializeFromBase();
   void IngestCurrentDelta();
+  void FailDeltaIngest(OpenStatus status);
   RetainPtr<CPDF_Object> PromoteFromBase(uint32_t objnum);
 
   RetainPtr<CPDF_BaseDocument> const base_;
-  RetainPtr<IFX_SeekableReadStream> const file_access_;
+  RetainPtr<IFX_SeekableReadStream> file_access_;
   std::vector<uint32_t> layer_page_list_;
   OpenStatus ingest_status_ = OpenStatus::kSuccess;
 };

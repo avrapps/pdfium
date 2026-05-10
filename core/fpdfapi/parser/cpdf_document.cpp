@@ -171,6 +171,42 @@ int FindPageIndex(const CPDF_Dictionary* pNode,
   return -1;
 }
 
+bool AppendPageObjNumsConst(const CPDF_Dictionary* node,
+                            const CPDF_Document* document,
+                            size_t level,
+                            std::set<const CPDF_Dictionary*>* visited,
+                            std::vector<uint32_t>* page_objnums) {
+  if (!node || !visited->insert(node).second || level >= kMaxPageLevel) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Array> kids = node->GetArrayFor("Kids");
+  if (!kids) {
+    if (!ValidateDictType(node, "Page") || !node->GetObjNum()) {
+      return false;
+    }
+    page_objnums->push_back(node->GetObjNum());
+    return true;
+  }
+
+  CPDF_ArrayLocker locker(kids.Get());
+  for (const auto& kid : locker) {
+    RetainPtr<const CPDF_Object> direct = kid;
+    if (RetainPtr<const CPDF_Reference> ref = ToReference(direct)) {
+      direct = document->GetIndirectObject(ref->GetRefObjNum());
+    } else if (kid) {
+      direct = kid->GetDirect();
+    }
+    RetainPtr<const CPDF_Dictionary> kid_dict = ToDictionary(direct);
+    if (!kid_dict ||
+        !AppendPageObjNumsConst(kid_dict.Get(), document, level + 1, visited,
+                                page_objnums)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 CPDF_Document::CPDF_Document(std::unique_ptr<RenderDataIface> pRenderData,
@@ -348,6 +384,35 @@ void CPDF_Document::ResetTraversal() {
   tree_traversal_.clear();
 }
 
+bool CPDF_Document::RebuildPageListFromCurrentPageTree() {
+  RetainPtr<const CPDF_Dictionary> root = pdfium::WrapRetain(GetRoot());
+  if (!root && GetParser()) {
+    root = ToDictionary(GetIndirectObject(GetParser()->GetRootObjNum()));
+  }
+  RetainPtr<const CPDF_Object> pages_object =
+      root ? root->GetObjectFor("Pages") : nullptr;
+  if (RetainPtr<const CPDF_Reference> ref = ToReference(pages_object)) {
+    pages_object = GetIndirectObject(ref->GetRefObjNum());
+  } else if (pages_object) {
+    pages_object = pages_object->GetDirect();
+  }
+  RetainPtr<const CPDF_Dictionary> pages = ToDictionary(pages_object);
+  std::set<const CPDF_Dictionary*> visited;
+  std::vector<uint32_t> page_objnums;
+  if (!AppendPageObjNumsConst(pages.Get(), this, /*level=*/0, &visited,
+                              &page_objnums) ||
+      page_objnums.empty() || page_objnums.size() >= kPageMaxNum) {
+    return false;
+  }
+
+  ResizePageList(page_objnums.size());
+  for (size_t i = 0; i < page_objnums.size(); ++i) {
+    SetPageObjNumAt(i, page_objnums[i]);
+  }
+  ResetTraversal();
+  return true;
+}
+
 void CPDF_Document::SetParser(std::unique_ptr<CPDF_Parser> pParser) {
   DCHECK(!parser_);
   parser_ = std::move(pParser);
@@ -444,6 +509,11 @@ bool CPDF_Document::IsLayerDocument() const {
   return false;
 }
 
+FX_FILESIZE CPDF_Document::GetLayerAppendBaseOffset() const {
+  CPDF_Parser* parser = GetParser();
+  return parser ? parser->GetDocumentSize() : 0;
+}
+
 int CPDF_Document::GetPageIndex(uint32_t objnum) {
   uint32_t skip_count = 0;
   bool bSkipped = false;
@@ -466,7 +536,8 @@ int CPDF_Document::GetPageIndex(uint32_t objnum) {
   int found_index = FindPageIndex(pPages, &skip_count, objnum, &start_index, 0);
 
   // Corrupt page tree may yield out-of-range results.
-  if (found_index < 0 || static_cast<size_t>(found_index) >= GetPageListSize()) {
+  if (found_index < 0 ||
+      static_cast<size_t>(found_index) >= GetPageListSize()) {
     return -1;
   }
 
@@ -653,12 +724,14 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutableInfo() {
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
-  if (info_dict_)
+  if (info_dict_) {
     return info_dict_;
+  }
 
   // If parser already has an Info object, reuse it (this populates info_dict_).
-  if (RetainPtr<CPDF_Dictionary> existing = GetInfo())
+  if (RetainPtr<CPDF_Dictionary> existing = GetInfo()) {
     return existing;
+  }
 
   // No Info present: create a new indirect dictionary and cache it.
   SetCachedInfoDict(NewIndirect<CPDF_Dictionary>());

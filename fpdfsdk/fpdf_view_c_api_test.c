@@ -535,11 +535,17 @@ int CheckPDFiumCApi() {
     CHK(FPDF_InitLibrary);
     CHK(FPDF_InitLibraryWithConfig);
     CHK(EPDF_LoadBaseDocument);
+    CHK(EPDF_FreeBuffer);
+    CHK(EPDF_SaveDocumentToOwnedBuffer);
+    CHK(EPDF_SaveDocumentToOwnedBufferWithVersion);
     CHK(EPDFLayer_GetBaseDocument);
     CHK(EPDFLayer_GetPromotedObjectCount);
     CHK(EPDFLayer_IsObjectPromoted);
     CHK(EPDFLayer_OpenLayer);
-    CHK(EPDFLayer_SaveDeltaToBuffer);
+    CHK(EPDFLayer_OpenLayerArtifact);
+    CHK(EPDFLayer_SaveDelta);
+    CHK(EPDFLayer_SaveDeltaToOwnedBuffer);
+    CHK(EPDFLayer_SaveLayerArtifactToOwnedBuffer);
     CHK(EPDF_ReleaseBaseDocument);
     CHK(FPDF_LoadCustomDocument);
     CHK(FPDF_LoadDocument);

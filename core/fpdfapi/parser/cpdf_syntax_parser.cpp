@@ -908,6 +908,10 @@ RetainPtr<CPDF_ReadValidator> CPDF_SyntaxParser::GetValidator() const {
   return file_access_;
 }
 
+RetainPtr<IFX_SeekableReadStream> CPDF_SyntaxParser::GetFileAccess() const {
+  return file_access_ ? file_access_->GetFileAccess() : nullptr;
+}
+
 bool CPDF_SyntaxParser::IsWholeWord(FX_FILESIZE startpos,
                                     FX_FILESIZE limit,
                                     ByteStringView tag,
