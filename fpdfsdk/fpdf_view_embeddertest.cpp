@@ -24,6 +24,7 @@
 #include "public/fpdf_doc.h"
 #include "public/fpdf_javascript.h"
 #include "public/fpdf_save.h"
+#include "public/fpdf_text.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -249,6 +250,321 @@ class FPDFViewEmbedderTest : public EmbedderTest {
     EXPECT_TRUE(GetString().empty()) << file_name;
 
     EPDF_ReleaseBaseDocument(base);
+  }
+
+  void CheckReadOnlyLayerParityProducesEmptyDelta(const char* file_name) {
+    FileAccessForTesting plain_access(file_name);
+    ScopedFPDFDocument plain(FPDF_LoadCustomDocument(&plain_access, nullptr));
+    ASSERT_TRUE(plain) << file_name;
+
+    FileAccessForTesting base_access(file_name);
+    EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+    ASSERT_TRUE(base) << file_name;
+
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    ASSERT_TRUE(layer) << file_name;
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status) << file_name;
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    CompareDocumentReadApis(plain.get(), layer.get(), file_name);
+
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get())) << file_name;
+
+    ClearString();
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status))
+        << file_name;
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status) << file_name;
+    EXPECT_TRUE(GetString().empty()) << file_name;
+
+    EPDF_ReleaseBaseDocument(base);
+  }
+
+  void CompareDocumentReadApis(FPDF_DOCUMENT plain,
+                               FPDF_DOCUMENT layer,
+                               const char* file_name) {
+    const int plain_page_count = FPDF_GetPageCount(plain);
+    EXPECT_EQ(plain_page_count, FPDF_GetPageCount(layer)) << file_name;
+
+    CompareNamedDestReadApis(plain, layer, file_name);
+    CompareAttachmentReadApis(plain, layer, file_name);
+    CompareJavaScriptReadApis(plain, layer, file_name);
+    CompareBookmarkReadApis(plain, layer, file_name);
+
+    for (int page_index = -1; page_index <= plain_page_count; ++page_index) {
+      ComparePageLabelReadApi(plain, layer, page_index, file_name);
+    }
+
+    for (int page_index = 0; page_index < plain_page_count; ++page_index) {
+      FS_SIZEF plain_size;
+      FS_SIZEF layer_size;
+      const bool plain_has_size =
+          FPDF_GetPageSizeByIndexF(plain, page_index, &plain_size);
+      const bool layer_has_size =
+          FPDF_GetPageSizeByIndexF(layer, page_index, &layer_size);
+      EXPECT_EQ(plain_has_size, layer_has_size)
+          << file_name << " page " << page_index;
+      if (plain_has_size && layer_has_size) {
+        EXPECT_FLOAT_EQ(plain_size.width, layer_size.width)
+            << file_name << " page " << page_index;
+        EXPECT_FLOAT_EQ(plain_size.height, layer_size.height)
+            << file_name << " page " << page_index;
+      }
+
+      ScopedFPDFPage plain_page(FPDF_LoadPage(plain, page_index));
+      ScopedFPDFPage layer_page(FPDF_LoadPage(layer, page_index));
+      EXPECT_EQ(!!plain_page, !!layer_page)
+          << file_name << " page " << page_index;
+      if (!plain_page || !layer_page) {
+        continue;
+      }
+
+      CompareLoadedPageReadApis(plain, plain_page.get(), layer,
+                                layer_page.get(), file_name, page_index);
+    }
+  }
+
+  void CompareNamedDestReadApis(FPDF_DOCUMENT plain,
+                                FPDF_DOCUMENT layer,
+                                const char* file_name) {
+    const unsigned long plain_count = FPDF_CountNamedDests(plain);
+    ASSERT_EQ(plain_count, FPDF_CountNamedDests(layer)) << file_name;
+
+    static constexpr const char* kNamesToProbe[] = {
+        "", "First", "Next", kFirstAlternate, kLastAlternate, "NoSuchName"};
+    for (const char* name : kNamesToProbe) {
+      EXPECT_EQ(!!FPDF_GetNamedDestByName(plain, name),
+                !!FPDF_GetNamedDestByName(layer, name))
+          << file_name << " named dest " << name;
+    }
+
+    for (unsigned long index = 0; index < plain_count; ++index) {
+      char plain_buffer[512];
+      char layer_buffer[512];
+      long plain_size = sizeof(plain_buffer);
+      long layer_size = sizeof(layer_buffer);
+      const bool plain_has_dest =
+          FPDF_GetNamedDest(plain, index, plain_buffer, &plain_size);
+      const bool layer_has_dest =
+          FPDF_GetNamedDest(layer, index, layer_buffer, &layer_size);
+      EXPECT_EQ(plain_has_dest, layer_has_dest)
+          << file_name << " named dest index " << index;
+      EXPECT_EQ(plain_size, layer_size)
+          << file_name << " named dest index " << index;
+      if (plain_has_dest && layer_has_dest) {
+        EXPECT_EQ(
+            GetPlatformString(reinterpret_cast<FPDF_WIDESTRING>(plain_buffer)),
+            GetPlatformString(reinterpret_cast<FPDF_WIDESTRING>(layer_buffer)))
+            << file_name << " named dest index " << index;
+      }
+    }
+  }
+
+  void CompareAttachmentReadApis(FPDF_DOCUMENT plain,
+                                 FPDF_DOCUMENT layer,
+                                 const char* file_name) {
+    const int plain_count = FPDFDoc_GetAttachmentCount(plain);
+    ASSERT_EQ(plain_count, FPDFDoc_GetAttachmentCount(layer)) << file_name;
+    for (int index = -1; index <= plain_count; ++index) {
+      EXPECT_EQ(!!FPDFDoc_GetAttachment(plain, index),
+                !!FPDFDoc_GetAttachment(layer, index))
+          << file_name << " attachment " << index;
+    }
+  }
+
+  void CompareJavaScriptReadApis(FPDF_DOCUMENT plain,
+                                 FPDF_DOCUMENT layer,
+                                 const char* file_name) {
+    const int plain_count = FPDFDoc_GetJavaScriptActionCount(plain);
+    ASSERT_EQ(plain_count, FPDFDoc_GetJavaScriptActionCount(layer))
+        << file_name;
+    for (int index = -1; index <= plain_count; ++index) {
+      ScopedFPDFJavaScriptAction plain_js(
+          FPDFDoc_GetJavaScriptAction(plain, index));
+      ScopedFPDFJavaScriptAction layer_js(
+          FPDFDoc_GetJavaScriptAction(layer, index));
+      EXPECT_EQ(!!plain_js, !!layer_js)
+          << file_name << " JavaScript action " << index;
+      if (!plain_js || !layer_js) {
+        continue;
+      }
+      EXPECT_EQ(FPDFJavaScriptAction_GetName(plain_js.get(), nullptr, 0),
+                FPDFJavaScriptAction_GetName(layer_js.get(), nullptr, 0))
+          << file_name << " JavaScript action " << index;
+      EXPECT_EQ(FPDFJavaScriptAction_GetScript(plain_js.get(), nullptr, 0),
+                FPDFJavaScriptAction_GetScript(layer_js.get(), nullptr, 0))
+          << file_name << " JavaScript action " << index;
+    }
+  }
+
+  void CompareBookmarkReadApis(FPDF_DOCUMENT plain,
+                               FPDF_DOCUMENT layer,
+                               const char* file_name) {
+    CompareBookmarkSubtreeReadApis(
+        plain, layer, FPDFBookmark_GetFirstChild(plain, nullptr),
+        FPDFBookmark_GetFirstChild(layer, nullptr), file_name, 0);
+  }
+
+  void CompareBookmarkSubtreeReadApis(FPDF_DOCUMENT plain,
+                                      FPDF_DOCUMENT layer,
+                                      FPDF_BOOKMARK plain_bookmark,
+                                      FPDF_BOOKMARK layer_bookmark,
+                                      const char* file_name,
+                                      int depth) {
+    EXPECT_EQ(!!plain_bookmark, !!layer_bookmark)
+        << file_name << " bookmark depth " << depth;
+    if (!plain_bookmark || !layer_bookmark || depth >= 4) {
+      return;
+    }
+
+    EXPECT_EQ(FPDFBookmark_GetTitle(plain_bookmark, nullptr, 0),
+              FPDFBookmark_GetTitle(layer_bookmark, nullptr, 0))
+        << file_name << " bookmark depth " << depth;
+    EXPECT_EQ(FPDFBookmark_GetCount(plain_bookmark),
+              FPDFBookmark_GetCount(layer_bookmark))
+        << file_name << " bookmark depth " << depth;
+    EXPECT_EQ(!!FPDFBookmark_GetDest(plain, plain_bookmark),
+              !!FPDFBookmark_GetDest(layer, layer_bookmark))
+        << file_name << " bookmark depth " << depth;
+    EXPECT_EQ(!!FPDFBookmark_GetAction(plain_bookmark),
+              !!FPDFBookmark_GetAction(layer_bookmark))
+        << file_name << " bookmark depth " << depth;
+
+    CompareBookmarkSubtreeReadApis(
+        plain, layer, FPDFBookmark_GetFirstChild(plain, plain_bookmark),
+        FPDFBookmark_GetFirstChild(layer, layer_bookmark), file_name,
+        depth + 1);
+    CompareBookmarkSubtreeReadApis(
+        plain, layer, FPDFBookmark_GetNextSibling(plain, plain_bookmark),
+        FPDFBookmark_GetNextSibling(layer, layer_bookmark), file_name, depth);
+  }
+
+  void ComparePageLabelReadApi(FPDF_DOCUMENT plain,
+                               FPDF_DOCUMENT layer,
+                               int page_index,
+                               const char* file_name) {
+    char plain_buffer[128];
+    char layer_buffer[128];
+    const unsigned long plain_size = FPDF_GetPageLabel(
+        plain, page_index, plain_buffer, sizeof(plain_buffer));
+    const unsigned long layer_size = FPDF_GetPageLabel(
+        layer, page_index, layer_buffer, sizeof(layer_buffer));
+    EXPECT_EQ(plain_size, layer_size)
+        << file_name << " page label " << page_index;
+    if (plain_size > 0 && plain_size <= sizeof(plain_buffer)) {
+      EXPECT_EQ(
+          GetPlatformString(reinterpret_cast<FPDF_WIDESTRING>(plain_buffer)),
+          GetPlatformString(reinterpret_cast<FPDF_WIDESTRING>(layer_buffer)))
+          << file_name << " page label " << page_index;
+    }
+  }
+
+  void CompareLoadedPageReadApis(FPDF_DOCUMENT plain_doc,
+                                 FPDF_PAGE plain_page,
+                                 FPDF_DOCUMENT layer_doc,
+                                 FPDF_PAGE layer_page,
+                                 const char* file_name,
+                                 int page_index) {
+    EXPECT_FLOAT_EQ(FPDF_GetPageWidthF(plain_page),
+                    FPDF_GetPageWidthF(layer_page))
+        << file_name << " page " << page_index;
+    EXPECT_FLOAT_EQ(FPDF_GetPageHeightF(plain_page),
+                    FPDF_GetPageHeightF(layer_page))
+        << file_name << " page " << page_index;
+
+    CompareAnnotationReadApis(plain_page, layer_page, file_name, page_index);
+    CompareLinkReadApis(plain_doc, plain_page, layer_doc, layer_page, file_name,
+                        page_index);
+    CompareTextReadApis(plain_page, layer_page, file_name, page_index);
+
+    ScopedFPDFBitmap bitmap = RenderPage(layer_page);
+    ASSERT_TRUE(bitmap) << file_name << " page " << page_index;
+  }
+
+  void CompareAnnotationReadApis(FPDF_PAGE plain_page,
+                                 FPDF_PAGE layer_page,
+                                 const char* file_name,
+                                 int page_index) {
+    const int plain_annot_count = FPDFPage_GetAnnotCount(plain_page);
+    ASSERT_EQ(plain_annot_count, FPDFPage_GetAnnotCount(layer_page))
+        << file_name << " page " << page_index;
+    for (int annot_index = -1; annot_index <= plain_annot_count;
+         ++annot_index) {
+      ScopedFPDFAnnotation plain_annot(
+          FPDFPage_GetAnnot(plain_page, annot_index));
+      ScopedFPDFAnnotation layer_annot(
+          FPDFPage_GetAnnot(layer_page, annot_index));
+      EXPECT_EQ(!!plain_annot, !!layer_annot)
+          << file_name << " page " << page_index << " annot " << annot_index;
+    }
+  }
+
+  void CompareLinkReadApis(FPDF_DOCUMENT plain_doc,
+                           FPDF_PAGE plain_page,
+                           FPDF_DOCUMENT layer_doc,
+                           FPDF_PAGE layer_page,
+                           const char* file_name,
+                           int page_index) {
+    std::vector<FPDF_LINK> plain_links;
+    std::vector<FPDF_LINK> layer_links;
+    int pos = 0;
+    FPDF_LINK link = nullptr;
+    while (FPDFLink_Enumerate(plain_page, &pos, &link)) {
+      plain_links.push_back(link);
+    }
+    pos = 0;
+    link = nullptr;
+    while (FPDFLink_Enumerate(layer_page, &pos, &link)) {
+      layer_links.push_back(link);
+    }
+    ASSERT_EQ(plain_links.size(), layer_links.size())
+        << file_name << " page " << page_index;
+    for (size_t i = 0; i < plain_links.size(); ++i) {
+      EXPECT_EQ(!!FPDFLink_GetDest(plain_doc, plain_links[i]),
+                !!FPDFLink_GetDest(layer_doc, layer_links[i]))
+          << file_name << " page " << page_index << " link " << i;
+      EXPECT_EQ(!!FPDFLink_GetAction(plain_links[i]),
+                !!FPDFLink_GetAction(layer_links[i]))
+          << file_name << " page " << page_index << " link " << i;
+      EXPECT_EQ(FPDFLink_CountQuadPoints(plain_links[i]),
+                FPDFLink_CountQuadPoints(layer_links[i]))
+          << file_name << " page " << page_index << " link " << i;
+      EXPECT_EQ(!!FPDFLink_GetAnnot(plain_page, plain_links[i]),
+                !!FPDFLink_GetAnnot(layer_page, layer_links[i]))
+          << file_name << " page " << page_index << " link " << i;
+    }
+  }
+
+  void CompareTextReadApis(FPDF_PAGE plain_page,
+                           FPDF_PAGE layer_page,
+                           const char* file_name,
+                           int page_index) {
+    ScopedFPDFTextPage plain_text(FPDFText_LoadPage(plain_page));
+    ScopedFPDFTextPage layer_text(FPDFText_LoadPage(layer_page));
+    EXPECT_EQ(!!plain_text, !!layer_text)
+        << file_name << " page " << page_index;
+    if (!plain_text || !layer_text) {
+      return;
+    }
+
+    const int plain_char_count = FPDFText_CountChars(plain_text.get());
+    ASSERT_EQ(plain_char_count, FPDFText_CountChars(layer_text.get()))
+        << file_name << " page " << page_index;
+    if (plain_char_count <= 0) {
+      return;
+    }
+
+    EXPECT_EQ(FPDFText_GetUnicode(plain_text.get(), 0),
+              FPDFText_GetUnicode(layer_text.get(), 0))
+        << file_name << " page " << page_index;
+    EXPECT_EQ(FPDFText_GetUnicode(plain_text.get(), plain_char_count - 1),
+              FPDFText_GetUnicode(layer_text.get(), plain_char_count - 1))
+        << file_name << " page " << page_index;
+    EXPECT_EQ(FPDFText_CountRects(plain_text.get(), 0, plain_char_count),
+              FPDFText_CountRects(layer_text.get(), 0, plain_char_count))
+        << file_name << " page " << page_index;
   }
 
   void TestRenderPageBitmapWithMatrix(FPDF_PAGE page,
@@ -863,6 +1179,33 @@ TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerCatalogMatrixProducesEmptyDelta) {
 
   for (const char* file_name : kFiles) {
     CheckReadOnlyLayerWorkflowProducesEmptyDelta(file_name);
+  }
+}
+
+TEST_F(FPDFViewEmbedderTest, ReadOnlyLayerFixtureParityProducesEmptyDelta) {
+  static constexpr const char* kFiles[] = {
+      "annots_action_handling.pdf",
+      "bug_679649.pdf",
+      "calculate.pdf",
+      "document_aactions.pdf",
+      "embedded_attachments.pdf",
+      "embedded_images.pdf",
+      "find_text_consecutive.pdf",
+      "font_weight.pdf",
+      "hello_world_2_pages_split_streams.pdf",
+      "links_highlights_annots.pdf",
+      "multiple_form_types.pdf",
+      "named_dests_old_style.pdf",
+      "page_labels.pdf",
+      "tagged_actual_text.pdf",
+      "tagged_mcr_multipage.pdf",
+      "text_font.pdf",
+      "use_outlines.pdf",
+      "zero_length_stream.pdf",
+  };
+
+  for (const char* file_name : kFiles) {
+    CheckReadOnlyLayerParityProducesEmptyDelta(file_name);
   }
 }
 
