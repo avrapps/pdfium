@@ -524,8 +524,10 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   int32_t permissions =
       static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags_32));
 
-  // Create encrypt dictionary as indirect object
-  auto pEncryptDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  // Create the encrypt dictionary inline. CPDF_Creator::SetEncryption() owns
+  // the trailer-only reference and writes inline encrypt dictionaries as
+  // indirect objects during save.
+  auto pEncryptDict = pDoc->New<CPDF_Dictionary>();
   pEncryptDict->SetNewFor<CPDF_Name>("Filter", "Standard");
   pEncryptDict->SetNewFor<CPDF_Number>("V", 5);
   pEncryptDict->SetNewFor<CPDF_Number>("R", 6);
@@ -552,8 +554,6 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   // Returns false if LoadDict fails or R != 6
   if (!pSecurityHandler->OnCreateWithPasswords(pEncryptDict.Get(), user_pwd,
                                                owner_pwd)) {
-    // Cleanup the indirect object we created
-    pDoc->DeleteIndirectObject(pEncryptDict->GetObjNum());
     return false;
   }
 

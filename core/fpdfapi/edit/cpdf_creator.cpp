@@ -13,6 +13,7 @@
 #include <array>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_crypto_handler.h"
@@ -136,6 +137,28 @@ ByteString FormatXrefOffset10(FX_FILESIZE offset) {
   return ByteString::Format("%010" PRId64, static_cast<int64_t>(offset));
 }
 
+std::set<uint32_t> CollectSaveReachableObjects(
+    CPDF_Document* document,
+    const CPDF_Dictionary* encrypt_dict) {
+  std::set<uint32_t> objects = GetObjectsWithReferences(document);
+
+  // `GetObjectsWithReferences()` covers the normal document graph rooted at
+  // /Root. The save trailer may also reference dictionaries outside that graph.
+  // Keep those roots in sync with the trailer entries emitted in
+  // WriteDoc_Stage4().
+  RetainPtr<CPDF_Dictionary> info = document->GetInfo();
+  if (info && info->GetObjNum() != 0) {
+    objects.insert(info->GetObjNum());
+  }
+
+  if (encrypt_dict && !encrypt_dict->IsInline() &&
+      encrypt_dict->GetObjNum() != 0) {
+    objects.insert(encrypt_dict->GetObjNum());
+  }
+
+  return objects;
+}
+
 }  // namespace
 
 CPDF_Creator::CPDF_Creator(CPDF_Document* doc,
@@ -223,8 +246,15 @@ bool CPDF_Creator::WriteOldObjs() {
 }
 
 bool CPDF_Creator::WriteNewObjs() {
+  const std::set<uint32_t> objects_with_refs =
+      CollectSaveReachableObjects(document_, encrypt_dict_.Get());
+  std::vector<uint32_t> written_new_obj_nums;
   for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
     uint32_t objnum = new_obj_num_array_[i];
+    if (!pdfium::Contains(objects_with_refs, objnum)) {
+      continue;
+    }
+
     RetainPtr<const CPDF_Object> pObj = document_->GetIndirectObject(objnum);
     if (!pObj) {
       continue;
@@ -234,7 +264,9 @@ bool CPDF_Creator::WriteNewObjs() {
     if (!WriteIndirectObj(pObj->GetObjNum(), pObj.Get())) {
       return false;
     }
+    written_new_obj_nums.push_back(objnum);
   }
+  new_obj_num_array_ = std::move(written_new_obj_nums);
   return true;
 }
 

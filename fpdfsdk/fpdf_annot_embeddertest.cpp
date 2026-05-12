@@ -1997,8 +1997,6 @@ TEST_F(FPDFAnnotEmbedderTest, GetFormAnnotAndCheckFlagsComboBox) {
 }
 
 TEST_F(FPDFAnnotEmbedderTest, Bug1206) {
-  static constexpr size_t kExpectedMinimumOriginalSize = 1601;
-
   ASSERT_TRUE(OpenDocument("bug_1206.pdf"));
 
   ScopedPage page = LoadScopedPage(0);
@@ -2006,7 +2004,7 @@ TEST_F(FPDFAnnotEmbedderTest, Bug1206) {
 
   ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
   const size_t original_size = GetString().size();
-  EXPECT_LE(kExpectedMinimumOriginalSize, original_size);  // Sanity check.
+  ASSERT_GT(original_size, 0u);
   ClearString();
 
   for (size_t i = 0; i < 10; ++i) {
@@ -2014,9 +2012,16 @@ TEST_F(FPDFAnnotEmbedderTest, Bug1206) {
     CompareBitmapWithExpectationSuffix(bitmap.get(), "bug_1206");
 
     ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
-    // TODO(https://crbug.com/42270200): This is wrong. The size should be
-    // equal, not bigger.
-    EXPECT_GT(GetString().size(), original_size);
+    EXPECT_EQ(original_size, GetString().size());
+
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved_page);
+    ScopedFPDFBitmap saved_bitmap =
+        RenderSavedPageWithFlags(saved_page.get(), FPDF_ANNOT);
+    CompareBitmapWithExpectationSuffix(saved_bitmap.get(), "bug_1206");
+
     ClearString();
   }
 }
@@ -2585,7 +2590,8 @@ TEST_F(FPDFAnnotEmbedderTest, GetFontSizeNegative) {
   }
 }
 
-TEST_F(FPDFAnnotEmbedderTest, DirectAnnotationObjectNumberStaysZeroAfterRender) {
+TEST_F(FPDFAnnotEmbedderTest,
+       DirectAnnotationObjectNumberStaysZeroAfterRender) {
   ASSERT_TRUE(OpenDocument("freetext_annotation_without_da.pdf"));
   ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
@@ -2600,8 +2606,8 @@ TEST_F(FPDFAnnotEmbedderTest, DirectAnnotationObjectNumberStaysZeroAfterRender) 
   ASSERT_TRUE(bitmap);
   EXPECT_EQ(0u, EPDFAnnot_GetObjectNumber(annot.get()));
 
-  ASSERT_TRUE(EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 10,
-                                 20, 30));
+  ASSERT_TRUE(
+      EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 10, 20, 30));
   EXPECT_EQ(0u, EPDFAnnot_GetObjectNumber(annot.get()));
 }
 

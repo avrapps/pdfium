@@ -6,8 +6,13 @@
 #include <string>
 #include <vector>
 
+#include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fxcrt/fx_string.h"
+#include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/fpdf_annot.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ppo.h"
 #include "public/fpdf_save.h"
@@ -23,6 +28,23 @@
 using testing::HasSubstr;
 using testing::Not;
 using testing::StartsWith;
+
+namespace {
+
+bool HasSavedXRefEntryForObject(FPDF_DOCUMENT document, uint32_t objnum) {
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(document);
+  if (!cpdf_doc || !cpdf_doc->GetParser() ||
+      !cpdf_doc->GetParser()->GetCrossRefTable()) {
+    return false;
+  }
+
+  const CPDF_CrossRefTable::ObjectInfo* info =
+      cpdf_doc->GetParser()->GetCrossRefTable()->GetObjectInfo(objnum);
+  return info && (info->type == CPDF_CrossRefTable::ObjectType::kNormal ||
+                  info->type == CPDF_CrossRefTable::ObjectType::kCompressed);
+}
+
+}  // namespace
 
 class FPDFSaveEmbedderTest : public EmbedderTest {};
 
@@ -83,6 +105,98 @@ TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocIncremental) {
   // Additional output produced vs. non incremental.
   // Check that the size is larger than the old, broken incremental save size.
   EXPECT_GT(GetString().size(), 985u);
+}
+
+TEST_F(FPDFSaveEmbedderTest, SaveAsCopyPrunesUnlinkedNewAnnotation) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+  const uint32_t annot_objnum = EPDFAnnot_GetObjectNumber(annot.get());
+  ASSERT_GT(annot_objnum, 0u);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  annot.reset();
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 0));
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_FALSE(HasSavedXRefEntryForObject(saved_doc.get(), annot_objnum));
+
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(saved_page.get()));
+}
+
+TEST_F(FPDFSaveEmbedderTest, IncrementalSavePrunesUnlinkedNewAnnotation) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+  const uint32_t annot_objnum = EPDFAnnot_GetObjectNumber(annot.get());
+  ASSERT_GT(annot_objnum, 0u);
+
+  annot.reset();
+  ASSERT_TRUE(FPDFPage_RemoveAnnot(page.get(), 0));
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, FPDF_INCREMENTAL));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_FALSE(HasSavedXRefEntryForObject(saved_doc.get(), annot_objnum));
+
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(saved_page.get()));
+}
+
+TEST_F(FPDFSaveEmbedderTest, SaveAsCopyKeepsLinkedNewAnnotation) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+  ASSERT_TRUE(annot);
+  const uint32_t annot_objnum = EPDFAnnot_GetObjectNumber(annot.get());
+  ASSERT_GT(annot_objnum, 0u);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_TRUE(HasSavedXRefEntryForObject(saved_doc.get(), annot_objnum));
+
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(saved_page.get()));
+  ScopedFPDFAnnotation saved_annot(FPDFPage_GetAnnot(saved_page.get(), 0));
+  ASSERT_TRUE(saved_annot);
+  EXPECT_EQ(FPDF_ANNOT_TEXT, FPDFAnnot_GetSubtype(saved_annot.get()));
+}
+
+TEST_F(FPDFSaveEmbedderTest, SetEncryptionRoundTripsWithInlineEncryptDict) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ASSERT_TRUE(EPDF_SetEncryption(document(), "user", "owner",
+                                 EPDF_PERM_PRINT | EPDF_PERM_COPY));
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocumentWithPassword("user");
+  ASSERT_TRUE(saved_doc);
+  EXPECT_TRUE(EPDF_IsEncrypted(saved_doc.get()));
+
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  ScopedFPDFBitmap bitmap = RenderSavedPage(saved_page.get());
+  ASSERT_TRUE(bitmap);
 }
 
 TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocNoIncremental) {
