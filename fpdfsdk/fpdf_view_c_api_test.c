@@ -536,6 +536,7 @@ int CheckPDFiumCApi() {
     CHK(FPDF_InitLibraryWithConfig);
     CHK(EPDF_LoadBaseDocument);
     CHK(EPDF_LoadMemBaseDocument);
+    CHK(EPDF_LoadMemBaseDocument64);
     CHK(EPDF_FreeBuffer);
     CHK(EPDF_SaveDocumentToOwnedBuffer);
     CHK(EPDF_SaveDocumentToOwnedBufferWithVersion);

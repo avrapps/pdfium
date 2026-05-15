@@ -593,12 +593,33 @@ EPDF_LoadBaseDocument(FPDF_FILEACCESS* pFileAccess, FPDF_BYTESTRING password);
 //          |password|.
 FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
 EPDF_LoadMemBaseDocument(const void* data_buf,
-                         size_t size,
+                         int size,
                          FPDF_BYTESTRING password);
+
+// Function: EPDF_LoadMemBaseDocument64
+//          Load and freeze a shareable base PDF document from memory. The
+//          returned handle is distinct from FPDF_DOCUMENT and cannot be used
+//          with ordinary document APIs such as FPDF_LoadPage().
+// Parameters:
+//          data_buf    -   Pointer to a buffer containing the PDF document.
+//          size        -   Number of bytes in the PDF document.
+//          password    -   Optional password for decrypting the PDF file.
+// Return value:
+//          A handle to the loaded base document, or NULL on failure.
+// Comments:
+//          The memory buffer must remain valid until the returned base document
+//          is released with EPDF_ReleaseBaseDocument().
+//
+//          See the comments for FPDF_LoadDocument() regarding the encoding for
+//          |password|.
+FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
+EPDF_LoadMemBaseDocument64(const void* data_buf,
+                           size_t size,
+                           FPDF_BYTESTRING password);
 
 // Function: EPDF_ReleaseBaseDocument
 //          Release a base document returned by EPDF_LoadBaseDocument() or
-//          EPDF_LoadMemBaseDocument().
+//          EPDF_LoadMemBaseDocument()/EPDF_LoadMemBaseDocument64().
 FPDF_EXPORT void FPDF_CALLCONV
 EPDF_ReleaseBaseDocument(EPDF_BASE_DOCUMENT base);
 

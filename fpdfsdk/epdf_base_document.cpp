@@ -48,6 +48,16 @@ EPDF_BASE_DOCUMENT LoadBaseDocumentImpl(
   return EPDFBaseDocumentFromCPDFBaseDocument(base.Leak());
 }
 
+EPDF_BASE_DOCUMENT LoadMemBaseDocumentImpl(const void* data_buf,
+                                           size_t size,
+                                           FPDF_BYTESTRING password) {
+  // SAFETY: required from caller.
+  auto data_span =
+      UNSAFE_BUFFERS(pdfium::span(static_cast<const uint8_t*>(data_buf), size));
+  return LoadBaseDocumentImpl(
+      pdfium::MakeRetain<CFX_ReadOnlySpanStream>(data_span), password);
+}
+
 }  // namespace
 
 FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
@@ -62,13 +72,19 @@ EPDF_LoadBaseDocument(FPDF_FILEACCESS* pFileAccess, FPDF_BYTESTRING password) {
 
 FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
 EPDF_LoadMemBaseDocument(const void* data_buf,
-                         size_t size,
+                         int size,
                          FPDF_BYTESTRING password) {
-  // SAFETY: required from caller.
-  auto data_span =
-      UNSAFE_BUFFERS(pdfium::span(static_cast<const uint8_t*>(data_buf), size));
-  return LoadBaseDocumentImpl(
-      pdfium::MakeRetain<CFX_ReadOnlySpanStream>(data_span), password);
+  if (size < 0) {
+    return nullptr;
+  }
+  return LoadMemBaseDocumentImpl(data_buf, static_cast<size_t>(size), password);
+}
+
+FPDF_EXPORT EPDF_BASE_DOCUMENT FPDF_CALLCONV
+EPDF_LoadMemBaseDocument64(const void* data_buf,
+                           size_t size,
+                           FPDF_BYTESTRING password) {
+  return LoadMemBaseDocumentImpl(data_buf, size, password);
 }
 
 FPDF_EXPORT void FPDF_CALLCONV
