@@ -719,6 +719,26 @@ class FPDFViewEmbedderTest : public EmbedderTest {
   }
 };
 
+TEST_F(FPDFViewEmbedderTest, LoadMemBaseDocument) {
+  const std::string pdf_path = PathService::GetTestFilePath("rectangles.pdf");
+  std::vector<uint8_t> file_bytes = GetFileContents(pdf_path.c_str());
+  ASSERT_FALSE(file_bytes.empty());
+
+  EPDF_BASE_DOCUMENT base =
+      EPDF_LoadMemBaseDocument(file_bytes.data(), file_bytes.size(), nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+  EXPECT_EQ(1, FPDF_GetPageCount(layer.get()));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 // Test for conversion of a point in device coordinates to page coordinates
 TEST_F(FPDFViewEmbedderTest, DeviceCoordinatesToPageCoordinates) {
   ASSERT_TRUE(OpenDocument("about_blank.pdf"));
