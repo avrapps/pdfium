@@ -710,6 +710,25 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
+    return 0;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match
+  // EPDFPage_GetObjectNumber()'s documented XFA behavior and return 0.
+  if (doc->GetExtension()) {
+    return 0;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  RetainPtr<const CPDF_Dictionary> dict = doc->GetPageDictionary(page_index);
+  return dict ? dict->GetObjNum() : 0;
+}
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page) {
   // Note: CPDFPageFromFPDFPage() returns null for XFA pages, so this function
   // returns 0 for XFA pages (documented in the header).

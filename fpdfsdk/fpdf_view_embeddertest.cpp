@@ -2457,6 +2457,30 @@ TEST_F(FPDFViewEmbedderTest, FPDFGetPageSizeByIndexF) {
   EXPECT_EQ(1u, doc->GetParsedPageCountForTesting());
 }
 
+TEST_F(FPDFViewEmbedderTest, EPDFDocGetPageObjectNumberByIndex) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  EXPECT_EQ(0u, EPDFDoc_GetPageObjectNumberByIndex(nullptr, 0));
+
+  // Page -1 doesn't exist.
+  EXPECT_EQ(0u, EPDFDoc_GetPageObjectNumberByIndex(document(), -1));
+
+  // Page 1 doesn't exist.
+  EXPECT_EQ(0u, EPDFDoc_GetPageObjectNumberByIndex(document(), 1));
+
+  const unsigned int objnum =
+      EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
+  EXPECT_NE(0u, objnum);
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(objnum, EPDFPage_GetObjectNumber(page.get()));
+  EXPECT_EQ(1u, doc->GetParsedPageCountForTesting());
+}
+
 TEST_F(FPDFViewEmbedderTest, FPDFGetPageSizeByIndex) {
   ASSERT_TRUE(OpenDocument("rectangles.pdf"));
 
