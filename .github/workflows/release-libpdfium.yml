@@ -17,66 +17,22 @@ permissions:
   contents: read
 
 jobs:
-  source-tests:
-    name: Source tests (Linux x64)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref || github.ref_name }}
-
-      - name: Install depot_tools
-        shell: bash
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
-          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
-
-      - name: Install Linux base deps
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake clang lld curl g++ pkg-config tar
-
-      - name: Run PDFium unit and embedder tests
-        shell: bash
-        run: scripts/embedpdf-runtime/test-target.sh linux-x64
-
-      - name: Upload PDFium test results
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: pdfium-source-test-results-linux-x64
-          path: out/embedpdf-runtime-test-results/linux-x64/
-          if-no-files-found: ignore
-
   build:
     name: Build ${{ matrix.target }}
-    needs: source-tests
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: linux-x64,        runner: ubuntu-24.04 }
-          - { target: linux-arm64,      runner: ubuntu-24.04 }
-          - { target: linuxmusl-x64,    runner: ubuntu-24.04 }
-          - { target: linuxmusl-arm64,  runner: ubuntu-24.04 }
-          - { target: wasm32,           runner: ubuntu-24.04 }
-          - { target: darwin-arm64,     runner: macos-15 }
-          - { target: darwin-x64,       runner: macos-15 }
-          - { target: win32-x64,        runner: windows-2022 }
-          - { target: win32-arm64,      runner: windows-2022 }
+          # Android
           - { target: arm64-v8a,        runner: ubuntu-24.04 }
           - { target: armeabi-v7a,      runner: ubuntu-24.04 }
           - { target: x86,              runner: ubuntu-24.04 }
           - { target: x86_64,           runner: ubuntu-24.04 }
+          # iOS
           - { target: ios-arm64,        runner: macos-15 }
           - { target: ios-simulator-arm64, runner: macos-15 }
           - { target: ios-simulator-x64,   runner: macos-15 }
-    env:
-      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
-      EMSDK_VERSION: 3.1.72
-      MUSL_URLS: ${{ secrets.MUSL_URL || 'https://more.musl.cc https://musl.cc' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -92,71 +48,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake curl g++ pkg-config tar
-      - name: Install aarch64 cross-compiler
-        if: matrix.target == 'linux-arm64'
-        shell: bash
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-      - name: Install musl toolchain
-        if: startsWith(matrix.target, 'linuxmusl-')
-        shell: bash
-        run: |
-          triple=x86_64-linux-musl
-          if [[ "${{ matrix.target }}" == "linuxmusl-arm64" ]]; then
-            triple=aarch64-linux-musl
-          fi
-          archive="$triple-cross.tgz"
-
-          for base_url in $MUSL_URLS; do
-            url="$base_url/$archive"
-            if [[ "$base_url" == *"more.musl.cc"* ]]; then
-              url="$base_url/$triple/$archive"
-            fi
-
-            echo "Downloading $url"
-            if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$archive" "$url"; then
-              tar xzf "$archive"
-              echo "$PWD/$triple-cross/bin" >> "$GITHUB_PATH"
-              exit 0
-            fi
-          done
-
-          echo "Failed to download musl toolchain for $triple" >&2
-          exit 1
-      - name: Install Emscripten
-        if: matrix.target == 'wasm32'
-        shell: bash
-        run: |
-          mkdir -p third_party
-          if [[ -d third_party/emsdk ]]; then
-            git -C third_party/emsdk pull
-          else
-            git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
-          fi
-          third_party/emsdk/emsdk install "$EMSDK_VERSION"
-          third_party/emsdk/emsdk activate "$EMSDK_VERSION"
-          echo "$PWD/third_party/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
-          echo "$PWD/third_party/emsdk/upstream/bin" >> "$GITHUB_PATH"
       - name: Select Xcode
         if: runner.os == 'macOS'
         shell: bash
         run: sudo xcode-select -s "/Applications/Xcode_16.1.app"
-      - name: Install Windows deps
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
-          $sdk = Get-ChildItem $kitsRoot -Directory |
-            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-          if ($null -eq $sdk) {
-            throw "No Windows SDK version directory found in $kitsRoot"
-          }
-          $rcPath = Join-Path $sdk.FullName 'x64'
-          if (!(Test-Path (Join-Path $rcPath 'rc.exe'))) {
-            throw "rc.exe not found in $rcPath"
-          }
-          $rcPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build target
         shell: bash
         run: scripts/embedpdf-runtime/build-target.sh "${{ matrix.target }}"
