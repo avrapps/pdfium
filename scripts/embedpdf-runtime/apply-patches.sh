@@ -85,8 +85,11 @@ case "$TARGET" in
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/win/build.patch"
     copy_patch_file "$PATCH_DIR/win/resources.rc" "$SOURCE_DIR/resources.rc"
     ;;
-  linux-*)
+  linux-* | android-* | arm64-v8a | armeabi-v7a | x86 | x86_64)
     apply_patch_file "$SOURCE_DIR" "$PATCH_DIR/shared-library.patch"
+    ;;
+  ios-*)
+    # iOS uses static libraries and doesn't need the shared-library patch.
     ;;
   *)
     echo "unknown target: $TARGET" >&2
