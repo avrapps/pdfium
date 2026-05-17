@@ -140,7 +140,15 @@ ByteString FormatXrefOffset10(FX_FILESIZE offset) {
 std::set<uint32_t> CollectSaveReachableObjects(
     CPDF_Document* document,
     const CPDF_Dictionary* encrypt_dict) {
-  std::set<uint32_t> objects = GetObjectsWithReferences(document);
+  // CPDF_LayerDocument overlays new/promoted objects on a frozen base.
+  // References inherited from the base graph can still point through base
+  // holders, so resolving through the holder would skip overlay replacements.
+  // Walk through the layer document instead so the effective graph is what gets
+  // saved.
+  std::set<uint32_t> objects = GetObjectsWithReferences(
+      document, document->IsLayerDocument()
+                    ? ObjectTreeReferenceResolveMode::kEffectiveDocument
+                    : ObjectTreeReferenceResolveMode::kReferenceHolder);
 
   // `GetObjectsWithReferences()` covers the normal document graph rooted at
   // /Root. The save trailer may also reference dictionaries outside that graph.
@@ -225,6 +233,8 @@ bool CPDF_Creator::WriteOldObjs() {
     return true;
   }
 
+  // WriteOldObjs() only runs for full saves. Layer saves are incremental and
+  // use CollectSaveReachableObjects() when writing their overlay objects.
   const std::set<uint32_t> objects_with_refs =
       GetObjectsWithReferences(document_);
   uint32_t last_object_number_written = 0;

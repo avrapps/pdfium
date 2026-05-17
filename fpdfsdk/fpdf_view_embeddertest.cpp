@@ -1750,6 +1750,80 @@ TEST_F(FPDFViewEmbedderTest, LayerOwnedBufferAndArtifactReplay) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, LayerArtifactIncludesNewAnnotObjectBodies) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+  std::vector<uint32_t> annot_objnums;
+  for (int i = 0; i < 5; ++i) {
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+    const uint32_t objnum = EPDFAnnot_GetObjectNumber(annot.get());
+    ASSERT_GT(objnum, 0u);
+    annot_objnums.push_back(objnum);
+  }
+  EXPECT_EQ(5, FPDFPage_GetAnnotCount(page.get()));
+
+  unsigned long artifact_size = 0;
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  void* artifact_buffer = EPDFLayer_SaveLayerArtifactToOwnedBuffer(
+      layer.get(), &artifact_size, &save_status);
+  ASSERT_TRUE(artifact_buffer);
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string artifact(static_cast<const char*>(artifact_buffer),
+                       artifact_size);
+  EPDF_FreeBuffer(artifact_buffer);
+  ASSERT_FALSE(artifact.empty());
+
+  for (uint32_t objnum : annot_objnums) {
+    const std::string object_reference = std::to_string(objnum) + " 0 R";
+    const std::string object_header = std::to_string(objnum) + " 0 obj";
+    EXPECT_NE(std::string::npos, artifact.find(object_reference))
+        << "Layer artifact should reference newly created annotation object "
+        << objnum << ".";
+    EXPECT_NE(std::string::npos, artifact.find(object_header))
+        << "Layer artifact references annotation object " << objnum
+        << " but does not contain its object body.";
+  }
+
+  EPDF_ReleaseBaseDocument(base);
+
+  FileAccessForTesting replay_base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT replay_base =
+      EPDF_LoadBaseDocument(&replay_base_access, nullptr);
+  ASSERT_TRUE(replay_base);
+
+  FPDF_FILEACCESS artifact_access = {};
+  artifact_access.m_FileLen = artifact.size();
+  artifact_access.m_GetBlock = GetBlockFromString;
+  artifact_access.m_Param = &artifact;
+  EPDFLayerOpenStatus artifact_open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument artifact_replayed(EPDFLayer_OpenLayerArtifact(
+      replay_base, &artifact_access, nullptr, &artifact_open_status));
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, artifact_open_status);
+  ASSERT_TRUE(artifact_replayed);
+  ScopedFPDFPage artifact_page(FPDF_LoadPage(artifact_replayed.get(), 0));
+  ASSERT_TRUE(artifact_page);
+  ASSERT_EQ(5, FPDFPage_GetAnnotCount(artifact_page.get()));
+  for (int i = 0; i < 5; ++i) {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(artifact_page.get(), i));
+    ASSERT_TRUE(annot);
+    EXPECT_EQ(FPDF_ANNOT_TEXT, FPDFAnnot_GetSubtype(annot.get()));
+  }
+
+  EPDF_ReleaseBaseDocument(replay_base);
+}
+
 TEST_F(FPDFViewEmbedderTest, LayerReplaySoakSmoke) {
   FileAccessForTesting base_access("rectangles.pdf");
   EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
