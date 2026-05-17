@@ -1932,8 +1932,7 @@ FPDFAnnot_GetAP(FPDF_ANNOTATION annot,
                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                 FPDF_WCHAR* buffer,
                 unsigned long buflen) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
     return 0;
   }
@@ -1945,7 +1944,7 @@ FPDFAnnot_GetAP(FPDF_ANNOTATION annot,
   CPDF_Annot::AppearanceMode mode =
       static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
 
-  RetainPtr<CPDF_Stream> pStream = GetAnnotAPNoFallback(pAnnotDict.Get(), mode);
+  RetainPtr<CPDF_Stream> pStream = GetAnnotAPNoFallback(pAnnotDict, mode);
   // SAFETY: required from caller.
   return Utf16EncodeMaybeCopyAndReturnLength(
       pStream ? pStream->GetUnicodeText() : WideString(),
@@ -2439,14 +2438,14 @@ FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!annot_dict) {
     return nullptr;
   }
 
+  RetainPtr<const CPDF_Object> file_spec = annot_dict->GetDirectObjectFor("FS");
   return FPDFAttachmentFromCPDFObject(
-      annot_dict->GetMutableDirectObjectFor("FS"));
+      const_cast<CPDF_Object*>(file_spec.Get()));
 }
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
@@ -3499,8 +3498,7 @@ EPDFAnnot_SetVerticalAlignment(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT FPDF_VERTICAL_ALIGNMENT FPDF_CALLCONV
 EPDFAnnot_GetVerticalAlignment(FPDF_ANNOTATION annot) {
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!annot_dict) {
     return FPDF_VERTICAL_ALIGNMENT_TOP;
   }
@@ -4975,8 +4973,7 @@ EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
     return 0;
   }
@@ -5003,14 +5000,13 @@ EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
     return false;
   }
 
   auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
-  return !!GetAnnotAP(pAnnotDict.Get(), mode);
+  return !!GetAnnotAP(pAnnotDict, mode);
 }
 
 static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
