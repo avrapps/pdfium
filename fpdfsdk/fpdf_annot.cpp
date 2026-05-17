@@ -502,8 +502,9 @@ class RawAnnotContext final : public CPDF_AnnotContext {
  public:
   // Takes ownership of |unparsed_page| by value (RetainPtr).
   RawAnnotContext(RetainPtr<CPDF_Dictionary> dict,
-                  RetainPtr<CPDF_Page> unparsed_page)
-      : CPDF_AnnotContext(dict, unparsed_page.Get()),
+                  RetainPtr<CPDF_Page> unparsed_page,
+                  int annot_index)
+      : CPDF_AnnotContext(dict, unparsed_page.Get(), annot_index),
         owned_page_(std::move(unparsed_page)) {}
 
  private:
@@ -572,7 +573,7 @@ bool IsNameValidForSubtype(FPDF_ANNOT_NAME name,
   }
 }
 
-bool HasAPStream(CPDF_Dictionary* pAnnotDict) {
+bool HasAPStream(const CPDF_Dictionary* pAnnotDict) {
   return !!GetAnnotAP(pAnnotDict, CPDF_Annot::AppearanceMode::kNormal);
 }
 
@@ -1432,8 +1433,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetColor(FPDF_ANNOTATION annot,
                                                        unsigned int* G,
                                                        unsigned int* B,
                                                        unsigned int* A) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
 
   if (!pAnnotDict || !R || !G || !B || !A) {
     return false;
@@ -1442,7 +1442,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetColor(FPDF_ANNOTATION annot,
   // For annotations with their appearance streams already defined, the path
   // stream's own color definitions take priority over the annotation color
   // definitions retrieved by this method, hence this method will simply fail.
-  if (HasAPStream(pAnnotDict.Get())) {
+  if (HasAPStream(pAnnotDict)) {
     return false;
   }
 
@@ -3710,7 +3710,8 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
 
   // Create the context, which now takes the RetainPtr directly.
   auto ctx =
-      std::make_unique<RawAnnotContext>(std::move(annot_dict), std::move(page));
+      std::make_unique<RawAnnotContext>(std::move(annot_dict), std::move(page),
+                                        index);
 
   // The lifetime is now perfectly managed by smart pointers.
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());

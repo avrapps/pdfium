@@ -250,13 +250,13 @@ bool CPDF_Annot::IsHidden() const {
   return !!(GetFlags() & pdfium::annotation_flags::kHidden);
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAP(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
                                   CPDF_Annot::AppearanceMode eMode) {
   DCHECK(pAnnotDict);
   return GetAnnotAPInternal(pAnnotDict, eMode, true);
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode) {
   DCHECK(pAnnotDict);
   return GetAnnotAPInternal(pAnnotDict, eMode, false);

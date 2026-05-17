@@ -247,12 +247,12 @@ class CPDF_Annot {
 // Get the AP in an annotation dict for a given appearance mode.
 // If |eMode| is not Normal and there is not AP for that mode, falls back to
 // the Normal AP.
-RetainPtr<CPDF_Stream> GetAnnotAP(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
                                   CPDF_Annot::AppearanceMode eMode);
 
 // Get the AP in an annotation dict for a given appearance mode.
 // No fallbacks to Normal like in GetAnnotAP.
-RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode);
 
 #endif  // CORE_FPDFDOC_CPDF_ANNOT_H_
