@@ -55,17 +55,17 @@ case "$TARGET" in
   ios-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\ntarget_environment="device"'
     ;;
   ios-simulator-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
     ;;
   ios-simulator-x64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="x64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
     ;;
   *)
     echo "test-target.sh only supports host-native and cross-buildable targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64, android-*, ios-*" >&2

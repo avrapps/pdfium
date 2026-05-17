@@ -81,19 +81,19 @@ case "$TARGET" in
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\ntarget_environment="device"'
     ;;
   ios-simulator-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
     ;;
   ios-simulator-x64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="x64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
     ;;
   *)
     echo "unknown target: $TARGET" >&2
