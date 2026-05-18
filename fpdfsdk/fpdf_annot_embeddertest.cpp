@@ -7,6 +7,8 @@
 #include <limits.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -29,6 +31,7 @@
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
+#include "public/fpdf_text.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -47,6 +50,58 @@ const wchar_t kStreamData[] =
     L"c 215.4 739.0 216.8 737.1 218.9 736.1 c 220.8 735.1 221.4 733.0 "
     L"223.7 732.4 c 232.6 729.9 242.0 730.8 251.2 730.8 c 257.5 730.8 "
     L"263.0 732.9 269.0 734.4 c S";
+
+std::wstring ExtractPageText(FPDF_PAGE page) {
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(page));
+  if (!text_page) {
+    ADD_FAILURE() << "Failed to load text page";
+    return L"";
+  }
+
+  const int char_count = FPDFText_CountChars(text_page.get());
+  std::vector<FPDF_WCHAR> buffer(char_count + 1);
+  EXPECT_GT(FPDFText_GetText(text_page.get(), 0, char_count, buffer.data()),
+            0);
+  return GetPlatformWString(buffer.data());
+}
+
+struct RedactionReport {
+  std::vector<uint32_t> object_numbers;
+  uint32_t written_count = 0;
+  uint32_t total_count = 0;
+  uint32_t nm_utf8_bytes_used = 0;
+};
+
+RedactionReport ApplyRedactionWithReport(FPDF_PAGE page,
+                                         FPDF_ANNOTATION annot) {
+  std::array<EPDF_RemovedAnnotInfo, 8> removed = {};
+  std::array<char, 256> nm_utf8_pool = {};
+  RedactionReport report;
+
+  EXPECT_TRUE(EPDFAnnot_ApplyRedactionWithReport(
+      page, annot, removed.data(), removed.size(), nm_utf8_pool.data(),
+      nm_utf8_pool.size(), &report.written_count, &report.total_count,
+      &report.nm_utf8_bytes_used));
+
+  for (uint32_t i = 0; i < report.written_count; ++i)
+    report.object_numbers.push_back(removed[i].object_number);
+  return report;
+}
+
+RedactionReport ApplyPageRedactionsWithReport(FPDF_PAGE page) {
+  std::array<EPDF_RemovedAnnotInfo, 8> removed = {};
+  std::array<char, 256> nm_utf8_pool = {};
+  RedactionReport report;
+
+  EXPECT_TRUE(EPDFPage_ApplyRedactionsWithReport(
+      page, removed.data(), removed.size(), nm_utf8_pool.data(),
+      nm_utf8_pool.size(), &report.written_count, &report.total_count,
+      &report.nm_utf8_bytes_used));
+
+  for (uint32_t i = 0; i < report.written_count; ++i)
+    report.object_numbers.push_back(removed[i].object_number);
+  return report;
+}
 
 void VerifyFocusableAnnotSubtypes(
     FPDF_FORMHANDLE form_handle,
@@ -3265,6 +3320,137 @@ TEST_F(FPDFAnnotEmbedderTest, Redactannotation) {
     ASSERT_TRUE(annot);
     EXPECT_EQ(FPDF_ANNOT_REDACT, FPDFAnnot_GetSubtype(annot.get()));
   }
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRemovesTextInMiddleOfSentence) {
+  ASSERT_TRUE(OpenDocument("redact_text_middle.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  std::wstring before = ExtractPageText(page.get());
+  EXPECT_NE(std::wstring::npos, before.find(L"hello"));
+  EXPECT_NE(std::wstring::npos, before.find(L"secret"));
+  EXPECT_NE(std::wstring::npos, before.find(L"world"));
+  ScopedFPDFBitmap before_bitmap = RenderLoadedPage(page.get());
+  ASSERT_TRUE(before_bitmap);
+  const std::string before_hash = HashBitmap(before_bitmap.get());
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get()));
+  }
+
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+
+  std::wstring after = ExtractPageText(saved_page);
+  ScopedFPDFBitmap after_bitmap = RenderSavedPage(saved_page);
+  ASSERT_TRUE(after_bitmap);
+  const std::string after_hash = HashBitmap(after_bitmap.get());
+  CloseSavedPage(saved_page);
+  EXPECT_NE(std::wstring::npos, after.find(L"hello"));
+  EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
+  EXPECT_NE(std::wstring::npos, after.find(L"world"));
+  EXPECT_NE(before_hash, after_hash);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionReportsIntersectingAnnotation) {
+  ASSERT_TRUE(OpenDocument("redact_remove_annots.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    RedactionReport report = ApplyRedactionWithReport(page.get(), annot.get());
+    EXPECT_EQ(2u, report.written_count);
+    EXPECT_EQ(2u, report.total_count);
+    EXPECT_THAT(report.object_numbers, testing::UnorderedElementsAre(5u, 6u));
+  }
+
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionPreservesSiblingRedactions) {
+  ASSERT_TRUE(OpenDocument("redact_preserve_sibling.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    RedactionReport report = ApplyRedactionWithReport(page.get(), annot.get());
+    EXPECT_EQ(2u, report.written_count);
+    EXPECT_EQ(2u, report.total_count);
+    EXPECT_THAT(report.object_numbers, testing::UnorderedElementsAre(5u, 7u));
+  }
+
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  ScopedFPDFAnnotation remaining(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(remaining);
+  EXPECT_EQ(FPDF_ANNOT_REDACT, FPDFAnnot_GetSubtype(remaining.get()));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionDoesNotRemoveTouchOnlyAnnotation) {
+  ASSERT_TRUE(OpenDocument("redact_touch_only.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(2, FPDFPage_GetAnnotCount(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    RedactionReport report = ApplyRedactionWithReport(page.get(), annot.get());
+    EXPECT_EQ(1u, report.written_count);
+    EXPECT_EQ(1u, report.total_count);
+    EXPECT_THAT(report.object_numbers, testing::ElementsAre(5u));
+  }
+
+  ASSERT_EQ(1, FPDFPage_GetAnnotCount(page.get()));
+  ScopedFPDFAnnotation remaining(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(remaining);
+  EXPECT_EQ(FPDF_ANNOT_SQUARE, FPDFAnnot_GetSubtype(remaining.get()));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionCascadesPopupRemoval) {
+  ASSERT_TRUE(OpenDocument("redact_popup_cascade.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(3, FPDFPage_GetAnnotCount(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    RedactionReport report = ApplyRedactionWithReport(page.get(), annot.get());
+    EXPECT_EQ(3u, report.written_count);
+    EXPECT_EQ(3u, report.total_count);
+    EXPECT_THAT(report.object_numbers,
+                testing::UnorderedElementsAre(5u, 6u, 7u));
+  }
+
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyPageRedactionsReportsAllRemovedAnnotations) {
+  ASSERT_TRUE(OpenDocument("redact_apply_all_visible.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(4, FPDFPage_GetAnnotCount(page.get()));
+
+  RedactionReport report = ApplyPageRedactionsWithReport(page.get());
+  EXPECT_EQ(4u, report.written_count);
+  EXPECT_EQ(4u, report.total_count);
+  EXPECT_THAT(report.object_numbers,
+              testing::UnorderedElementsAre(5u, 6u, 7u, 8u));
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, PolygonAnnotation) {

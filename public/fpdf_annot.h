@@ -13,6 +13,9 @@
 // NOLINTNEXTLINE(build/include)
 #include "fpdf_formfill.h"
 
+// NOLINTNEXTLINE(build/include)
+#include "epdf_redact.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -1781,40 +1784,6 @@ EPDFAnnot_SetOverlayTextRepeat(FPDF_ANNOTATION annot, FPDF_BOOL repeat);
 // Returns true if the overlay text repeats, false otherwise or if not a Redact.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Apply a redact annotation, permanently removing content underneath.
-// If the annotation has an RO (Redact Overlay) stream, it will be flattened
-// as page content (filled rectangles with overlay text).
-// If no RO stream exists, content is simply removed with no overlay.
-// The annotation is automatically removed from the page after applying.
-//
-// The caller is responsible for:
-//   1. Closing the annotation handle with FPDFPage_CloseAnnot after this call
-//   2. Calling FPDFPage_GenerateContent to persist changes
-//
-//   page  - handle to the page containing the annotation
-//   annot - handle to a REDACT annotation
-//
-// Returns TRUE on success, FALSE if not a REDACT annotation or on error.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Apply all redact annotations on a page, permanently removing content
-// underneath each one. For each annotation with an RO stream, the overlay
-// is flattened as page content. Annotations without RO simply have content
-// removed with no overlay.
-// All REDACT annotations are automatically removed from the page after applying.
-//
-// The caller is responsible for:
-//   1. Calling FPDFPage_GenerateContent to persist changes
-//
-//   page - handle to a page
-//
-// Returns TRUE if any redactions were applied, FALSE otherwise.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_ApplyRedactions(FPDF_PAGE page);
 
 // Experimental EmbedPDF Extension API.
 // Flatten an annotation's normal appearance (AP/N) to page content.

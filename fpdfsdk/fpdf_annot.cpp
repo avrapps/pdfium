@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -17,7 +18,6 @@
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_pageorganizer.h"
-#include "core/fpdfapi/edit/cpdf_text_redactor.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_formobject.h"
@@ -53,6 +53,7 @@
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
+#include "fpdfsdk/epdf_page_content_helpers.h"
 
 namespace {
 
@@ -4124,103 +4125,6 @@ EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot) {
 
 namespace {
 
-// Helper to extract redaction rectangles from a REDACT annotation.
-// Returns QuadPoints if present, otherwise falls back to Rect.
-std::vector<CFX_FloatRect> GetRedactRectsFromAnnotDict(
-    const CPDF_Dictionary* annot_dict) {
-  std::vector<CFX_FloatRect> rects;
-  if (!annot_dict) {
-    return rects;
-  }
-
-  // Try QuadPoints first (for text-based redactions)
-  RetainPtr<const CPDF_Array> quad_points_array =
-      annot_dict->GetArrayFor("QuadPoints");
-  if (quad_points_array && quad_points_array->size() >= 8) {
-    size_t quad_count = CPDF_Annot::QuadPointCount(quad_points_array.Get());
-    for (size_t i = 0; i < quad_count; ++i) {
-      CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
-      rect.Normalize();
-      if (!rect.IsEmpty()) {
-        rects.push_back(rect);
-      }
-    }
-    if (!rects.empty()) {
-      return rects;
-    }
-  }
-
-  // Fall back to Rect (for area-based redactions)
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  if (!rect.IsEmpty()) {
-    rects.push_back(rect);
-  }
-
-  return rects;
-}
-
-// Internal helper to flatten any Form XObject stream to page content.
-// Used by EPDFAnnot_Flatten (for AP/N) and EPDFAnnot_ApplyRedaction (for RO).
-void FlattenFormXObjectToPage(CPDF_Page* page,
-                              RetainPtr<const CPDF_Stream> form_stream,
-                              const CFX_FloatRect& target_rect) {
-  if (!page || !form_stream) {
-    return;
-  }
-
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc) {
-    return;
-  }
-
-  // Get the form dictionary from the stream
-  RetainPtr<const CPDF_Dictionary> form_dict = form_stream->GetDict();
-  if (!form_dict) {
-    return;
-  }
-
-  // Get the BBox from the form stream
-  CFX_FloatRect form_bbox = form_dict->GetRectFor("BBox");
-  form_bbox.Normalize();
-  if (form_bbox.IsEmpty()) {
-    form_bbox = target_rect;
-  }
-
-  // Calculate the transformation matrix to position the form at the target rect
-  // The form's content is defined in BBox coordinates, we need to map it to
-  // target_rect
-  float scale_x = 1.0f;
-  float scale_y = 1.0f;
-  if (form_bbox.Width() > 0) {
-    scale_x = target_rect.Width() / form_bbox.Width();
-  }
-  if (form_bbox.Height() > 0) {
-    scale_y = target_rect.Height() / form_bbox.Height();
-  }
-
-  CFX_Matrix form_matrix;
-  form_matrix.a = scale_x;
-  form_matrix.d = scale_y;
-  form_matrix.e = target_rect.left - form_bbox.left * scale_x;
-  form_matrix.f = target_rect.bottom - form_bbox.bottom * scale_y;
-
-  // Create a CPDF_Form from the stream
-  auto form = std::make_unique<CPDF_Form>(
-      doc, page->GetMutableResources(),
-      pdfium::WrapRetain(const_cast<CPDF_Stream*>(form_stream.Get())));
-  form->ParseContent();
-
-  // Create a FormObject that wraps the form
-  auto form_obj = std::make_unique<CPDF_FormObject>(
-      CPDF_PageObject::kNoContentStream, std::move(form), form_matrix);
-
-  form_obj->CalcBoundingBox();
-  form_obj->SetDirty(true);
-
-  page->AppendPageObject(std::move(form_obj));
-}
-
 // Find the index of an annotation in the page's annotation array.
 // Returns -1 if not found.
 int GetAnnotIndexOnPage(const CPDF_Page* page,
@@ -4243,150 +4147,6 @@ int GetAnnotIndexOnPage(const CPDF_Page* page,
 }
 
 }  // namespace
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
-    return false;
-  }
-
-  // Must be a REDACT annotation
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
-    return false;
-  }
-
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return false;
-  }
-
-  // 1. Extract redaction rectangles from QuadPoints or Rect
-  std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(annot_dict);
-  if (rects.empty()) {
-    return false;
-  }
-
-  // 2. Remove content using existing redactor (no black boxes - we use RO)
-  RedactTextInRects(pPage, pdfium::span(rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
-
-  // 3. Flatten RO stream if present
-  RetainPtr<const CPDF_Stream> ro_stream = annot_dict->GetStreamFor("RO");
-  if (ro_stream) {
-    CFX_FloatRect annot_rect =
-        annot_dict->GetRectFor(pdfium::annotation::kRect);
-    annot_rect.Normalize();
-    FlattenFormXObjectToPage(pPage, ro_stream, annot_rect);
-  }
-  // If no RO: content is removed but no overlay is added
-
-  // 4. Remove the annotation from the page
-  int annot_index = GetAnnotIndexOnPage(pPage, annot_dict);
-  if (annot_index >= 0) {
-    RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-    if (annots) {
-      RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(annot_index);
-      uint32_t objnum = 0;
-      if (entry && entry->IsReference()) {
-        objnum = entry->AsReference()->GetRefObjNum();
-      } else if (entry) {
-        objnum = entry->GetObjNum();
-      }
-      annots->RemoveAt(annot_index);
-      if (objnum) {
-        pPage->GetDocument()->DeleteIndirectObject(objnum);
-      }
-    }
-  }
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ApplyRedactions(FPDF_PAGE page) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
-    return false;
-  }
-
-  // First pass: collect all redaction areas, RO streams, indices, and objnums
-  std::vector<CFX_FloatRect> all_rects;
-  std::vector<std::pair<RetainPtr<const CPDF_Stream>, CFX_FloatRect>>
-      ro_streams;
-  std::vector<std::pair<size_t, uint32_t>> redact_index_objnums;
-
-  RetainPtr<CPDF_Array> annot_list = pPage->GetMutableAnnotsArray();
-  if (!annot_list || annot_list->IsEmpty()) {
-    return false;
-  }
-
-  for (size_t i = 0; i < annot_list->size(); ++i) {
-    RetainPtr<CPDF_Object> entry = annot_list->GetMutableObjectAt(i);
-    RetainPtr<CPDF_Dictionary> annot_dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!annot_dict) {
-      continue;
-    }
-
-    // Check if this is a REDACT annotation
-    ByteString subtype = annot_dict->GetNameFor(pdfium::annotation::kSubtype);
-    if (subtype != "Redact") {
-      continue;
-    }
-
-    // Track index and indirect object number for later removal
-    uint32_t objnum = 0;
-    if (entry && entry->IsReference()) {
-      objnum = entry->AsReference()->GetRefObjNum();
-    } else if (annot_dict) {
-      objnum = annot_dict->GetObjNum();
-    }
-    redact_index_objnums.push_back({i, objnum});
-
-    // Extract rectangles
-    std::vector<CFX_FloatRect> rects =
-        GetRedactRectsFromAnnotDict(annot_dict.Get());
-    for (const auto& rect : rects) {
-      all_rects.push_back(rect);
-    }
-
-    // Collect RO stream if present
-    RetainPtr<const CPDF_Stream> ro_stream = annot_dict->GetStreamFor("RO");
-    if (ro_stream) {
-      CFX_FloatRect annot_rect =
-          annot_dict->GetRectFor(pdfium::annotation::kRect);
-      annot_rect.Normalize();
-      ro_streams.push_back({ro_stream, annot_rect});
-    }
-  }
-
-  if (all_rects.empty()) {
-    return false;
-  }
-
-  // Remove content for all redaction areas at once
-  RedactTextInRects(pPage, pdfium::span(all_rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
-
-  // Flatten all RO streams
-  for (const auto& [ro_stream, annot_rect] : ro_streams) {
-    FlattenFormXObjectToPage(pPage, ro_stream, annot_rect);
-  }
-
-  // Remove all REDACT annotations (in reverse order to maintain indices)
-  // and delete the underlying indirect objects to avoid orphans in the xref.
-  for (auto it = redact_index_objnums.rbegin();
-       it != redact_index_objnums.rend(); ++it) {
-    annot_list->RemoveAt(it->first);
-    if (it->second) {
-      pPage->GetDocument()->DeleteIndirectObject(it->second);
-    }
-  }
-
-  return true;
-}
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
                                                       FPDF_ANNOTATION annot) {
@@ -4415,7 +4175,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
   CFX_FloatRect annot_rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
   annot_rect.Normalize();
 
-  FlattenFormXObjectToPage(pPage, ap_stream, annot_rect);
+  EpdfAppendFormXObjectToPage(pPage, ap_stream, annot_rect);
 
   // Remove the annotation from the page
   int annot_index = GetAnnotIndexOnPage(pPage, annot_dict);
