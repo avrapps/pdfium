@@ -26,13 +26,6 @@ jobs:
         include:
           # Android
           - { target: arm64-v8a,        runner: ubuntu-24.04 }
-          - { target: armeabi-v7a,      runner: ubuntu-24.04 }
-          - { target: x86,              runner: ubuntu-24.04 }
-          - { target: x86_64,           runner: ubuntu-24.04 }
-          # iOS
-          - { target: ios-arm64,        runner: macos-15 }
-          - { target: ios-simulator-arm64, runner: macos-15 }
-          - { target: ios-simulator-x64,   runner: macos-15 }
     steps:
       - uses: actions/checkout@v6
         with:
