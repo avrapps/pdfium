@@ -60,22 +60,22 @@ case "$TARGET" in
   android-arm64 | arm64-v8a)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="arm64"
-    PDF_IS_COMPLETE_LIB=false
+    PDF_IS_COMPLETE_LIB=true
     ;;
   android-arm | armeabi-v7a)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="arm"
-    PDF_IS_COMPLETE_LIB=false
+    PDF_IS_COMPLETE_LIB=true
     ;;
   android-x64 | x86_64)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="x64"
-    PDF_IS_COMPLETE_LIB=false
+    PDF_IS_COMPLETE_LIB=true
     ;;
   android-x86 | x86)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="x86"
-    PDF_IS_COMPLETE_LIB=false
+    PDF_IS_COMPLETE_LIB=true
     ;;
   ios-arm64)
     GN_TARGET_OS="ios"
@@ -124,6 +124,7 @@ fi
 
 OUT="$SOURCE_DIR/out/embedpdf-runtime/$TARGET"
 mkdir -p "$OUT"
+SYMBOL_LEVEL="${PDF_RUNTIME_SYMBOL_LEVEL:-0}"
 
 cat > "$OUT/args.gn" <<EOF
 is_debug=false
@@ -137,7 +138,7 @@ pdf_is_standalone=true
 use_debug_fission=false
 pdf_is_complete_lib=$PDF_IS_COMPLETE_LIB
 pdf_use_partition_alloc=false
-symbol_level=0
+symbol_level=$SYMBOL_LEVEL
 target_os="$GN_TARGET_OS"
 target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}
 EOF
