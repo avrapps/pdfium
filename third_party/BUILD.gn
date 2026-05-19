@@ -334,7 +334,7 @@ if (!build_with_chromium) {
   group("jpeg") {
     if (use_system_libjpeg) {
       public_configs = [ ":system_libjpeg_config" ]
-    } else if (use_libjpeg_turbo && use_blink) {
+    } else if (use_libjpeg_turbo) {
       public_deps = [ "//third_party/libjpeg_turbo:libjpeg" ]
       public_configs = [ ":libjpeg_turbo_config" ]
     } else {

@@ -55,17 +55,17 @@ case "$TARGET" in
   ios-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\ntarget_environment="device"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false'
     ;;
   ios-simulator-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
     ;;
   ios-simulator-x64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="x64"
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
     ;;
   *)
     echo "test-target.sh only supports host-native and cross-buildable targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64, android-*, ios-*" >&2
@@ -116,14 +116,6 @@ target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}
 EOF
 
 targets=()
-
-# iOS builds skip tests entirely (test targets are excluded from the iOS build).
-if [[ "$GN_TARGET_OS" == "ios" ]]; then
-  echo "=== tests are not supported on iOS, skipping ==="
-  echo "$RESULTS"
-  exit 0
-fi
-
 case "$TEST_SUITE" in
   all)
     targets+=(pdfium_unittests pdfium_embeddertests)

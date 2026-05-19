@@ -60,40 +60,40 @@ case "$TARGET" in
   android-arm64 | arm64-v8a)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="arm64"
-    PDF_IS_COMPLETE_LIB=true
+    PDF_IS_COMPLETE_LIB=false
     ;;
   android-arm | armeabi-v7a)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="arm"
-    PDF_IS_COMPLETE_LIB=true
+    PDF_IS_COMPLETE_LIB=false
     ;;
   android-x64 | x86_64)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="x64"
-    PDF_IS_COMPLETE_LIB=true
+    PDF_IS_COMPLETE_LIB=false
     ;;
   android-x86 | x86)
     GN_TARGET_OS="android"
     GN_TARGET_CPU="x86"
-    PDF_IS_COMPLETE_LIB=true
+    PDF_IS_COMPLETE_LIB=false
     ;;
   ios-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\ntarget_environment="device"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false'
     ;;
   ios-simulator-arm64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="arm64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
     ;;
   ios-simulator-x64)
     GN_TARGET_OS="ios"
     GN_TARGET_CPU="x64"
     PDF_IS_COMPLETE_LIB=true
-    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true\ntarget_environment="simulator"'
+    EXTRA_ARGS=$'\nios_enable_code_signing=false\nuse_ios_simulator=true'
     ;;
   *)
     echo "unknown target: $TARGET" >&2
@@ -124,7 +124,6 @@ fi
 
 OUT="$SOURCE_DIR/out/embedpdf-runtime/$TARGET"
 mkdir -p "$OUT"
-SYMBOL_LEVEL="${PDF_RUNTIME_SYMBOL_LEVEL:-0}"
 
 cat > "$OUT/args.gn" <<EOF
 is_debug=false
@@ -138,7 +137,7 @@ pdf_is_standalone=true
 use_debug_fission=false
 pdf_is_complete_lib=$PDF_IS_COMPLETE_LIB
 pdf_use_partition_alloc=false
-symbol_level=$SYMBOL_LEVEL
+symbol_level=0
 target_os="$GN_TARGET_OS"
 target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}
 EOF
