@@ -1662,6 +1662,20 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
 EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 
 // Experimental EmbedPDF Extension API.
+// Get the PDF indirect object number of a page's dictionary by page index.
+// Unlike FPDF_LoadPage(), this does not construct a page object or parse page
+// content.
+//
+//   document   - handle to the document.
+//   page_index - zero-based page index.
+//
+// Returns the page dictionary object number (> 0) on success, or 0 if the
+// document/index is invalid, the page dictionary is a direct object, or the
+// page is an XFA page.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index);
+
+// Experimental EmbedPDF Extension API.
 // Get the PDF indirect object number of a page's dictionary.
 //
 //   page - handle to the page.
