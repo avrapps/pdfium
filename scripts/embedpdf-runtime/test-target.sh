@@ -116,6 +116,14 @@ target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}
 EOF
 
 targets=()
+
+# iOS builds skip tests entirely (test targets are excluded from the iOS build).
+if [[ "$GN_TARGET_OS" == "ios" ]]; then
+  echo "=== tests are not supported on iOS, skipping ==="
+  echo "$RESULTS"
+  exit 0
+fi
+
 case "$TEST_SUITE" in
   all)
     targets+=(pdfium_unittests pdfium_embeddertests)
