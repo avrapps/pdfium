@@ -225,7 +225,12 @@ group("pdfium_public_headers") {
   ]
 }
 
-component("pdfium") {
+pdfium_component_target_type = "component"
+if (pdf_is_complete_lib) {
+  pdfium_component_target_type = "static_library"
+}
+
+target(pdfium_component_target_type, "pdfium") {
   output_name = "pdfium"
   libs = []
   configs += [ ":pdfium_strict_config" ]
