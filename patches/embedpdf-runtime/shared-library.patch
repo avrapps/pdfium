@@ -12,10 +12,10 @@ index fbdb13a4e..3b450b979 100644
    libs = []
    configs += [ ":pdfium_strict_config" ]
 +  if (is_android) {
-+    configs -= [
++    configs = filter_exclude(configs, [
 +      "//build/config/android:hide_all_but_jni_onload",
 +      "//build/config/android:hide_all_but_jni",
-+    ]
++    ])
 +  }
    public_configs = [ ":pdfium_public_config" ]
  
