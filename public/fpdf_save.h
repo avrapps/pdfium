@@ -137,6 +137,23 @@ EPDFLayer_SaveDelta(FPDF_DOCUMENT layer,
                     FPDF_FILEWRITE* file_write,
                     EPDFLayerSaveStatus* out_status);
 
+// Function: EPDFLayer_SaveLayerArtifact
+//          Saves a server-facing layer artifact containing base identity
+//          metadata and the raw layer delta. Unlike the owned-buffer variant,
+//          this writes to the caller-supplied FPDF_FILEWRITE and is suitable
+//          for native/server paths that should avoid materializing the whole
+//          artifact in memory.
+// Parameters:
+//          layer      -   A layer document returned by EPDFLayer_OpenLayer().
+//          file_write -   A pointer to a custom file write structure.
+//          out_status -   Optional detailed save status.
+// Return value:
+//          TRUE if succeed, FALSE if failed.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
+                            FPDF_FILEWRITE* file_write,
+                            EPDFLayerSaveStatus* out_status);
+
 // Function: EPDFLayer_SaveDeltaToOwnedBuffer
 //          Saves only a layer document's current overlay delta into an owned
 //          memory buffer. The caller must release the returned buffer with

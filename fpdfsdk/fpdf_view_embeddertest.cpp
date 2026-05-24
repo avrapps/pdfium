@@ -1734,6 +1734,16 @@ TEST_F(FPDFViewEmbedderTest, LayerOwnedBufferAndArtifactReplay) {
                        artifact_size);
   EPDF_FreeBuffer(artifact_buffer);
 
+  ClearString();
+  save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveLayerArtifact(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string streamed_artifact = GetString();
+  ASSERT_FALSE(streamed_artifact.empty());
+
+  // Independent saves may produce different trailer /ID values. Layer
+  // artifact correctness is replay validity, not byte-for-byte equality
+  // between separately generated artifacts.
   FPDF_FILEACCESS artifact_access = {};
   artifact_access.m_FileLen = artifact.size();
   artifact_access.m_GetBlock = GetBlockFromString;
@@ -1746,6 +1756,22 @@ TEST_F(FPDFViewEmbedderTest, LayerOwnedBufferAndArtifactReplay) {
   ScopedFPDFPage artifact_page(FPDF_LoadPage(artifact_replayed.get(), 0));
   ASSERT_TRUE(artifact_page);
   EXPECT_EQ(1, FPDFPage_GetAnnotCount(artifact_page.get()));
+
+  FPDF_FILEACCESS streamed_artifact_access = {};
+  streamed_artifact_access.m_FileLen = streamed_artifact.size();
+  streamed_artifact_access.m_GetBlock = GetBlockFromString;
+  streamed_artifact_access.m_Param = &streamed_artifact;
+  EPDFLayerOpenStatus streamed_artifact_open_status =
+      EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument streamed_artifact_replayed(
+      EPDFLayer_OpenLayerArtifact(base, &streamed_artifact_access, nullptr,
+                                  &streamed_artifact_open_status));
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, streamed_artifact_open_status);
+  ASSERT_TRUE(streamed_artifact_replayed);
+  ScopedFPDFPage streamed_artifact_page(
+      FPDF_LoadPage(streamed_artifact_replayed.get(), 0));
+  ASSERT_TRUE(streamed_artifact_page);
+  EXPECT_EQ(1, FPDFPage_GetAnnotCount(streamed_artifact_page.get()));
 
   EPDF_ReleaseBaseDocument(base);
 }
@@ -2542,8 +2568,7 @@ TEST_F(FPDFViewEmbedderTest, EPDFDocGetPageObjectNumberByIndex) {
   // Page 1 doesn't exist.
   EXPECT_EQ(0u, EPDFDoc_GetPageObjectNumberByIndex(document(), 1));
 
-  const unsigned int objnum =
-      EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
+  const unsigned int objnum = EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
   EXPECT_NE(0u, objnum);
 
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());

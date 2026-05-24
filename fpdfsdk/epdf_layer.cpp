@@ -5,6 +5,7 @@
 #include "public/fpdfview.h"
 
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -80,6 +81,92 @@ struct MemoryFileWriter : public FPDF_FILEWRITE {
           static_cast<const char*>(buf), size);
       return 1;
     };
+  }
+};
+
+struct HashingTempFileWriter : public FPDF_FILEWRITE {
+  FILE* file = nullptr;
+  CRYPT_sha2_context sha_context = {};
+  uint64_t size = 0;
+  bool failed = false;
+  bool finalized = false;
+
+  HashingTempFileWriter() {
+    version = 1;
+    file = std::tmpfile();
+    CRYPT_SHA256Start(&sha_context);
+    WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
+                    unsigned long block_size) -> int {
+      auto* writer = static_cast<HashingTempFileWriter*>(self);
+      if (!writer || !writer->file || writer->failed || writer->finalized) {
+        return 0;
+      }
+      if (writer->size + block_size < writer->size) {
+        writer->failed = true;
+        return 0;
+      }
+      if (block_size == 0) {
+        return 1;
+      }
+      const size_t written = fwrite(buf, 1, block_size, writer->file);
+      if (written != block_size) {
+        writer->failed = true;
+        return 0;
+      }
+      CRYPT_SHA256Update(&writer->sha_context,
+                         UNSAFE_BUFFERS(pdfium::span(
+                             static_cast<const uint8_t*>(buf), block_size)));
+      writer->size += block_size;
+      return 1;
+    };
+  }
+
+  ~HashingTempFileWriter() {
+    if (file) {
+      fclose(file);
+    }
+  }
+
+  bool IsValid() const { return file && !failed; }
+
+  std::optional<std::array<uint8_t, kSha256DigestSize>> FinishSha256() {
+    if (!IsValid() || finalized) {
+      return std::nullopt;
+    }
+    if (fflush(file) != 0) {
+      failed = true;
+      return std::nullopt;
+    }
+    finalized = true;
+    std::array<uint8_t, kSha256DigestSize> digest = {};
+    CRYPT_SHA256Finish(&sha_context, digest);
+    return digest;
+  }
+
+  bool ReplayTo(FPDF_FILEWRITE* out) {
+    if (!out || !IsValid() || !finalized) {
+      return false;
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+      return false;
+    }
+
+    std::array<uint8_t, 8192> buffer = {};
+    uint64_t remaining = size;
+    while (remaining > 0) {
+      const size_t chunk_size =
+          static_cast<size_t>(std::min<uint64_t>(buffer.size(), remaining));
+      const size_t read = fread(buffer.data(), 1, chunk_size, file);
+      if (read != chunk_size) {
+        return false;
+      }
+      if (!out->WriteBlock(out, buffer.data(),
+                           static_cast<unsigned long>(chunk_size))) {
+        return false;
+      }
+      remaining -= chunk_size;
+    }
+    return true;
   }
 };
 
@@ -180,6 +267,40 @@ void AppendUint64LE(std::vector<uint8_t>* buffer, uint64_t value) {
   for (size_t i = 0; i < 8; ++i) {
     buffer->push_back(static_cast<uint8_t>(value >> (i * 8)));
   }
+}
+
+std::vector<uint8_t> BuildLayerArtifactHeader(
+    CPDF_BaseDocument* base_doc,
+    uint64_t delta_size,
+    const std::array<uint8_t, kSha256DigestSize>& delta_sha) {
+  std::vector<uint8_t> artifact;
+  artifact.reserve(kLayerArtifactHeaderSize);
+  artifact.insert(artifact.end(), kLayerArtifactMagic, kLayerArtifactMagic + 8);
+  AppendUint32LE(&artifact, kLayerArtifactVersion);
+  AppendUint32LE(&artifact, kLayerArtifactHeaderSize);
+  AppendUint64LE(&artifact, static_cast<uint64_t>(base_doc->GetRawBaseSize()));
+  AppendUint64LE(&artifact,
+                 static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()));
+  AppendUint64LE(&artifact, delta_size);
+  const std::array<uint8_t, kSha256DigestSize>& base_sha =
+      base_doc->GetRawBaseSha256();
+  artifact.insert(artifact.end(), base_sha.begin(), base_sha.end());
+  artifact.insert(artifact.end(), delta_sha.begin(), delta_sha.end());
+  return artifact;
+}
+
+bool WriteBytes(FPDF_FILEWRITE* file_write, pdfium::span<const uint8_t> bytes) {
+  if (!file_write) {
+    return false;
+  }
+  if (bytes.empty()) {
+    return true;
+  }
+  if (bytes.size() > std::numeric_limits<unsigned long>::max()) {
+    return false;
+  }
+  return file_write->WriteBlock(file_write, bytes.data(),
+                                static_cast<unsigned long>(bytes.size()));
 }
 
 uint32_t ReadUint32LE(const uint8_t* data) {
@@ -418,6 +539,51 @@ EPDFLayer_SaveDeltaToOwnedBuffer(FPDF_DOCUMENT layer,
   return CopyToOwnedBuffer(pdfium::as_byte_span(writer.data), out_size);
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFLayer_SaveLayerArtifact(FPDF_DOCUMENT layer,
+                            FPDF_FILEWRITE* file_write,
+                            EPDFLayerSaveStatus* out_status) {
+  SetSaveStatus(out_status, EPDFLayerSaveStatus_kSaveFailed);
+  if (!file_write) {
+    return false;
+  }
+
+  CPDF_Document* document = CPDFDocumentFromFPDFDocument(layer);
+  CPDF_LayerDocument* layer_doc = CPDF_LayerDocument::FromDocument(document);
+  CPDF_BaseDocument* base_doc =
+      layer_doc ? layer_doc->GetBaseDocument() : nullptr;
+  if (!layer_doc || !base_doc) {
+    return false;
+  }
+
+  HashingTempFileWriter delta_writer;
+  if (!delta_writer.IsValid()) {
+    return false;
+  }
+
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  if (!EPDFLayer_SaveDelta(layer, &delta_writer, &save_status)) {
+    SetSaveStatus(out_status, save_status);
+    return false;
+  }
+
+  std::optional<std::array<uint8_t, kSha256DigestSize>> delta_sha =
+      delta_writer.FinishSha256();
+  if (!delta_sha) {
+    return false;
+  }
+
+  const std::vector<uint8_t> header =
+      BuildLayerArtifactHeader(base_doc, delta_writer.size, *delta_sha);
+  if (!WriteBytes(file_write, pdfium::span<const uint8_t>(header)) ||
+      !delta_writer.ReplayTo(file_write)) {
+    return false;
+  }
+
+  SetSaveStatus(out_status, EPDFLayerSaveStatus_kSuccess);
+  return true;
+}
+
 FPDF_EXPORT void* FPDF_CALLCONV
 EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
                                          unsigned long* out_size,
@@ -452,19 +618,9 @@ EPDFLayer_SaveLayerArtifactToOwnedBuffer(FPDF_DOCUMENT layer,
     return nullptr;
   }
 
-  std::vector<uint8_t> artifact;
+  std::vector<uint8_t> artifact = BuildLayerArtifactHeader(
+      base_doc, static_cast<uint64_t>(delta_writer.data.size()), *delta_sha);
   artifact.reserve(kLayerArtifactHeaderSize + delta_writer.data.size());
-  artifact.insert(artifact.end(), kLayerArtifactMagic, kLayerArtifactMagic + 8);
-  AppendUint32LE(&artifact, kLayerArtifactVersion);
-  AppendUint32LE(&artifact, kLayerArtifactHeaderSize);
-  AppendUint64LE(&artifact, static_cast<uint64_t>(base_doc->GetRawBaseSize()));
-  AppendUint64LE(&artifact,
-                 static_cast<uint64_t>(base_doc->GetLayerAppendBaseOffset()));
-  AppendUint64LE(&artifact, static_cast<uint64_t>(delta_writer.data.size()));
-  const std::array<uint8_t, kSha256DigestSize>& base_sha =
-      base_doc->GetRawBaseSha256();
-  artifact.insert(artifact.end(), base_sha.begin(), base_sha.end());
-  artifact.insert(artifact.end(), delta_sha->begin(), delta_sha->end());
   artifact.insert(artifact.end(), delta_writer.data.begin(),
                   delta_writer.data.end());
 

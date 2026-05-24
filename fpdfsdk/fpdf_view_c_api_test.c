@@ -548,6 +548,7 @@ int CheckPDFiumCApi() {
     CHK(EPDFLayer_OpenLayerArtifact);
     CHK(EPDFLayer_SaveDelta);
     CHK(EPDFLayer_SaveDeltaToOwnedBuffer);
+    CHK(EPDFLayer_SaveLayerArtifact);
     CHK(EPDFLayer_SaveLayerArtifactToOwnedBuffer);
     CHK(EPDF_ReleaseBaseDocument);
     CHK(FPDF_LoadCustomDocument);
