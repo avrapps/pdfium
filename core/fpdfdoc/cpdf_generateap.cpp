@@ -436,8 +436,36 @@ AnnotationDimensionsAndColor GetAnnotationDimensionsAndColor(
   };
 }
 
+constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
+constexpr char kEmbedMetadataRotationKey[] = "Rotation";
+constexpr char kEmbedMetadataUnrotatedRectKey[] = "UnrotatedRect";
+constexpr char kEmbedMetadataVerticalAlignmentKey[] = "VerticalAlignment";
+
+RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
+    const CPDF_Dictionary* annot_dict) {
+  return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
+}
+
+float GetEmbedMetadataFloatFor(const CPDF_Dictionary* annot_dict,
+                               ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetFloatFor(key) : 0.0f;
+}
+
+CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
+                                      ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
+}
+
+int GetEmbedMetadataIntegerFor(const CPDF_Dictionary* annot_dict,
+                               ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetIntegerFor(key) : 0;
+}
+
 // Rotation info for shape annotations (Square, Circle) using EmbedPDF's
-// custom /EPDFRotate and /EPDFUnrotatedRect entries.
+// /EMBD_Metadata rotation fields.
 struct ShapeRotationInfo {
   CFX_FloatRect bbox;  // BBox for the AP stream (unrotated rect in page coords)
   CFX_Matrix matrix;   // Transforms from local BBox space to page/AABB space
@@ -450,14 +478,16 @@ ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict) {
   info.matrix = CFX_Matrix();
   info.bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
 
-  float rotate_deg = annot_dict->GetFloatFor("EPDFRotate");
+  float rotate_deg =
+      GetEmbedMetadataFloatFor(annot_dict, kEmbedMetadataRotationKey);
   // Normalize to [0, 360)
   rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
   if (rotate_deg < 0.01f || rotate_deg > 359.99f) {
     return info;  // No rotation
   }
 
-  CFX_FloatRect unrotated = annot_dict->GetRectFor("EPDFUnrotatedRect");
+  CFX_FloatRect unrotated =
+      GetEmbedMetadataRectFor(annot_dict, kEmbedMetadataUnrotatedRectKey);
   if (unrotated.IsEmpty()) {
     return info;  // No unrotated rect stored -> no rotation in AP
   }
@@ -789,8 +819,8 @@ RetainPtr<const CPDF_Array> GetDashArray(const CPDF_Dictionary* dict) {
 
 inline CPDF_Annot::VerticalAlignment GetVerticalAlign(
     const CPDF_Dictionary* annot_dict) {
-  const int v =
-      annot_dict ? annot_dict->GetIntegerFor("EPDF:VerticalAlignment") : 0;
+  const int v = GetEmbedMetadataIntegerFor(annot_dict,
+                                           kEmbedMetadataVerticalAlignmentKey);
   if (v < static_cast<int>(CPDF_Annot::VerticalAlignment::kTop) ||
       v > static_cast<int>(CPDF_Annot::VerticalAlignment::kBottom)) {
     return CPDF_Annot::VerticalAlignment::kTop;  // fallback

@@ -103,13 +103,13 @@ typedef enum FPDFANNOT_COLORTYPE {
 } FPDFANNOT_COLORTYPE;
 
 typedef enum FPDF_ANNOT_BORDER_STYLE {
-    FPDF_ANNOT_BS_UNKNOWN = 0,
-    FPDF_ANNOT_BS_SOLID,
-    FPDF_ANNOT_BS_DASHED,
-    FPDF_ANNOT_BS_BEVELED,
-    FPDF_ANNOT_BS_INSET,
-    FPDF_ANNOT_BS_UNDERLINE,
-    FPDF_ANNOT_BS_CLOUDY
+  FPDF_ANNOT_BS_UNKNOWN = 0,
+  FPDF_ANNOT_BS_SOLID,
+  FPDF_ANNOT_BS_DASHED,
+  FPDF_ANNOT_BS_BEVELED,
+  FPDF_ANNOT_BS_INSET,
+  FPDF_ANNOT_BS_UNDERLINE,
+  FPDF_ANNOT_BS_CLOUDY
 } FPDF_ANNOT_BORDER_STYLE;
 
 typedef enum FPDF_BLENDMODE {
@@ -231,7 +231,7 @@ typedef enum FPDF_ANNOT_NAME {
 
 typedef enum EPDF_STAMP_FIT {
   EPDF_STAMP_FIT_CONTAIN = 0,  // preserve aspect, fully visible
-  EPDF_STAMP_FIT_COVER   = 1,  // preserve aspect, fill box, might crop
+  EPDF_STAMP_FIT_COVER = 1,    // preserve aspect, fill box, might crop
   EPDF_STAMP_FIT_STRETCH = 2   // ignore aspect, fill box
 } EPDF_STAMP_FIT;
 
@@ -757,6 +757,97 @@ EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
                          FPDF_BYTESTRING key,
                          float value);
 
+// Experimental EmbedPDF Extension API.
+// Returns true if |annot| has an /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_HasEmbedMetadata(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Removes the /EMBD_Metadata dictionary from |annot|.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadata(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Removes |key| from |annot|'s /EMBD_Metadata dictionary. If the metadata
+// dictionary becomes empty, /EMBD_Metadata is removed too.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadataKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key);
+
+// Experimental EmbedPDF Extension API.
+// Set a UTF-16LE string in |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WIDESTRING value);
+
+// Experimental EmbedPDF Extension API.
+// Get a UTF-16LE string from |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WCHAR* buffer,
+                                 unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Set a number in |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float value);
+
+// Experimental EmbedPDF Extension API.
+// Get a number from |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float* value);
+
+// Experimental EmbedPDF Extension API.
+// Set a boolean in |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL value);
+
+// Experimental EmbedPDF Extension API.
+// Get a boolean from |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL* value);
+
+// Experimental EmbedPDF Extension API.
+// Set a rect in |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               const FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
+// Get a rect from |annot|'s /EMBD_Metadata dictionary.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
+// Set the arbitrary app-specific JSON bucket in /EMBD_Metadata /CustomJSON.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataJSON(FPDF_ANNOTATION annot, FPDF_WIDESTRING json);
+
+// Experimental EmbedPDF Extension API.
+// Get the arbitrary app-specific JSON bucket from /EMBD_Metadata /CustomJSON.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataJSON(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen);
+
+// Experimental EmbedPDF Extension API.
+// Removes /EMBD_Metadata from every annotation in |document|. This does not
+// remove standard annotation fields or appearance streams.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document);
+
 // Experimental API.
 // Set the AP (appearance string) in |annot|'s dictionary for a given
 // |appearanceMode|.
@@ -837,8 +928,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetFlags(FPDF_ANNOTATION annot,
 //
 // Returns the annotation flags specific to interactive forms.
 FPDF_EXPORT int FPDF_CALLCONV
-FPDFAnnot_GetFormFieldFlags(FPDF_FORMHANDLE handle,
-                            FPDF_ANNOTATION annot);
+FPDFAnnot_GetFormFieldFlags(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot);
 
 // Experimental API.
 // Sets the form field flags for an interactive form annotation.
@@ -1195,7 +1285,6 @@ FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot);
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFAnnot_AddFileAttachment(FPDF_ANNOTATION annot, FPDF_WIDESTRING name);
 
-
 // Experimental EmbedPDF Extension API.
 // Get the color of an annotation. If no color is specified, default to yellow
 // for highlight annotation, black for all else.
@@ -1205,12 +1294,11 @@ FPDFAnnot_AddFileAttachment(FPDF_ANNOTATION annot, FPDF_WIDESTRING name);
 //   R, G, B  - buffer to hold the RGB value of the color. Ranges from 0 to 255.
 //
 // Returns true if successful.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
-                   FPDFANNOT_COLORTYPE type,
-                   unsigned int* R,
-                   unsigned int* G,
-                   unsigned int* B);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
+                                                       FPDFANNOT_COLORTYPE type,
+                                                       unsigned int* R,
+                                                       unsigned int* G,
+                                                       unsigned int* B);
 
 // Experimental EmbedPDF Extension API.
 // Set the color of an annotation.
@@ -1220,12 +1308,11 @@ EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
 //   R, G, B  - buffer to hold the RGB value of the color. Ranges from 0 to 255.
 //
 // Returns true if successful.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
-                   FPDFANNOT_COLORTYPE type,
-                   unsigned int R,
-                   unsigned int G,
-                   unsigned int B);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
+                                                       FPDFANNOT_COLORTYPE type,
+                                                       unsigned int R,
+                                                       unsigned int G,
+                                                       unsigned int B);
 
 // Experimental EmbedPDF Extension API.
 // Set the opacity of an annotaion.
@@ -1246,8 +1333,7 @@ EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot,
 //
 // Returns true if succesful.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot,
-                     unsigned int* alpha /* 0-255 */);
+EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot, unsigned int* alpha /* 0-255 */);
 
 // Experimental EmbedPDF Extension API.
 // Clear the color of an annotation.
@@ -1256,7 +1342,8 @@ EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot,
 //   type     - type of the color to be cleared.
 //
 // Returns true if successful.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type);
 
 // Experimental EmbedPDF Extension API.
 // Get the border style and width of an annotation. This function handles both
@@ -1276,7 +1363,10 @@ EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width);
 //   width  - the border width to be set.
 //
 // Returns true if successful.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot, FPDF_ANNOT_BORDER_STYLE style, float width);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBorderStyle(FPDF_ANNOTATION annot,
+                         FPDF_ANNOT_BORDER_STYLE style,
+                         float width);
 
 // Experimental EmbedPDF Extension API.
 // Get the intensity of a cloudy border effect.
@@ -1336,10 +1426,10 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
 // Returns true on success, false on failure.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
-                                   float left,
-                                   float bottom,
-                                   float right,
-                                   float top);
+                                  float left,
+                                  float bottom,
+                                  float right,
+                                  float top);
 
 // Experimental EmbedPDF Extension API.
 // Remove the rectangle differences (/RD) entry from a supported annotation.
@@ -1384,10 +1474,10 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
 //                EPDFAnnot_GetBorderDashPatternCount().
 //
 // Returns true on success.
- FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
- EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
-                                const float* dash_array,
-                                unsigned long count);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
+                               const float* dash_array,
+                               unsigned long count);
 
 // Experimental EmbedPDF Extension API.
 // Generates or regenerates the appearance stream for a given annotation
@@ -1426,19 +1516,19 @@ EPDFAnnot_GetBlendMode(FPDF_ANNOTATION annot);
 // ASCII byte string *without* the leading slash. If the caller includes a
 // leading '/', it is stripped. Returns false on invalid input or failure.
 // Succeeds regardless of subtype (permissive; /IT is just metadata).
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetIntent(FPDF_ANNOTATION annot, FPDF_BYTESTRING intent);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetIntent(FPDF_ANNOTATION annot,
+                                                        FPDF_BYTESTRING intent);
 
 // Retrieves the Intent (/IT) name of an annotation as UTF-16 (without a
 // leading slash). Returns the number of 16-bit code units required (excluding
 // terminating NUL). If `buffer` is non-null and `buflen` large enough, copies
-// the UTF-16 data and NUL-terminates it (same pattern as FPDFAnnot_GetStringValue).
-// Returns 0 if annotation invalid, no /IT entry, or empty.
+// the UTF-16 data and NUL-terminates it (same pattern as
+// FPDFAnnot_GetStringValue). Returns 0 if annotation invalid, no /IT entry, or
+// empty.
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetIntent(FPDF_ANNOTATION annot,
                     FPDF_WCHAR* buffer,
                     unsigned long buflen);
-
 
 // Get the rich (formatted) text stored in the annotation’s /RC entry.
 // Returns the number of 16‑bit characters required (including the
@@ -1451,8 +1541,8 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
 // Experimental EmbedPDF Extension API.
 // Set the line endings of a Line, Polyline, or FreeText annotation.
 // For Line/Polyline: writes /LE as a 2-element array [start_style, end_style].
-// For FreeText: writes /LE as a single name using end_style (Acrobat convention);
-// start_style is ignored.
+// For FreeText: writes /LE as a single name using end_style (Acrobat
+// convention); start_style is ignored.
 //
 //   annot       - handle to an annotation.
 //   start_style - the start line ending style (ignored for FreeText).
@@ -1460,8 +1550,8 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
 //
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
-                        FPDF_ANNOT_LINE_END start_style,
-                        FPDF_ANNOT_LINE_END end_style);
+                         FPDF_ANNOT_LINE_END start_style,
+                         FPDF_ANNOT_LINE_END end_style);
 
 // Experimental EmbedPDF Extension API.
 // Get the line endings of a Line, Polyline, or FreeText annotation.
@@ -1474,8 +1564,8 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
 //
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
-                        FPDF_ANNOT_LINE_END* start_style,
-                        FPDF_ANNOT_LINE_END* end_style);
+                         FPDF_ANNOT_LINE_END* start_style,
+                         FPDF_ANNOT_LINE_END* end_style);
 
 // Experimental EmbedPDF Extension API.
 // Replace every vertex in the /Vertices array with the |points| supplied.
@@ -1486,10 +1576,10 @@ EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
 //   count    - the number of vertices to be set.
 //
 // Returns true on success.
- FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
- EPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
-                       const FS_POINTF* points,
-                       unsigned long count);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
+                      const FS_POINTF* points,
+                      unsigned long count);
 
 // Experimental EmbedPDF Extension API.
 // Set (or create) the two end‑points of a **Line** annotation
@@ -1500,12 +1590,11 @@ EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
 //   end      - pointer to an `FS_POINTF` holding the new end‑point.
 //
 // Returns true on success.
- FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
- EPDFAnnot_SetLine(FPDF_ANNOTATION annot,
-                   const FS_POINTF* start,
-                   const FS_POINTF* end);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetLine(FPDF_ANNOTATION annot,
+                                                      const FS_POINTF* start,
+                                                      const FS_POINTF* end);
 
-// Experimental EmbedPDF Extension API.   
+// Experimental EmbedPDF Extension API.
 // Set the default appearance of a FreeText annotation.
 //
 //   annot    - handle to an annotation.
@@ -1546,8 +1635,8 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
 //   alignment - the text alignment to be set.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot, 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
                            FPDF_TEXT_ALIGNMENT alignment);
 
 // Experimental EmbedPDF Extension API.
@@ -1556,29 +1645,8 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
 //   annot    - handle to an annotation.
 //
 // Returns the text alignment.
-FPDF_EXPORT FPDF_TEXT_ALIGNMENT FPDF_CALLCONV 
+FPDF_EXPORT FPDF_TEXT_ALIGNMENT FPDF_CALLCONV
 EPDFAnnot_GetTextAlignment(FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Set the vertical alignment of a FreeText annotation.
-//
-//   annot    - handle to an annotation.
-//   alignment - the vertical alignment to be set.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFAnnot_SetVerticalAlignment(FPDF_ANNOTATION annot, 
-                               FPDF_VERTICAL_ALIGNMENT alignment);
-
-// Experimental EmbedPDF Extension API.
-// Get the vertical alignment of a FreeText annotation.
-//
-//   annot    - handle to an annotation.
-//
-// Returns the vertical alignment.
-FPDF_EXPORT FPDF_VERTICAL_ALIGNMENT FPDF_CALLCONV 
-EPDFAnnot_GetVerticalAlignment(FPDF_ANNOTATION annot);
-
 
 // Get the annotation by name.
 //
@@ -1586,7 +1654,7 @@ EPDFAnnot_GetVerticalAlignment(FPDF_ANNOTATION annot);
 //   nm      - the name of the annotation.
 //
 // Returns the annotation.
-FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV 
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm);
 
 // Remove the annotation by name.
@@ -1595,7 +1663,7 @@ EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm);
 //   nm      - the name of the annotation.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm);
 
 // Set the linked annotation.
@@ -1605,14 +1673,17 @@ EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm);
 //   linked_annot - the linked annotation.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key, FPDF_ANNOTATION linked_annot);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
+                         FPDF_BYTESTRING key,
+                         FPDF_ANNOTATION linked_annot);
 
 // Experimental EmbedPDF Extension API.
 // Set the action of a Link annotation.
 //
 //   annot  - handle to a link annotation.
-//   action - handle to an action dictionary (e.g. from EPDFAction_CreateGoTo()).
+//   action - handle to an action dictionary (e.g. from
+//   EPDFAction_CreateGoTo()).
 //
 // Returns true on success.
 //
@@ -1620,8 +1691,8 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key, FPDF_ANNOTA
 //  * Only valid for FPDF_ANNOT_LINK annotations.
 //  * The action must be an indirect object.
 //  * Any existing /A entry will be replaced.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetAction(FPDF_ANNOTATION annot,
+                                                        FPDF_ACTION action);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation count.
@@ -1630,8 +1701,8 @@ EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action);
 //   page_index - the index of the page.
 //
 // Returns the annotation count.
-FPDF_EXPORT int FPDF_CALLCONV 
-EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc, int page_index);
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc,
+                                                        int page_index);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation by index.
@@ -1641,7 +1712,7 @@ EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc, int page_index);
 //   index    - the index of the annotation.
 //
 // Returns the annotation.
-FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV 
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 
 // Experimental EmbedPDF Extension API.
@@ -1652,8 +1723,9 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 //   index    - the index of the annotation.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
-EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
+                                                            int page_index,
+                                                            int index);
 
 // Experimental EmbedPDF Extension API.
 // Set the /Name entry of an annotation (icon name for text/file/sound,
@@ -1663,8 +1735,8 @@ EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index);
 //   name     - the name to be set.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetName(FPDF_ANNOTATION annot, FPDF_ANNOT_NAME name);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetName(FPDF_ANNOTATION annot,
+                                                      FPDF_ANNOT_NAME name);
 
 // Experimental EmbedPDF Extension API.
 // Get the /Name entry of an annotation.
@@ -1676,8 +1748,9 @@ FPDF_EXPORT FPDF_ANNOT_NAME FPDF_CALLCONV
 EPDFAnnot_GetName(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Resize the normal appearance (/AP/N) of a Stamp to match the annotation's /Rect
-// using the specified fit policy. Updates the AP /BBox and the image's CTM.
+// Resize the normal appearance (/AP/N) of a Stamp to match the annotation's
+// /Rect using the specified fit policy. Updates the AP /BBox and the image's
+// CTM.
 //
 //   annot - handle to a Stamp annotation.
 //   fit   - one of EPDF_STAMP_FIT_*.
@@ -1687,24 +1760,26 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
 
 // Experimental EmbedPDF Extension API.
-// Create an annotation. (the difference from FPDFPage_CreateAnnot is that it creates an indirect object)
+// Create an annotation. (the difference from FPDFPage_CreateAnnot is that it
+// creates an indirect object)
 //
 //   page    - handle to a page.
 //   subtype - the subtype of the annotation.
 //
 // Returns the annotation.
-FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV 
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype);
 
 // Experimental EmbedPDF Extension API.
 // Set the rotation of an annotation in degrees.
 //
 //   annot    - handle to an annotation.
-//   rotation - the rotation in degrees (any value, e.g. 0, 45.5, 90, 180, etc.).
+//   rotation - the rotation in degrees (any value, e.g. 0, 45.5, 90, 180,
+//   etc.).
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRotate(FPDF_ANNOTATION annot,
+                                                        float rotation);
 
 // Experimental EmbedPDF Extension API.
 // Get the rotation of an annotation in degrees.
@@ -1713,8 +1788,8 @@ EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation);
 //   rotation - receives the rotation value in degrees.
 //
 // Returns true on success, false if annot is invalid or rotation is NULL.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetRotate(FPDF_ANNOTATION annot, float* rotation);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRotate(FPDF_ANNOTATION annot,
+                                                        float* rotation);
 
 // Experimental EmbedPDF Extension API.
 // Get the reply type (RT) of an annotation. This specifies how an annotation
@@ -1798,8 +1873,8 @@ EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot);
 //   annot - handle to an annotation with an appearance stream
 //
 // Returns TRUE on success, FALSE if no appearance stream or error.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
+                                                      FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Set an annotation's normal appearance (AP/N) from a page of another document.
@@ -1846,53 +1921,6 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
                                               int annot_count);
 
 // Experimental EmbedPDF Extension API.
-// Set the EmbedPDF extended rotation on an annotation. This stores a custom
-// /EPDFRotate entry (not the standard /Rotate) for non-widget annotations.
-// A value of 0 removes the key to keep the PDF clean.
-//
-//   annot    - handle to an annotation.
-//   rotation - the rotation in degrees.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetExtendedRotation(FPDF_ANNOTATION annot, float rotation);
-
-// Experimental EmbedPDF Extension API.
-// Get the EmbedPDF extended rotation from an annotation.
-// Reads the custom /EPDFRotate entry.
-//
-//   annot    - handle to an annotation.
-//   rotation - receives the rotation value in degrees. 0 if not set.
-//
-// Returns true on success, false if annot is invalid or rotation is NULL.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetExtendedRotation(FPDF_ANNOTATION annot, float* rotation);
-
-// Experimental EmbedPDF Extension API.
-// Set the EmbedPDF unrotated rect on an annotation. This stores a custom
-// /EPDFUnrotatedRect array representing the annotation's rect before rotation
-// was applied. Follows the same FS_RECTF convention as FPDFAnnot_SetRect.
-//
-//   annot - handle to an annotation.
-//   rect  - pointer to the unrotated rect. Pass NULL to remove.
-//
-// Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect);
-
-// Experimental EmbedPDF Extension API.
-// Get the EmbedPDF unrotated rect from an annotation.
-// Reads the custom /EPDFUnrotatedRect array.
-// Follows the same FS_RECTF convention as FPDFAnnot_GetRect.
-//
-//   annot - handle to an annotation.
-//   rect  - receives the unrotated rect. All zeros if not set.
-//
-// Returns true on success, false if annot is invalid or rect is NULL.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
-
-// Experimental EmbedPDF Extension API.
 // Get the annotation rectangle with normalization applied.
 // Wraps FPDFAnnot_GetRect and ensures the returned rect is normalized
 // (left <= right, bottom <= top in page coordinates).
@@ -1901,8 +1929,8 @@ EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
 //   rect  - receives the normalized rectangle; must not be NULL.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetRect(FPDF_ANNOTATION annot, FS_RECTF* rect);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,
+                                                      FS_RECTF* rect);
 
 // Experimental EmbedPDF Extension API.
 // Set the Matrix on an annotation's appearance stream for the given mode.
@@ -1985,12 +2013,11 @@ typedef enum {
 //   R,G,B - color components in 0..255.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
-                     EPDF_MK_COLORTYPE type,
-                     unsigned int R,
-                     unsigned int G,
-                     unsigned int B);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
+                                                         EPDF_MK_COLORTYPE type,
+                                                         unsigned int R,
+                                                         unsigned int G,
+                                                         unsigned int B);
 
 // Experimental EmbedPDF Extension API.
 // Get a color from the widget annotation's /MK dictionary.
@@ -2000,12 +2027,11 @@ EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
 //   R,G,B - pointers to receive color components in 0..255.
 //
 // Returns true on success, false if no MK color is set or annot is invalid.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
-                     EPDF_MK_COLORTYPE type,
-                     unsigned int* R,
-                     unsigned int* G,
-                     unsigned int* B);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
+                                                         EPDF_MK_COLORTYPE type,
+                                                         unsigned int* R,
+                                                         unsigned int* G,
+                                                         unsigned int* B);
 
 // Experimental EmbedPDF Extension API.
 // Remove a color from the widget annotation's /MK dictionary.
@@ -2025,8 +2051,9 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 // model so that subsequent FPDFAnnot_SetFormFieldFlags etc. calls work.
 //
 //   page       - handle to the page.
-//   handle     - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
-//   field_type - one of FPDF_FORMFIELD_TEXTFIELD, FPDF_FORMFIELD_CHECKBOX,
+//   handle     - handle to the form fill module
+//   (FPDFDOC_InitFormFillEnvironment). field_type - one of
+//   FPDF_FORMFIELD_TEXTFIELD, FPDF_FORMFIELD_CHECKBOX,
 //                FPDF_FORMFIELD_RADIOBUTTON, FPDF_FORMFIELD_COMBOBOX,
 //                FPDF_FORMFIELD_LISTBOX, FPDF_FORMFIELD_PUSHBUTTON.
 //   field_name - the partial field name (/T).  May be NULL for unnamed fields.
@@ -2084,9 +2111,10 @@ EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle,
 // Re-parent the source widget field into the target widget field so both
 // widgets share the same logical AcroForm field.
 //
-//   handle       - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
-//   source_annot - handle to the widget annotation whose field should be merged.
-//   target_annot - handle to the widget annotation whose field should be reused.
+//   handle       - handle to the form fill module
+//   (FPDFDOC_InitFormFillEnvironment). source_annot - handle to the widget
+//   annotation whose field should be merged. target_annot - handle to the
+//   widget annotation whose field should be reused.
 //
 // Returns true on success, false if the annotations are not compatible form
 // fields or the share operation could not be completed.
@@ -2233,8 +2261,8 @@ EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
 //   index - the index of the annotation in the /Annots array.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_RemoveAnnot(FPDF_PAGE page, int index);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnot(FPDF_PAGE page,
+                                                         int index);
 
 // Experimental EmbedPDF Extension API.
 // Remove an annotation on a page by its PDF indirect object number.
@@ -2269,11 +2297,10 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num);
 // (objectNumber, /NM) is preserved across the move.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_MoveAnnots(FPDF_PAGE page,
-                    const int* from_indices,
-                    int from_indices_len,
-                    int to_index);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
+                                                        const int* from_indices,
+                                                        int from_indices_len,
+                                                        int to_index);
 
 #ifdef __cplusplus
 }  // extern "C"

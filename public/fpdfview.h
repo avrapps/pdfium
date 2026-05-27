@@ -1750,9 +1750,9 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
 
 // Experimental EmbedPDF Extension API.
 // Renders the annotation's AP form content WITHOUT the AP stream's rotation
-// Matrix applied, using /EPDFUnrotatedRect (falling back to /Rect) for the
-// MatchRect mapping. This produces an unrotated bitmap suitable for UI layers
-// that apply CSS rotation separately.
+// Matrix applied, using /EMBD_Metadata /UnrotatedRect (falling back to /Rect)
+// for the MatchRect mapping. This produces an unrotated bitmap suitable for UI
+// layers that apply CSS rotation separately.
 //
 // Same parameters as EPDF_RenderAnnotBitmap.
 //

@@ -694,6 +694,52 @@ RetainPtr<CPDF_Dictionary> GetMutableAnnotDictFromFPDFAnnotation(
   return context ? context->GetMutableAnnotDict() : nullptr;
 }
 
+constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
+constexpr char kEmbedMetadataCustomJSONKey[] = "CustomJSON";
+
+RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
+    const CPDF_Dictionary* annot_dict) {
+  return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
+}
+
+RetainPtr<CPDF_Dictionary> GetOrCreateEmbedMetadataDict(
+    RetainPtr<CPDF_Dictionary> annot_dict) {
+  if (!annot_dict) {
+    return nullptr;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+  if (!metadata) {
+    metadata = annot_dict->SetNewFor<CPDF_Dictionary>(kEmbedMetadataKey);
+  }
+  return metadata;
+}
+
+bool EmbedMetadataIsEmpty(const CPDF_Dictionary* metadata) {
+  return !metadata || metadata->size() == 0;
+}
+
+void RemoveEmbedMetadataIfEmpty(RetainPtr<CPDF_Dictionary> annot_dict) {
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(annot_dict.Get());
+  if (EmbedMetadataIsEmpty(metadata.Get())) {
+    annot_dict->RemoveFor(kEmbedMetadataKey);
+  }
+}
+
+float GetEmbedMetadataFloatFor(const CPDF_Dictionary* annot_dict,
+                               ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetFloatFor(key) : 0.0f;
+}
+
+CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
+                                      ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
+}
+
 static uint32_t EnsureIndirect(CPDF_Document* doc,
                                RetainPtr<CPDF_Dictionary> dict) {
   uint32_t objnum = dict->GetObjNum();
@@ -1844,6 +1890,267 @@ EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
     return false;
   }
   pAnnotDict->SetNewFor<CPDF_Number>(key, static_cast<int>(value));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_HasEmbedMetadata(FPDF_ANNOTATION annot) {
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  return !!GetEmbedMetadataDict(annot_dict);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadata(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(kEmbedMetadataKey);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadataKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+  if (!metadata) {
+    return true;
+  }
+
+  metadata->RemoveFor(key);
+  RemoveEmbedMetadataIfEmpty(annot_dict);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WIDESTRING value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_String>(
+      key, UNSAFE_BUFFERS(WideStringFromFPDFWideString(value).AsStringView()));
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WCHAR* buffer,
+                                 unsigned long buflen) {
+  if (!key) {
+    return 0;
+  }
+
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return 0;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      metadata ? metadata->GetUnicodeTextFor(key) : WideString(),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_Number>(key, value);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float* value) {
+  if (!key || !value) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kNumber) {
+    return false;
+  }
+
+  *value = object->GetNumber();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_Boolean>(key, !!value);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL* value) {
+  if (!key || !value) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kBoolean) {
+    return false;
+  }
+
+  *value = object->GetInteger() != 0;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               const FS_RECTF* rect) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  if (!rect) {
+    RetainPtr<CPDF_Dictionary> metadata =
+        annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+    if (metadata) {
+      metadata->RemoveFor(key);
+      RemoveEmbedMetadataIfEmpty(annot_dict);
+    }
+    return true;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      GetOrCreateEmbedMetadataDict(annot_dict);
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetRectFor(key, CFXFloatRectFromFSRectF(*rect));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               FS_RECTF* rect) {
+  if (!key || !rect) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kArray) {
+    return false;
+  }
+
+  *rect = FSRectFFromCFXFloatRect(metadata->GetRectFor(key));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataJSON(FPDF_ANNOTATION annot, FPDF_WIDESTRING json) {
+  return EPDFAnnot_SetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
+                                          json);
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataJSON(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  return EPDFAnnot_GetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
+                                          buffer, buflen);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  if (!pdf) {
+    return false;
+  }
+
+  for (int page_index = 0; page_index < pdf->GetPageCount(); ++page_index) {
+    RetainPtr<CPDF_Dictionary> page_dict =
+        pdf->GetMutablePageDictionary(page_index);
+    if (!page_dict) {
+      continue;
+    }
+
+    RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+    if (!annots) {
+      continue;
+    }
+
+    for (size_t annot_index = 0; annot_index < annots->size(); ++annot_index) {
+      RetainPtr<CPDF_Dictionary> annot_dict =
+          annots->GetMutableDictAt(annot_index);
+      if (annot_dict) {
+        annot_dict->RemoveFor(kEmbedMetadataKey);
+      }
+    }
+  }
+
   return true;
 }
 
@@ -3469,59 +3776,6 @@ EPDFAnnot_GetTextAlignment(FPDF_ANNOTATION annot) {
   return kDefaultAlignment;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetVerticalAlignment(FPDF_ANNOTATION annot,
-                               FPDF_VERTICAL_ALIGNMENT alignment) {
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return false;
-  }
-
-  // This property is only valid for FreeText annotations.
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
-    return false;
-  }
-
-  // Validate the enum range to ensure a valid value is passed.
-  if (alignment < FPDF_VERTICAL_ALIGNMENT_TOP ||
-      alignment > FPDF_VERTICAL_ALIGNMENT_BOTTOM) {
-    return false;
-  }
-
-  // Set the /EPDF:VerticalAlignment key in the annotation dictionary to the
-  // integer value of the enum.
-  annot_dict->SetNewFor<CPDF_Number>("EPDF:VerticalAlignment",
-                                     static_cast<int>(alignment));
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_VERTICAL_ALIGNMENT FPDF_CALLCONV
-EPDFAnnot_GetVerticalAlignment(FPDF_ANNOTATION annot) {
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return FPDF_VERTICAL_ALIGNMENT_TOP;
-  }
-
-  // This property is only valid for FreeText annotations.
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
-    return FPDF_VERTICAL_ALIGNMENT_TOP;
-  }
-
-  // GetIntegerFor() conveniently returns 0 if the key doesn't exist,
-  // which matches the PDF specification's default.
-  int alignment_value = annot_dict->GetIntegerFor("EPDF:VerticalAlignment");
-
-  // Validate the value is within the known enum range before casting.
-  if (alignment_value >= FPDF_VERTICAL_ALIGNMENT_TOP &&
-      alignment_value <= FPDF_VERTICAL_ALIGNMENT_BOTTOM) {
-    return static_cast<FPDF_VERTICAL_ALIGNMENT>(alignment_value);
-  }
-
-  return FPDF_VERTICAL_ALIGNMENT_TOP;
-}
-
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
   if (!page || !nm || !*nm) {
@@ -3708,9 +3962,8 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
   auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
 
   // Create the context, which now takes the RetainPtr directly.
-  auto ctx =
-      std::make_unique<RawAnnotContext>(std::move(annot_dict), std::move(page),
-                                        index);
+  auto ctx = std::make_unique<RawAnnotContext>(std::move(annot_dict),
+                                               std::move(page), index);
 
   // The lifetime is now perfectly managed by smart pointers.
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
@@ -3833,12 +4086,12 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     return false;
   }
 
-  // 1) Check for EPDFRotate + EPDFUnrotatedRect first.
-  float rotate_deg = ad->GetFloatFor("EPDFRotate");
+  // 1) Check for /EMBD_Metadata rotation + unrotated rect first.
+  float rotate_deg = GetEmbedMetadataFloatFor(ad.Get(), "Rotation");
   rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
   bool has_rotation = (rotate_deg > 0.01f && rotate_deg < 359.99f);
 
-  CFX_FloatRect unrotated = ad->GetRectFor("EPDFUnrotatedRect");
+  CFX_FloatRect unrotated = GetEmbedMetadataRectFor(ad.Get(), "UnrotatedRect");
   bool use_rotation = has_rotation && !unrotated.IsEmpty();
 
   // Use unrotated rect for image fitting when rotated, otherwise /Rect.
@@ -4567,74 +4820,6 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
 
   FPDF_ClosePage(exported_page);
   return exported_doc;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetExtendedRotation(FPDF_ANNOTATION annot, float rotation) {
-  RetainPtr<CPDF_Dictionary> dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict) {
-    return false;
-  }
-
-  if (rotation == 0.0f) {
-    dict->RemoveFor("EPDFRotate");
-  } else {
-    dict->SetNewFor<CPDF_Number>("EPDFRotate", rotation);
-  }
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetExtendedRotation(FPDF_ANNOTATION annot, float* rotation) {
-  if (!rotation) {
-    return false;
-  }
-
-  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict) {
-    return false;
-  }
-
-  *rotation = dict->GetFloatFor("EPDFRotate");
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect) {
-  RetainPtr<CPDF_Dictionary> dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict) {
-    return false;
-  }
-
-  if (!rect) {
-    dict->RemoveFor("EPDFUnrotatedRect");
-    return true;
-  }
-
-  CFX_FloatRect float_rect = CFXFloatRectFromFSRectF(*rect);
-  if (float_rect.IsEmpty()) {
-    dict->RemoveFor("EPDFUnrotatedRect");
-  } else {
-    dict->SetRectFor("EPDFUnrotatedRect", float_rect);
-  }
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
-  if (!rect) {
-    return false;
-  }
-
-  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict) {
-    return false;
-  }
-
-  *rect = FSRectFFromCFXFloatRect(dict->GetRectFor("EPDFUnrotatedRect"));
-  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,

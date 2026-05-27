@@ -60,8 +60,7 @@ std::wstring ExtractPageText(FPDF_PAGE page) {
 
   const int char_count = FPDFText_CountChars(text_page.get());
   std::vector<FPDF_WCHAR> buffer(char_count + 1);
-  EXPECT_GT(FPDFText_GetText(text_page.get(), 0, char_count, buffer.data()),
-            0);
+  EXPECT_GT(FPDFText_GetText(text_page.get(), 0, char_count, buffer.data()), 0);
   return GetPlatformWString(buffer.data());
 }
 
@@ -83,8 +82,9 @@ RedactionReport ApplyRedactionWithReport(FPDF_PAGE page,
       nm_utf8_pool.size(), &report.written_count, &report.total_count,
       &report.nm_utf8_bytes_used));
 
-  for (uint32_t i = 0; i < report.written_count; ++i)
+  for (uint32_t i = 0; i < report.written_count; ++i) {
     report.object_numbers.push_back(removed[i].object_number);
+  }
   return report;
 }
 
@@ -98,8 +98,9 @@ RedactionReport ApplyPageRedactionsWithReport(FPDF_PAGE page) {
       nm_utf8_pool.size(), &report.written_count, &report.total_count,
       &report.nm_utf8_bytes_used));
 
-  for (uint32_t i = 0; i < report.written_count; ++i)
+  for (uint32_t i = 0; i < report.written_count; ++i) {
     report.object_numbers.push_back(removed[i].object_number);
+  }
   return report;
 }
 
@@ -1606,6 +1607,71 @@ TEST_F(FPDFAnnotEmbedderTest, GetNumberValue) {
     // Ask for key that exists but is not a number.
     EXPECT_FALSE(FPDFAnnot_GetNumberValue(annot.get(), "V", &value));
   }
+}
+
+TEST_F(FPDFAnnotEmbedderTest, EmbedMetadata) {
+  ASSERT_TRUE(OpenDocument("text_form_multiple.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(annot);
+
+  EXPECT_FALSE(EPDFAnnot_HasEmbedMetadata(annot.get()));
+
+  ScopedFPDFWideString user_id = GetFPDFWideString(L"44");
+  EXPECT_TRUE(
+      EPDFAnnot_SetEmbedMetadataString(annot.get(), "UserID", user_id.get()));
+
+  unsigned long length_bytes =
+      EPDFAnnot_GetEmbedMetadataString(annot.get(), "UserID", nullptr, 0);
+  ASSERT_EQ(6u, length_bytes);
+  std::vector<FPDF_WCHAR> string_buffer = GetFPDFWideStringBuffer(length_bytes);
+  EXPECT_EQ(length_bytes,
+            EPDFAnnot_GetEmbedMetadataString(
+                annot.get(), "UserID", string_buffer.data(), length_bytes));
+  EXPECT_EQ(L"44", GetPlatformWString(string_buffer.data()));
+
+  EXPECT_TRUE(EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 12.5f));
+  float number_value = 0.0f;
+  EXPECT_TRUE(
+      EPDFAnnot_GetEmbedMetadataNumber(annot.get(), "Rotation", &number_value));
+  EXPECT_FLOAT_EQ(12.5f, number_value);
+
+  EXPECT_TRUE(EPDFAnnot_SetEmbedMetadataBoolean(annot.get(), "Archived", true));
+  FPDF_BOOL boolean_value = false;
+  EXPECT_TRUE(EPDFAnnot_GetEmbedMetadataBoolean(annot.get(), "Archived",
+                                                &boolean_value));
+  EXPECT_TRUE(boolean_value);
+
+  const FS_RECTF rect{1.0f, 2.0f, 3.0f, 4.0f};
+  EXPECT_TRUE(
+      EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect", &rect));
+  FS_RECTF rect_value;
+  EXPECT_TRUE(EPDFAnnot_GetEmbedMetadataRect(annot.get(), "UnrotatedRect",
+                                             &rect_value));
+  EXPECT_FLOAT_EQ(rect.left, rect_value.left);
+  EXPECT_FLOAT_EQ(rect.bottom, rect_value.bottom);
+  EXPECT_FLOAT_EQ(rect.right, rect_value.right);
+  EXPECT_FLOAT_EQ(rect.top, rect_value.top);
+
+  ScopedFPDFWideString json = GetFPDFWideString(L"{\"source\":\"test\"}");
+  EXPECT_TRUE(EPDFAnnot_SetEmbedMetadataJSON(annot.get(), json.get()));
+  length_bytes = EPDFAnnot_GetEmbedMetadataJSON(annot.get(), nullptr, 0);
+  ASSERT_EQ(36u, length_bytes);
+  string_buffer = GetFPDFWideStringBuffer(length_bytes);
+  EXPECT_EQ(length_bytes, EPDFAnnot_GetEmbedMetadataJSON(
+                              annot.get(), string_buffer.data(), length_bytes));
+  EXPECT_EQ(L"{\"source\":\"test\"}", GetPlatformWString(string_buffer.data()));
+
+  EXPECT_TRUE(EPDFAnnot_HasEmbedMetadata(annot.get()));
+  EXPECT_TRUE(EPDFAnnot_ClearEmbedMetadataKey(annot.get(), "UserID"));
+  EXPECT_TRUE(EPDFAnnot_HasEmbedMetadata(annot.get()));
+  EXPECT_EQ(
+      2u, EPDFAnnot_GetEmbedMetadataString(annot.get(), "UserID", nullptr, 0));
+
+  EXPECT_TRUE(EPDFAnnot_ClearEmbedMetadata(annot.get()));
+  EXPECT_FALSE(EPDFAnnot_HasEmbedMetadata(annot.get()));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, GetSetAP) {

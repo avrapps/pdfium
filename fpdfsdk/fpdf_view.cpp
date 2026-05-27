@@ -1264,10 +1264,12 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
   // Read the raw BBox WITHOUT applying the AP Matrix.
   CFX_FloatRect form_bbox = pForm->GetDict()->GetRectFor("BBox");
 
-  // Use EPDFUnrotatedRect as the target rect for MatchRect.
-  // Falls back to /Rect if EPDFUnrotatedRect is not set.
+  // Use /EMBD_Metadata /UnrotatedRect as the target rect for MatchRect.
+  // Falls back to /Rect if EmbedPDF metadata is not set.
+  RetainPtr<const CPDF_Dictionary> metadata =
+      pAnnot->GetAnnotDict()->GetDictFor("EMBD_Metadata");
   CFX_FloatRect target =
-      pAnnot->GetAnnotDict()->GetRectFor("EPDFUnrotatedRect");
+      metadata ? metadata->GetRectFor("UnrotatedRect") : CFX_FloatRect();
   if (target.IsEmpty()) {
     target = pAnnot->GetRect();
   }
