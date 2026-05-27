@@ -827,6 +827,42 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_RemoveEncryption(FPDF_DOCUMENT document);
 
+#define EPDF_PASSWORD_PERMISSION_INVALID 0
+#define EPDF_PASSWORD_PERMISSION_NONE 1
+#define EPDF_PASSWORD_PERMISSION_USER 2
+#define EPDF_PASSWORD_PERMISSION_OWNER 3
+
+// Experimental EmbedPDF Extension API.
+// Checks what permissions the given password proves without changing the
+// document's current owner-unlocked state.
+//
+//   document                      - handle to a document
+//   password                      - raw password to check
+//   out_kind                      - receives EPDF_PASSWORD_PERMISSION_*
+//   out_user_permissions          - receives the document's user permission bits
+//   out_effective_permissions     - receives permissions implied by |password|
+//   out_security_handler_revision - receives the security handler revision
+//
+// Returns TRUE if:
+//   - document is not encrypted (kind NONE, full permissions, revision -1)
+//   - password is valid as user or owner
+//
+// Returns FALSE if:
+//   - document is NULL
+//   - any out pointer is NULL
+//   - document has no parser
+//   - password is invalid for an encrypted document
+//
+// This is a password probe, not a runtime permission override. It must not be
+// used as evidence that the current document handle is owner-unlocked.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_CheckPasswordPermissions(FPDF_DOCUMENT document,
+                              FPDF_BYTESTRING password,
+                              int* out_kind,
+                              unsigned int* out_user_permissions,
+                              unsigned int* out_effective_permissions,
+                              int* out_security_handler_revision);
+
 // Experimental EmbedPDF Extension API.
 // Attempts to unlock owner permissions on an already-opened encrypted document.
 //
@@ -844,6 +880,20 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
                             FPDF_BYTESTRING owner_password);
+
+// Experimental EmbedPDF Extension API.
+// Runtime policy override for EmbedPDF-managed sessions.
+//
+//   document - handle to a document
+//   enabled  - TRUE to make PDFium internals behave as owner-unlocked, FALSE to
+//              restore the normal user-permission state for this handle
+//
+// This does not prove an owner password and does not authorize the caller.
+// Callers must enforce JWT/PDF permission policy outside PDFium. This exists so
+// high-level PDFium subsystems that consult permissions (notably forms) do not
+// silently block operations after app-level authorization has already happened.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetRuntimeOwnerPermissions(FPDF_DOCUMENT document, FPDF_BOOL enabled);
 
 // Experimental EmbedPDF Extension API.
 // Checks if a document is encrypted.

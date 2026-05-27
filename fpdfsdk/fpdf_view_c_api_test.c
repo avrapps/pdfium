@@ -510,6 +510,8 @@ int CheckPDFiumCApi() {
 #ifdef PDF_ENABLE_V8
     CHK(FPDF_GetArrayBufferAllocatorSharedInstance);
 #endif
+    CHK(EPDF_CheckPasswordPermissions);
+    CHK(EPDF_SetRuntimeOwnerPermissions);
     CHK(FPDF_GetDocPermissions);
     CHK(FPDF_GetDocUserPermissions);
     CHK(FPDF_GetFileVersion);

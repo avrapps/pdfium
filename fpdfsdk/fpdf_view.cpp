@@ -611,6 +611,93 @@ EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
   return security_handler->UnlockOwner(password);
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_CheckPasswordPermissions(FPDF_DOCUMENT document,
+                              FPDF_BYTESTRING password,
+                              int* out_kind,
+                              unsigned int* out_user_permissions,
+                              unsigned int* out_effective_permissions,
+                              int* out_security_handler_revision) {
+  if (!out_kind || !out_user_permissions || !out_effective_permissions ||
+      !out_security_handler_revision) {
+    return false;
+  }
+
+  *out_kind = EPDF_PASSWORD_PERMISSION_INVALID;
+  *out_user_permissions = 0;
+  *out_effective_permissions = 0;
+  *out_security_handler_revision = -1;
+
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_NONE;
+    *out_user_permissions = 0xFFFFFFFF;
+    *out_effective_permissions = 0xFFFFFFFF;
+    return true;
+  }
+
+  RetainPtr<const CPDF_Dictionary> encrypt_dict = pParser->GetEncryptDict();
+  *out_security_handler_revision =
+      encrypt_dict ? encrypt_dict->GetIntegerFor("R") : -1;
+
+  const unsigned int user_permissions = static_cast<unsigned int>(
+      security_handler->GetPermissionsForPasswordProbe(/*owner=*/false));
+  *out_user_permissions = user_permissions;
+
+  ByteString raw_password(password ? password : "");
+
+  // This is a password probe, not a document-state probe. Do not use
+  // IsOwnerUnlocked(), UnlockOwner(), or FPDF_GetDocPermissions() here; those
+  // depend on or mutate the current handle state. Match PDFium's open path by
+  // checking a non-empty password against owner credentials first.
+  if (!raw_password.IsEmpty() &&
+      security_handler->CheckPasswordNoMutate(raw_password, /*bOwner=*/true)) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_OWNER;
+    *out_effective_permissions = static_cast<unsigned int>(
+        security_handler->GetPermissionsForPasswordProbe(/*owner=*/true));
+    return true;
+  }
+
+  if (security_handler->CheckPasswordNoMutate(raw_password, /*bOwner=*/false)) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_USER;
+    *out_effective_permissions = user_permissions;
+    return true;
+  }
+
+  return false;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetRuntimeOwnerPermissions(FPDF_DOCUMENT document, FPDF_BOOL enabled) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;
+  }
+
+  security_handler->SetRuntimeOwnerUnlocked(!!enabled);
+  return true;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_IsEncrypted(FPDF_DOCUMENT document) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
   if (!pDoc) {
