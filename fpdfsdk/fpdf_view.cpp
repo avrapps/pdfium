@@ -1640,6 +1640,12 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   return true;
 }
 
+static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
+    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
+    int page_index);
+static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict);
+
 FPDF_EXPORT int FPDF_CALLCONV
 EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
@@ -1647,40 +1653,85 @@ EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
     return -1;
   }
 
-  if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
-    return -1;
-  }
-
-  // Cheap: no ParseContent().
-  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
   if (!dict) {
     return -1;
   }
-  auto page = pdfium::MakeRetain<CPDF_Page>(pDoc, std::move(dict));
-  return page->GetPageRotation();
+  return GetInheritedPageRotation(dict.Get());
+}
+
+static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
+    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
+    int page_index) {
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
+    return nullptr;
+  }
+  return doc->GetPageDictionary(page_index);
+}
+
+static ByteStringView GetPageBoxKey(EPDF_PAGE_BOX_TYPE box_type) {
+  switch (box_type) {
+    case EPDF_PAGE_BOX_MEDIA:
+      return pdfium::page_object::kMediaBox;
+    case EPDF_PAGE_BOX_CROP:
+      return pdfium::page_object::kCropBox;
+    case EPDF_PAGE_BOX_BLEED:
+      return pdfium::page_object::kBleedBox;
+    case EPDF_PAGE_BOX_TRIM:
+      return pdfium::page_object::kTrimBox;
+    case EPDF_PAGE_BOX_ART:
+      return pdfium::page_object::kArtBox;
+  }
+  return ByteStringView();
 }
 
 // Walk the page tree (/Parent chain) to resolve an inherited rectangle
 // attribute. Mirrors the logic of CPDF_Page::GetPageAttr + GetBox but works
 // directly on a dictionary pointer so we can avoid constructing a CPDF_Page.
-static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* pPageDict,
+static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* page_dict,
                                       ByteStringView name) {
   std::set<const CPDF_Dictionary*> visited;
-  const CPDF_Dictionary* pDict = pPageDict;
-  while (pDict && !visited.contains(pDict)) {
-    RetainPtr<const CPDF_Object> pObj = pDict->GetDirectObjectFor(name);
-    if (pObj) {
-      RetainPtr<const CPDF_Array> pArray = ToArray(std::move(pObj));
-      if (pArray) {
-        CFX_FloatRect rect = pArray->GetRect();
+  const CPDF_Dictionary* dict = page_dict;
+  while (dict && !visited.contains(dict)) {
+    RetainPtr<const CPDF_Object> object = dict->GetDirectObjectFor(name);
+    if (object) {
+      RetainPtr<const CPDF_Array> array = ToArray(std::move(object));
+      if (array) {
+        CFX_FloatRect rect = array->GetRect();
         rect.Normalize();
         return rect;
       }
     }
-    visited.insert(pDict);
-    pDict = pDict->GetDictFor(pdfium::page_object::kParent).Get();
+    visited.insert(dict);
+    dict = dict->GetDictFor(pdfium::page_object::kParent).Get();
   }
   return CFX_FloatRect();
+}
+
+static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict) {
+  std::set<const CPDF_Dictionary*> visited;
+  const CPDF_Dictionary* dict = page_dict;
+  while (dict && !visited.contains(dict)) {
+    if (dict->KeyExist(pdfium::page_object::kRotate)) {
+      int rotation =
+          (dict->GetIntegerFor(pdfium::page_object::kRotate) / 90) % 4;
+      return rotation < 0 ? rotation + 4 : rotation;
+    }
+    visited.insert(dict);
+    dict = dict->GetDictFor(pdfium::page_object::kParent).Get();
+  }
+  return 0;
+}
+
+static CFX_FloatRect GetEffectiveMediaBox(const CPDF_Dictionary* page_dict) {
+  CFX_FloatRect media_box =
+      GetInheritedRect(page_dict, pdfium::page_object::kMediaBox);
+  if (media_box.IsEmpty()) {
+    media_box = CFX_FloatRect(0, 0, 612, 792);
+  }
+  return media_box;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1696,22 +1747,14 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
     return false;
   }
 
-  if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
   if (!dict) {
     return false;
   }
 
   // Resolve MediaBox/CropBox via page tree inheritance (not just the page dict)
-  CFX_FloatRect mediabox =
-      GetInheritedRect(dict.Get(), pdfium::page_object::kMediaBox);
-  if (mediabox.IsEmpty()) {
-    mediabox = CFX_FloatRect(0, 0, 612, 792);
-  }
-
+  CFX_FloatRect mediabox = GetEffectiveMediaBox(dict.Get());
   CFX_FloatRect cropbox =
       GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
   CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
@@ -1720,6 +1763,79 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
   // Return original dimensions - NO swap for rotation
   size->width = bbox.Width();
   size->height = bbox.Height();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
+                       int page_index,
+                       EPDF_PAGE_BOX_TYPE box_type,
+                       FS_RECTF* box) {
+  if (!box) {
+    return false;
+  }
+
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
+    return false;
+  }
+
+  CFX_FloatRect rect;
+  switch (box_type) {
+    case EPDF_PAGE_BOX_MEDIA:
+      rect = GetEffectiveMediaBox(dict.Get());
+      break;
+    case EPDF_PAGE_BOX_CROP:
+      rect = GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
+      if (rect.IsEmpty()) {
+        rect = GetEffectiveMediaBox(dict.Get());
+      }
+      break;
+    case EPDF_PAGE_BOX_BLEED:
+    case EPDF_PAGE_BOX_TRIM:
+    case EPDF_PAGE_BOX_ART:
+      rect = GetInheritedRect(dict.Get(), GetPageBoxKey(box_type));
+      if (rect.IsEmpty()) {
+        return false;
+      }
+      break;
+  }
+
+  if (rect.IsEmpty()) {
+    return false;
+  }
+
+  *box = FSRectFFromCFXFloatRect(rect);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageUserUnitByIndex(FPDF_DOCUMENT document,
+                            int page_index,
+                            float* user_unit) {
+  if (!user_unit) {
+    return false;
+  }
+
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
+    return false;
+  }
+
+  float value = dict->GetFloatFor("UserUnit");
+  *user_unit = value > 0 ? value : 1.0f;
   return true;
 }
 

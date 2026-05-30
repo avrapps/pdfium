@@ -14,7 +14,10 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "constants/page_object.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
@@ -2578,6 +2581,90 @@ TEST_F(FPDFViewEmbedderTest, EPDFDocGetPageObjectNumberByIndex) {
   ASSERT_TRUE(page);
   EXPECT_EQ(objnum, EPDFPage_GetObjectNumber(page.get()));
   EXPECT_EQ(1u, doc->GetParsedPageCountForTesting());
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFGetPageBoxByIndex) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  auto expect_rect = [](const FS_RECTF& rect, float left, float top,
+                        float right, float bottom) {
+    EXPECT_FLOAT_EQ(left, rect.left);
+    EXPECT_FLOAT_EQ(top, rect.top);
+    EXPECT_FLOAT_EQ(right, rect.right);
+    EXPECT_FLOAT_EQ(bottom, rect.bottom);
+  };
+
+  FS_RECTF box = {-1.0f, -1.0f, -1.0f, -1.0f};
+  EXPECT_FALSE(EPDF_GetPageBoxByIndex(nullptr, 0, EPDF_PAGE_BOX_MEDIA, &box));
+  EXPECT_FALSE(
+      EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_MEDIA, nullptr));
+  EXPECT_FALSE(
+      EPDF_GetPageBoxByIndex(document(), -1, EPDF_PAGE_BOX_MEDIA, &box));
+  EXPECT_FALSE(
+      EPDF_GetPageBoxByIndex(document(), 1, EPDF_PAGE_BOX_MEDIA, &box));
+  EXPECT_FALSE(EPDF_GetPageBoxByIndex(
+      document(), 0, static_cast<EPDF_PAGE_BOX_TYPE>(999), &box));
+
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_MEDIA, &box));
+  expect_rect(box, 0.0f, 300.0f, 200.0f, 0.0f);
+
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+  expect_rect(box, 0.0f, 300.0f, 200.0f, 0.0f);
+
+  box = {-1.0f, -1.0f, -1.0f, -1.0f};
+  EXPECT_FALSE(
+      EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_BLEED, &box));
+  expect_rect(box, -1.0f, -1.0f, -1.0f, -1.0f);
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<CPDF_Dictionary> page_dict = doc->GetMutablePageDictionary(0);
+  ASSERT_TRUE(page_dict);
+  page_dict->SetRectFor(pdfium::page_object::kCropBox,
+                        CFX_FloatRect(10.0f, 20.0f, 110.0f, 120.0f));
+  page_dict->SetRectFor(pdfium::page_object::kBleedBox,
+                        CFX_FloatRect(20.0f, 30.0f, 100.0f, 110.0f));
+  page_dict->SetRectFor(pdfium::page_object::kTrimBox,
+                        CFX_FloatRect(30.0f, 40.0f, 90.0f, 100.0f));
+  page_dict->SetRectFor(pdfium::page_object::kArtBox,
+                        CFX_FloatRect(40.0f, 50.0f, 80.0f, 90.0f));
+
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_CROP, &box));
+  expect_rect(box, 10.0f, 120.0f, 110.0f, 20.0f);
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_BLEED, &box));
+  expect_rect(box, 20.0f, 110.0f, 100.0f, 30.0f);
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_TRIM, &box));
+  expect_rect(box, 30.0f, 100.0f, 90.0f, 40.0f);
+  ASSERT_TRUE(EPDF_GetPageBoxByIndex(document(), 0, EPDF_PAGE_BOX_ART, &box));
+  expect_rect(box, 40.0f, 90.0f, 80.0f, 50.0f);
+
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFGetPageUserUnitByIndex) {
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  float user_unit = 0.0f;
+  EXPECT_FALSE(EPDF_GetPageUserUnitByIndex(nullptr, 0, &user_unit));
+  EXPECT_FALSE(EPDF_GetPageUserUnitByIndex(document(), 0, nullptr));
+  EXPECT_FALSE(EPDF_GetPageUserUnitByIndex(document(), -1, &user_unit));
+  EXPECT_FALSE(EPDF_GetPageUserUnitByIndex(document(), 1, &user_unit));
+
+  ASSERT_TRUE(EPDF_GetPageUserUnitByIndex(document(), 0, &user_unit));
+  EXPECT_FLOAT_EQ(1.0f, user_unit);
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  RetainPtr<CPDF_Dictionary> page_dict = doc->GetMutablePageDictionary(0);
+  ASSERT_TRUE(page_dict);
+  page_dict->SetNewFor<CPDF_Number>("UserUnit", 2.5f);
+
+  ASSERT_TRUE(EPDF_GetPageUserUnitByIndex(document(), 0, &user_unit));
+  EXPECT_FLOAT_EQ(2.5f, user_unit);
+
+  page_dict->SetNewFor<CPDF_Number>("UserUnit", -10.0f);
+  ASSERT_TRUE(EPDF_GetPageUserUnitByIndex(document(), 0, &user_unit));
+  EXPECT_FLOAT_EQ(1.0f, user_unit);
+
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
 }
 
 TEST_F(FPDFViewEmbedderTest, FPDFGetPageSizeByIndex) {
