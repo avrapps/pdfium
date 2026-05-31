@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/fx_stream.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -94,6 +95,35 @@ std::string BuildSimplePdf() {
   }
   pdf << "trailer\n<< /Size " << (objects.size() + 1)
       << " /Root 1 0 R >>\nstartxref\n"
+      << xref_offset << "\n%%EOF\n";
+  return pdf.str();
+}
+
+std::string BuildSimplePdfWithInfo() {
+  const std::vector<std::string> objects = {
+      "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+      "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
+      "3 0 obj\n"
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\n"
+      "endobj\n",
+      "4 0 obj\n<< /Title (Base Title) >>\nendobj\n",
+  };
+
+  std::ostringstream pdf;
+  pdf << "%PDF-1.7\n";
+  std::vector<size_t> offsets;
+  for (const std::string& object : objects) {
+    offsets.push_back(pdf.tellp());
+    pdf << object;
+  }
+
+  const size_t xref_offset = pdf.tellp();
+  pdf << "xref\n0 " << (objects.size() + 1) << "\n0000000000 65535 f \n";
+  for (size_t offset : offsets) {
+    pdf << std::setw(10) << std::setfill('0') << offset << " 00000 n \n";
+  }
+  pdf << "trailer\n<< /Size " << (objects.size() + 1)
+      << " /Root 1 0 R /Info 4 0 R >>\nstartxref\n"
       << xref_offset << "\n%%EOF\n";
   return pdf.str();
 }
@@ -390,6 +420,59 @@ TEST_F(CPDFLayerDocumentTest, CrossHandleReadRefreshesAfterPagePromotion) {
       base->GetFrozenObjectForLayer(3)->AsDictionary()->KeyExist("Foo"));
   EXPECT_FALSE(
       base->GetFrozenObjectForLayer(3)->AsDictionary()->KeyExist("Bar"));
+}
+
+TEST_F(CPDFLayerDocumentTest, GetOrCreateInfoPromotesBaseInfo) {
+  const std::string pdf = BuildSimplePdfWithInfo();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  ASSERT_TRUE(base->GetInfo());
+  EXPECT_EQ("Base Title", base->GetInfo()->GetUnicodeTextFor("Title").ToUTF8());
+
+  auto layer_a = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  auto layer_b = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  EXPECT_EQ(0u, layer_a->GetPromotedObjectCount());
+  EXPECT_EQ(0u, layer_b->GetPromotedObjectCount());
+
+  RetainPtr<CPDF_Dictionary> info = layer_a->GetOrCreateInfo();
+  ASSERT_TRUE(info);
+  EXPECT_EQ(4u, info->GetObjNum());
+  EXPECT_EQ(1u, layer_a->GetPromotedObjectCount());
+  EXPECT_TRUE(layer_a->FindPromotedObject(4));
+  EXPECT_NE(base->GetFrozenObjectForLayer(4).Get(), info.Get());
+
+  info->SetNewFor<CPDF_String>("Title", "Layer A Title");
+
+  EXPECT_EQ("Layer A Title",
+            layer_a->GetInfo()->GetUnicodeTextFor("Title").ToUTF8());
+  EXPECT_EQ("Base Title",
+            layer_b->GetInfo()->GetUnicodeTextFor("Title").ToUTF8());
+  EXPECT_EQ("Base Title", base->GetInfo()->GetUnicodeTextFor("Title").ToUTF8());
+  EXPECT_EQ(0u, layer_b->GetPromotedObjectCount());
+}
+
+TEST_F(CPDFLayerDocumentTest,
+       GetOrCreateInfoCreatesLayerLocalInfoWhenBaseHasNone) {
+  const std::string pdf = BuildSimplePdf();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  EXPECT_FALSE(base->GetInfo());
+
+  auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  EXPECT_FALSE(layer->GetInfo());
+  EXPECT_EQ(0u, layer->GetPromotedObjectCount());
+
+  RetainPtr<CPDF_Dictionary> info = layer->GetOrCreateInfo();
+  ASSERT_TRUE(info);
+  EXPECT_NE(0u, info->GetObjNum());
+  EXPECT_EQ(info.Get(), layer->FindPromotedObject(info->GetObjNum()).Get());
+  EXPECT_EQ(1u, layer->GetPromotedObjectCount());
+
+  info->SetNewFor<CPDF_String>("Title", "Layer Title");
+
+  EXPECT_EQ("Layer Title",
+            layer->GetInfo()->GetUnicodeTextFor("Title").ToUTF8());
+  EXPECT_FALSE(base->GetInfo());
 }
 
 TEST_F(CPDFLayerDocumentTest, DirectResourcesPromoteOwningPage) {

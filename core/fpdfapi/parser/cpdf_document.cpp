@@ -724,12 +724,10 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetMutableInfo() {
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
-  if (info_dict_) {
-    return info_dict_;
-  }
-
-  // If parser already has an Info object, reuse it (this populates info_dict_).
-  if (RetainPtr<CPDF_Dictionary> existing = GetInfo()) {
+  // If the document already has an Info object, return the mutable view of it.
+  // Layer documents override GetMutableInfo() to promote the base /Info into
+  // the layer overlay before returning it.
+  if (RetainPtr<CPDF_Dictionary> existing = GetMutableInfo()) {
     return existing;
   }
 

@@ -119,11 +119,13 @@ RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableRoot() {
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableInfo() {
-  CPDF_Parser* parser = base_->GetParser();
-  const uint32_t info_objnum = parser ? parser->GetInfoObjNum() : 0;
-  if (!info_objnum || info_objnum == CPDF_Object::kInvalidObjNum) {
+  RetainPtr<CPDF_Dictionary> current_info = GetInfo();
+  if (!current_info) {
     return nullptr;
   }
+  const uint32_t info_objnum = current_info->GetObjNum();
+  DCHECK_NE(CPDF_Object::kInvalidObjNum, info_objnum);
+  DCHECK_NE(0u, info_objnum);
   RetainPtr<CPDF_Object> live = GetMutableIndirectObject(info_objnum);
   RetainPtr<CPDF_Dictionary> info =
       live ? pdfium::WrapRetain(live->AsMutableDictionary()) : nullptr;
@@ -327,6 +329,20 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
   }
   if (FindLocalIndirectObject(base_parser->GetInfoObjNum())) {
     InvalidateCachedInfoDict();
+  }
+  const uint32_t delta_info_objnum = parser.GetInfoObjNum();
+  if (delta_info_objnum && delta_info_objnum != CPDF_Object::kInvalidObjNum &&
+      delta_info_objnum != base_parser->GetInfoObjNum()) {
+    RetainPtr<CPDF_Object> local_info =
+        FindLocalIndirectObject(delta_info_objnum);
+    RetainPtr<CPDF_Dictionary> info =
+        local_info ? pdfium::WrapRetain(local_info->AsMutableDictionary())
+                   : nullptr;
+    if (!info) {
+      FailDeltaIngest(OpenStatus::kMalformedDelta);
+      return;
+    }
+    SetCachedInfoDict(info);
   }
   if (selected_delta_object_count > 0 &&
       !RebuildPageListFromCurrentPageTree()) {

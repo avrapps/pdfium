@@ -544,6 +544,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
     }
   }
 
+  RetainPtr<CPDF_Dictionary> current_info = document_->GetInfo();
   if (parser_) {
     CPDF_DictionaryLocker locker(parser_->GetCombinedTrailer());
     for (const auto& it : locker) {
@@ -552,7 +553,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
       if (key == "Encrypt" || key == "Size" || key == "Filter" ||
           key == "Index" || key == "Length" || key == "Prev" || key == "W" ||
           key == "XRefStm" || key == "ID" || key == "DecodeParms" ||
-          key == "Type") {
+          key == "Type" || (key == "Info" && current_info)) {
         continue;
       }
       if (!archive_->WriteString(("/")) ||
@@ -569,12 +570,12 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
         !archive_->WriteString(" 0 R\r\n")) {
       return Stage::kInvalid;
     }
-    if (document_->GetInfo()) {
-      if (!archive_->WriteString("/Info ") ||
-          !archive_->WriteDWord(document_->GetInfo()->GetObjNum()) ||
-          !archive_->WriteString(" 0 R\r\n")) {
-        return Stage::kInvalid;
-      }
+  }
+  if (current_info && current_info->GetObjNum() != 0) {
+    if (!archive_->WriteString("/Info ") ||
+        !archive_->WriteDWord(current_info->GetObjNum()) ||
+        !archive_->WriteString(" 0 R\r\n")) {
+      return Stage::kInvalid;
     }
   }
   if (encrypt_dict_) {

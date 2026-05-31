@@ -1426,6 +1426,103 @@ TEST_F(FPDFViewEmbedderTest, ReadOnlySiblingLayersStayEmptyAfterPeerMutates) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, LayerMetadataUpdatePromotesInfoAndSavesDelta) {
+  FileAccessForTesting base_access("bug_601362.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status_a = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_a(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_a));
+  ASSERT_TRUE(layer_a);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_a);
+
+  EPDFLayerOpenStatus status_b = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_b(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_b));
+  ASSERT_TRUE(layer_b);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_b);
+
+  unsigned short buf[128];
+  ASSERT_EQ(30u, FPDF_GetMetaText(layer_a.get(), "Creator", buf, sizeof(buf)));
+  EXPECT_EQ(L"Microsoft Word", GetPlatformWString(buf));
+  ASSERT_EQ(30u, FPDF_GetMetaText(layer_b.get(), "Creator", buf, sizeof(buf)));
+  EXPECT_EQ(L"Microsoft Word", GetPlatformWString(buf));
+
+  ScopedFPDFWideString layer_creator = GetFPDFWideString(L"Layer A Creator");
+  ASSERT_TRUE(EPDF_SetMetaText(layer_a.get(), "Creator", layer_creator.get()));
+  EXPECT_EQ(1u, EPDFLayer_GetPromotedObjectCount(layer_a.get()));
+
+  ASSERT_EQ(32u, FPDF_GetMetaText(layer_a.get(), "Creator", buf, sizeof(buf)));
+  EXPECT_EQ(L"Layer A Creator", GetPlatformWString(buf));
+  ASSERT_EQ(30u, FPDF_GetMetaText(layer_b.get(), "Creator", buf, sizeof(buf)));
+  EXPECT_EQ(L"Microsoft Word", GetPlatformWString(buf));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer_b.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_a.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta = GetString();
+  EXPECT_FALSE(delta.empty());
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ASSERT_EQ(32u, FPDF_GetMetaText(replayed.get(), "Creator", buf, sizeof(buf)));
+  EXPECT_EQ(L"Layer A Creator", GetPlatformWString(buf));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LayerMetadataUpdateCreatesInfoWhenBaseHasNone) {
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+
+  unsigned short buf[128];
+  EXPECT_EQ(0u, FPDF_GetMetaText(layer.get(), "Title", buf, sizeof(buf)));
+
+  ScopedFPDFWideString title = GetFPDFWideString(L"Layer Title");
+  ASSERT_TRUE(EPDF_SetMetaText(layer.get(), "Title", title.get()));
+  EXPECT_EQ(1u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+  ASSERT_EQ(24u, FPDF_GetMetaText(layer.get(), "Title", buf, sizeof(buf)));
+  EXPECT_EQ(L"Layer Title", GetPlatformWString(buf));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta = GetString();
+  EXPECT_FALSE(delta.empty());
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ASSERT_EQ(24u, FPDF_GetMetaText(replayed.get(), "Title", buf, sizeof(buf)));
+  EXPECT_EQ(L"Layer Title", GetPlatformWString(buf));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
   FileAccessForTesting base_access("rectangles.pdf");
   EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
