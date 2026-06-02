@@ -15,6 +15,7 @@
 
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_types.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
@@ -96,7 +97,7 @@ class CPDF_SyntaxParser {
   friend class cpdf_syntax_parser_ReadHexString_Test;
 
   static constexpr int kParserMaxRecursionDepth = 64;
-  static int s_CurrentRecursionDepth;
+  static EPDF_TLS int s_CurrentRecursionDepth;
 
   bool ReadBlockAt(FX_FILESIZE read_pos);
   bool GetCharAtBackward(FX_FILESIZE pos, uint8_t* ch);
