@@ -38,6 +38,18 @@ namespace {
 
 constexpr char kQuadPoints[] = "QuadPoints";
 
+// EmbedPDF: thread-confined runtime - config callbacks, NOT runtime knobs.
+// These two process-globals are intentionally left process-wide (not EPDF_TLS):
+// they are immutable configuration that MUST be set once during process
+// bootstrap, before any worker thread starts, and MUST NOT be mutated while
+// workers are live. Setting them per-request/per-thread is unsupported. The
+// server sets neither after startup, so there is no cross-thread write race.
+//
+// (Other inactive process-globals in our build config - the Skia font manager
+// and the Windows print-mode globals - are compiled out of the headless server
+// runtime. They would be unsafe under multi-threading if those subsystems were
+// ever re-enabled, and would need the same treatment then.)
+
 // 0 bit: FPDF_POLICY_MACHINETIME_ACCESS
 uint32_t g_sandbox_policy = 0xFFFFFFFF;
 

@@ -51,6 +51,13 @@ config("pdfium_common_config") {
     defines += [ "PDF_USE_PARTITION_ALLOC" ]
   }
 
+  # EmbedPDF: thread-confined runtime. Translates the embedpdf_thread_local_globals
+  # GN arg into the EPDF_THREAD_LOCAL_GLOBALS define consumed by EPDF_TLS
+  # (core/fxcrt/epdf_tls.h). Default off; see pdfium.gni.
+  if (embedpdf_thread_local_globals) {
+    defines += [ "EPDF_THREAD_LOCAL_GLOBALS" ]
+  }
+
   if (is_win) {
     # Assume UTF-8 by default to avoid code page dependencies.
     cflags += [ "/utf-8" ]
@@ -191,6 +198,7 @@ source_set("pdfium_public_headers_impl") {
   sources = [
     "public/cpp/fpdf_deleters.h",
     "public/cpp/fpdf_scopers.h",
+    "public/epdf_redact.h",
     "public/fpdf_annot.h",
     "public/fpdf_attachment.h",
     "public/fpdf_catalog.h",
@@ -431,6 +439,9 @@ group("pdfium_all") {
     ":pdfium_unittests",
     "testing:pdfium_test",
     "testing/fuzzers",
+    "testing/tools:epdf_layer_memory_benchmark",
+    "testing/tools:epdf_layer_replay_soak",
+    "testing/tools:epdf_thread_soak",
   ]
 
   if (pdf_is_standalone) {

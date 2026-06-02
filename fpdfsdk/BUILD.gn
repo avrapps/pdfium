@@ -15,6 +15,7 @@ source_set("fpdfsdk") {
     "epdf_png_shim.cpp",
     "epdf_jpeg_shim.cpp",
     "epdf_redact.cpp",
+    "epdf_threading.cpp",
     "cpdfsdk_annot.cpp",
     "cpdfsdk_annot.h",
     "cpdfsdk_annotiteration.cpp",

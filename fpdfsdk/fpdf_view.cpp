@@ -44,6 +44,7 @@
 #include "core/fxcrt/cfx_timer.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -116,7 +117,9 @@ static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
 
 namespace {
 
-bool g_bLibraryInitialized = false;
+// EmbedPDF: thread-confined runtime - each worker thread tracks its own
+// library-initialized state so per-thread Init/Destroy don't race.
+EPDF_TLS bool g_bLibraryInitialized = false;
 
 void SetRendererType(FPDF_RENDERER_TYPE public_type) {
   // Internal definition of renderer types must stay updated with respect to

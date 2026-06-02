@@ -536,6 +536,8 @@ int CheckPDFiumCApi() {
     CHK(FPDF_GetXFAPacketName);
     CHK(FPDF_InitLibrary);
     CHK(FPDF_InitLibraryWithConfig);
+    CHK(EPDF_InitThread);
+    CHK(EPDF_ShutdownThread);
     CHK(EPDF_GetPageBoxByIndex);
     CHK(EPDF_GetPageUserUnitByIndex);
     CHK(EPDF_LoadBaseDocument);

@@ -84,7 +84,10 @@ FPDF_EXPORT void FPDF_CALLCONV FSDK_SetTimeFunction(time_t (*func)());
 // behave poorly in production environments.
 //
 //   func - Function pointer to alternate implementation of localtime(), or
-//          NULL to restore to actual localtime() call itself.
+//          NULL to restore the thread-safe default localtime wrapper (which
+//          fills a thread-local tm via localtime_r/localtime_s). EmbedPDF: the
+//          default is no longer plain localtime(), which returned shared static
+//          storage and raced across threads.
 FPDF_EXPORT void FPDF_CALLCONV
 FSDK_SetLocaltimeFunction(struct tm* (*func)(const time_t*));
 

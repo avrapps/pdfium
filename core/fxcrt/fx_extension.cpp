@@ -6,6 +6,7 @@
 
 #include "core/fxcrt/fx_extension.h"
 
+#include <time.h>
 #include <wchar.h>
 
 #include <array>
@@ -24,7 +25,20 @@ time_t DefaultTimeFunction() {
 }
 
 struct tm* DefaultLocaltimeFunction(const time_t* tp) {
-  return localtime(tp);
+  // EmbedPDF: thread-confined runtime. Plain localtime() returns a pointer to
+  // shared static storage, which is a data race across worker threads. Fill a
+  // thread_local tm via the reentrant localtime_r/localtime_s instead so each
+  // thread gets its own result. struct tm is trivially destructible, so the
+  // thread_local adds no per-thread teardown cost.
+  thread_local struct tm result;
+#if defined(_WIN32)
+  if (localtime_s(&result, tp) != 0) {
+    return nullptr;
+  }
+  return &result;
+#else
+  return localtime_r(tp, &result);
+#endif
 }
 
 time_t (*g_time_func)() = DefaultTimeFunction;

@@ -320,6 +320,24 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_InitLibrary();
 //          closing the library with this function.
 FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary();
 
+// Experimental EmbedPDF Extension API.
+// Function: EPDF_InitThread / EPDF_ShutdownThread
+//          Thread-confined runtime lifecycle. Initialize / tear down PDFium for
+//          the CALLING thread.
+// Comments:
+//          When the runtime is built with per-thread globals
+//          (embedpdf_thread_local_globals), each worker thread owns its own
+//          PDFium state, so every thread that uses PDFium MUST call
+//          EPDF_InitThread before creating any handle and EPDF_ShutdownThread
+//          after closing every handle it created. Handles must never cross
+//          threads. When per-thread globals are disabled, these are exact
+//          aliases of FPDF_InitLibrary / FPDF_DestroyLibrary and are safe to
+//          call once on a single thread. EPDF_ShutdownThread is lifecycle-
+//          strict: only legal after all handles on the calling thread are
+//          closed.
+FPDF_EXPORT void FPDF_CALLCONV EPDF_InitThread();
+FPDF_EXPORT void FPDF_CALLCONV EPDF_ShutdownThread();
+
 // Policy for accessing the local machine time.
 #define FPDF_POLICY_MACHINETIME_ACCESS 0
 

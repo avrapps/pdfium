@@ -20,6 +20,22 @@ namespace fxcodec {
 
 namespace {
 
+// EmbedPDF: thread-confined runtime - LCMS verification gate.
+//
+// The cms* calls below (cmsOpenProfileFromMem, cmsCreate_sRGBProfile,
+// cmsCreateTransform, cmsDoTransform, ...) use the default/null cmsContext,
+// which is a process-global in lcms2. We intentionally do NOT rewrite this for
+// the first thread_local slice: per-profile/per-transform work on the default
+// context is independent across threads in practice, and our workers create
+// and use their own profiles/transforms.
+//
+// Gate (not a code change): run the threaded soak (testing/tools:epdf_thread_
+// soak) under ThreadSanitizer with ICC-heavy PDFs before lifting the server
+// pool cap. If TSAN flags contention/races in the default context, move to a
+// per-thread cmsContext via cmsCreateContext + the cms*THR APIs (or guard
+// transform creation with a mutex). Do not enable ICC-heavy concurrency in
+// production until this gate is green.
+
 // For use with std::unique_ptr<cmsHPROFILE>.
 struct CmsProfileDeleter {
   inline void operator()(cmsHPROFILE p) { cmsCloseProfile(p); }

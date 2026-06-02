@@ -42,6 +42,7 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/scoped_set_insertion.h"
 #include "core/fxcrt/span.h"
@@ -68,7 +69,9 @@ const char kPathOperatorClosePath = 'h';
 const char kPathOperatorRectangle[] = "re";
 
 using OpCodes = std::map<uint32_t, void (CPDF_StreamContentParser::*)()>;
-OpCodes* g_opcodes = nullptr;
+// EmbedPDF: thread-confined runtime - per-thread content-operator dispatch
+// table, lazily built and torn down on the owning thread.
+EPDF_TLS OpCodes* g_opcodes = nullptr;
 
 CFX_FloatRect GetShadingBBox(CPDF_ShadingPattern* pShading,
                              const CFX_Matrix& matrix) {

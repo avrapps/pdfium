@@ -1,0 +1,79 @@
+name: PDFium TSAN Thread Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to test
+        required: false
+        default: embedpdf/main
+      pdf_path:
+        description: PDF fixture to render during the soak
+        required: false
+        default: testing/resources/hello_world.pdf
+      threads:
+        description: Number of worker threads
+        required: false
+        default: '2'
+      iterations:
+        description: Iterations per worker thread
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  tsan-thread-soak:
+    name: Linux x64 TSAN thread soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PDF_RUNTIME_SYNC: auto
+      PDF_RUNTIME_TARGET_OS_LIST: linux
+      EMBEDPDF_TLS_GLOBALS: true
+      EMBEDPDF_TSAN: 1
+      PDF_PATH: ${{ inputs.pdf_path }}
+      SOAK_THREADS: ${{ inputs.threads }}
+      SOAK_ITERATIONS: ${{ inputs.iterations }}
+      SOAK_OUT: out/embedpdf-runtime-thread-soak-linux-x64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Install Linux base deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang lld curl g++ ninja-build pkg-config tar
+
+      - name: Run TSAN thread soak
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SOAK_OUT"
+          scripts/embedpdf-runtime/thread-soak-target.sh \
+            linux-x64 \
+            "$PDF_PATH" \
+            -- \
+            --threads="$SOAK_THREADS" \
+            --iterations="$SOAK_ITERATIONS" \
+            2>&1 | tee "$SOAK_OUT/thread-soak.log"
+
+      - name: Upload TSAN logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pdfium-tsan-thread-soak-logs
+          path: |
+            out/embedpdf-runtime-thread-soak-linux-x64/thread-soak.log
+            out/embedpdf-runtime-thread-soak-linux-x64/args.gn
+          if-no-files-found: ignore
