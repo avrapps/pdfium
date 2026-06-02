@@ -94,6 +94,7 @@ case "$TARGET" in
     ;;
   ios-*)
     apply_patch_file "$SOURCE_DIR/third_party/libjpeg_turbo" "$PATCH_DIR/ios/libjpeg_turbo.patch"
+    apply_patch_file "$SOURCE_DIR/buildtools/third_party/libc++" "$PATCH_DIR/ios/libcxx_config_site.patch"
     ;;
   *)
     echo "unknown target: $TARGET" >&2
