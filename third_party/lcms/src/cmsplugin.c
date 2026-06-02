@@ -1057,7 +1057,10 @@ cmsBool _cmsGetTime(struct tm* ptr_time)
 
     _cmsEnterCriticalSectionPrimitive(&_cmsContextPoolHeadMutex);
     t = gmtime(&now);
+    if (t != NULL)
+        *ptr_time = *t;
     _cmsLeaveCriticalSectionPrimitive(&_cmsContextPoolHeadMutex);
+    return t != NULL;
 #endif
 
     if (t == NULL) 

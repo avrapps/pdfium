@@ -306,6 +306,12 @@ source_set("fx_lcms2") {
     "lcms/src/cmswtpnt.c",
     "lcms/src/cmsxform.c",
   ]
+  if (is_linux || is_chromeos || is_android || is_mac || is_ios) {
+    defines = [ "HAVE_GMTIME_R" ]
+  }
+  if (is_win) {
+    defines = [ "HAVE_GMTIME_S" ]
+  }
   deps = [ "../core/fxcrt" ]
 }
 
