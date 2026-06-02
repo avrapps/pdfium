@@ -8,9 +8,7 @@
 
 #include <algorithm>
 #include <memory>
-#include <mutex>
 #include <set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -66,7 +64,6 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
-#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/fpdf_formfill.h"
 
@@ -116,26 +113,6 @@ static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kAgg) ==
 static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
               FPDF_RENDERERTYPE_SKIA);
 #endif  // defined(PDF_USE_SKIA)
-
-// Storage for pending security state (declared in fpdfsdk_pending_security.h).
-// Both the mutex and the map are intentionally leaked behind function-local
-// statics to avoid the static destruction order fiasco.
-std::mutex& GetPendingSecurityMutex() {
-  static std::mutex* mutex = new std::mutex;
-  return *mutex;
-}
-
-std::unordered_map<FPDF_DOCUMENT, PendingSecurity>& GetPendingSecurityMap() {
-  static auto* pending_security =
-      new std::unordered_map<FPDF_DOCUMENT, PendingSecurity>;
-  return *pending_security;
-}
-
-// Helper to cleanup pending security on document close
-void EPDF_CleanupPendingSecurity(FPDF_DOCUMENT doc) {
-  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-  GetPendingSecurityMap().erase(doc);
-}
 
 namespace {
 
@@ -557,15 +534,11 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
     return false;
   }
 
-  // Store (OVERWRITE if exists - allows changing password multiple times)
-  {
-    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-    PendingSecurity pending;
-    pending.mode = PendingSecurityMode::kEncrypt;
-    pending.encrypt_dict = std::move(pEncryptDict);
-    pending.security_handler = std::move(pSecurityHandler);
-    GetPendingSecurityMap()[document] = std::move(pending);
-  }
+  CPDF_Document::PendingSecurity pending;
+  pending.mode = CPDF_Document::PendingSecurityMode::kEncrypt;
+  pending.encrypt_dict = std::move(pEncryptDict);
+  pending.security_handler = std::move(pSecurityHandler);
+  pDoc->SetPendingSecurity(std::move(pending));
 
   return true;
 }
@@ -576,13 +549,14 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
     return false;
   }
 
-  // Set pending security to removal mode
-  // This will cause RemoveSecurity() to be called during save
-  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-  PendingSecurity pending;
-  pending.mode = PendingSecurityMode::kRemove;
-  // encrypt_dict and security_handler remain null for removal
-  GetPendingSecurityMap()[document] = std::move(pending);
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Document::PendingSecurity pending;
+  pending.mode = CPDF_Document::PendingSecurityMode::kRemove;
+  pDoc->SetPendingSecurity(std::move(pending));
 
   return true;
 }
@@ -1370,9 +1344,6 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
-  // Cleanup pending security BEFORE deletion
-  EPDF_CleanupPendingSecurity(document);
-
   // Take it back across the API and throw it away,
   std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));
 }

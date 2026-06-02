@@ -8,12 +8,14 @@
 #define CORE_FPDFAPI_PARSER_CPDF_DOCUMENT_H_
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -81,6 +83,14 @@ class CPDF_Document : public Observable,
     UnownedPtr<CPDF_Document> doc_;
   };
 
+  enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
+
+  struct PendingSecurity {
+    PendingSecurityMode mode = PendingSecurityMode::kNone;
+    RetainPtr<CPDF_Dictionary> encrypt_dict;
+    RetainPtr<CPDF_SecurityHandler> security_handler;
+  };
+
   static constexpr int kPageMaxNum = 0xFFFFF;
 
   static bool IsValidPageObject(const CPDF_Object* obj);
@@ -144,6 +154,10 @@ class CPDF_Document : public Observable,
 
   // Returns whether CreateModifiedAPStream() created `stream`.
   bool IsModifiedAPStream(const CPDF_Stream* stream) const;
+
+  void SetPendingSecurity(PendingSecurity pending);
+  const PendingSecurity* GetPendingSecurity() const;
+  void ClearPendingSecurity();
 
   // Returns whether `objnum` has been promoted from its base storage into a
   // document overlay. Always false for ordinary documents.
@@ -249,6 +263,7 @@ class CPDF_Document : public Observable,
   std::unique_ptr<JBig2_DocumentContext> codec_context_;
   std::unique_ptr<LinkListIface> links_context_;
   std::set<uint32_t> modified_apstream_ids_;
+  std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
 
   // Must be second to last.

@@ -199,6 +199,27 @@ TEST_F(FPDFSaveEmbedderTest, SetEncryptionRoundTripsWithInlineEncryptDict) {
   ASSERT_TRUE(bitmap);
 }
 
+TEST_F(FPDFSaveEmbedderTest, RemoveEncryptionUsesDocumentOwnedPendingState) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ASSERT_TRUE(EPDF_SetEncryption(document(), "user", "owner",
+                                 EPDF_PERM_PRINT | EPDF_PERM_COPY));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  {
+    ScopedSavedDoc encrypted_doc = OpenScopedSavedDocumentWithPassword("user");
+    ASSERT_TRUE(encrypted_doc);
+    ASSERT_TRUE(EPDF_IsEncrypted(encrypted_doc.get()));
+
+    ClearString();
+    ASSERT_TRUE(EPDF_RemoveEncryption(encrypted_doc.get()));
+    ASSERT_TRUE(FPDF_SaveAsCopy(encrypted_doc.get(), this, 0));
+  }
+
+  ScopedSavedDoc decrypted_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(decrypted_doc);
+  EXPECT_FALSE(EPDF_IsEncrypted(decrypted_doc.get()));
+}
+
 TEST_F(FPDFSaveEmbedderTest, SaveSimpleDocNoIncremental) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   EXPECT_TRUE(FPDF_SaveWithVersion(document(), this, FPDF_NO_INCREMENTAL, 14));

@@ -10,7 +10,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <mutex>
 
 #include <optional>
 #include <string>
@@ -31,7 +30,6 @@
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "public/fpdf_edit.h"
 
 #ifdef PDF_ENABLE_XFA
@@ -199,23 +197,19 @@ bool DoDocSave(FPDF_DOCUMENT document,
   CPDF_Creator file_maker(
       doc, pdfium::MakeRetain<CPDFSDK_FileWriteAdapter>(file_write));
 
-  // Apply pending security state
-  {
-    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-    auto& pending_security = GetPendingSecurityMap();
-    auto it = pending_security.find(document);
-    if (it != pending_security.end()) {
-      if (it->second.mode == PendingSecurityMode::kRemove) {
-        flags |= FPDF_REMOVE_SECURITY;
-      } else if (it->second.mode == PendingSecurityMode::kEncrypt) {
-        // SetEncryption sets both:
-        // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
-        // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
-        file_maker.SetEncryption(it->second.encrypt_dict,
-                                 it->second.security_handler);
-      }
-      // Don't erase from map here - leave for cleanup on doc close
-      // This allows multiple saves of the same encrypted doc
+  // Apply document-owned pending security state. It stays on the document so
+  // repeated saves use the same requested encryption/removal policy until the
+  // caller changes it or closes the document.
+  if (const CPDF_Document::PendingSecurity* pending =
+          doc->GetPendingSecurity()) {
+    if (pending->mode == CPDF_Document::PendingSecurityMode::kRemove) {
+      flags |= FPDF_REMOVE_SECURITY;
+    } else if (pending->mode == CPDF_Document::PendingSecurityMode::kEncrypt) {
+      // SetEncryption sets both:
+      // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
+      // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
+      file_maker.SetEncryption(pending->encrypt_dict,
+                               pending->security_handler);
     }
   }
 

@@ -496,6 +496,19 @@ bool CPDF_Document::IsModifiedAPStream(const CPDF_Stream* stream) const {
          pdfium::Contains(modified_apstream_ids_, stream->GetObjNum());
 }
 
+void CPDF_Document::SetPendingSecurity(PendingSecurity pending) {
+  pending_security_ = std::move(pending);
+}
+
+const CPDF_Document::PendingSecurity* CPDF_Document::GetPendingSecurity()
+    const {
+  return pending_security_ ? &pending_security_.value() : nullptr;
+}
+
+void CPDF_Document::ClearPendingSecurity() {
+  pending_security_.reset();
+}
+
 RetainPtr<CPDF_Object> CPDF_Document::FindPromotedObject(
     uint32_t objnum) const {
   return nullptr;
