@@ -888,6 +888,35 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
                                    int page_index,
                                    FS_SIZEF* size);
 
+// Page box type used by EPDF_GetPageBoxByIndex().
+typedef enum EPDF_PAGE_BOX_TYPE {
+  EPDF_PAGE_BOX_MEDIA = 0,
+  EPDF_PAGE_BOX_CROP = 1,
+  EPDF_PAGE_BOX_BLEED = 2,
+  EPDF_PAGE_BOX_TRIM = 3,
+  EPDF_PAGE_BOX_ART = 4,
+} EPDF_PAGE_BOX_TYPE;
+
+// Experimental EmbedPDF API.
+// Function: EPDF_GetPageBoxByIndex
+//          Get a page box at the given index without loading or parsing the page.
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+//          box_type    -   The page box to query.
+//          box         -   Pointer to a FS_RECTF to receive the box (in points).
+// Return value:
+//          Non-zero for success. 0 for error or absent optional box.
+// Comments:
+//          MediaBox is resolved through page-tree inheritance and falls back to
+//          PDFium's default page size when absent. CropBox falls back to
+//          MediaBox. BleedBox, TrimBox, and ArtBox return false when absent.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
+                       int page_index,
+                       EPDF_PAGE_BOX_TYPE box_type,
+                       FS_RECTF* box);
+
 // Experimental EmbedPDF API.
 // Function: EPDF_LoadPageNormalized
 //          Load a page with rotation normalized to 0 degrees.
