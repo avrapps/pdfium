@@ -233,13 +233,9 @@ bool CPDF_Creator::WriteOldObjs() {
     return true;
   }
 
-  // WriteOldObjs() only runs for full saves. Layer saves are incremental and
-  // use CollectSaveReachableObjects() when writing their overlay objects.
-  const std::set<uint32_t> objects_with_refs =
-      GetObjectsWithReferences(document_);
   uint32_t last_object_number_written = 0;
   for (uint32_t objnum = cur_obj_num_; objnum <= nLastObjNum; ++objnum) {
-    if (!pdfium::Contains(objects_with_refs, objnum)) {
+    if (!pdfium::Contains(objects_with_refs_, objnum)) {
       continue;
     }
     if (!WriteOldIndirectObject(objnum)) {
@@ -256,12 +252,10 @@ bool CPDF_Creator::WriteOldObjs() {
 }
 
 bool CPDF_Creator::WriteNewObjs() {
-  const std::set<uint32_t> objects_with_refs =
-      CollectSaveReachableObjects(document_, encrypt_dict_.Get());
   std::vector<uint32_t> written_new_obj_nums;
   for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
     uint32_t objnum = new_obj_num_array_[i];
-    if (!pdfium::Contains(objects_with_refs, objnum)) {
+    if (!pdfium::Contains(objects_with_refs_, objnum)) {
       continue;
     }
 
@@ -725,8 +719,11 @@ bool CPDF_Creator::Create(Mask<CreateFlags> flags, int32_t file_version) {
   last_obj_num_ = document_->GetLastObjNum();
   object_offsets_.clear();
   new_obj_num_array_.clear();
+  objects_with_refs_.clear();
 
   InitID();
+  objects_with_refs_ =
+      CollectSaveReachableObjects(document_, encrypt_dict_.Get());
   const bool result = Continue();
   if (!result && failure_reason_ == FailureReason::kNone) {
     failure_reason_ = FailureReason::kOther;

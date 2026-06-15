@@ -11,10 +11,11 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
-#include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/fx_stream.h"
+#include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -58,7 +59,8 @@ class CPDF_Creator {
 
   // Experimental EmbedPDF Extension: Set encryption for documents that weren't
   // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
-  // and security_handler_ (for GetCryptoHandler() used in stream/string encryption).
+  // and security_handler_ (for GetCryptoHandler() used in stream/string
+  // encryption).
   void SetEncryption(RetainPtr<CPDF_Dictionary> encrypt_dict,
                      RetainPtr<CPDF_SecurityHandler> security_handler);
 
@@ -114,6 +116,7 @@ class CPDF_Creator {
   FX_FILESIZE xref_start_ = 0;
   std::map<uint32_t, FX_FILESIZE> object_offsets_;
   std::vector<uint32_t> new_obj_num_array_;  // Sorted, ascending.
+  std::set<uint32_t> objects_with_refs_;
   RetainPtr<CPDF_Array> id_array_;
   int32_t file_version_ = 0;
   bool security_changed_ = false;

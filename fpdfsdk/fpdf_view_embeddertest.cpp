@@ -18,6 +18,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
@@ -56,6 +57,20 @@ namespace {
 
 constexpr char kFirstAlternate[] = "FirstAlternate";
 constexpr char kLastAlternate[] = "LastAlternate";
+
+uint32_t GetReferencedObjectNumber(const CPDF_Dictionary* dict,
+                                   ByteStringView key) {
+  if (!dict) {
+    return 0;
+  }
+
+  RetainPtr<const CPDF_Reference> ref = ToReference(dict->GetObjectFor(key));
+  return ref ? ref->GetRefObjNum() : 0;
+}
+
+bool PdfBytesContainObject(const std::string& pdf, uint32_t objnum) {
+  return pdf.find(std::to_string(objnum) + " 0 obj") != std::string::npos;
+}
 
 #if BUILDFLAG(IS_WIN)
 const char kExpectedRectanglePostScript[] = R"(
@@ -1578,6 +1593,69 @@ TEST_F(FPDFViewEmbedderTest,
     EXPECT_NE(deleted_page_objnum,
               EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), i));
   }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       LayerFullSavePrunesDeletedBasePageButKeepsSharedObjects) {
+  FileAccessForTesting base_access(
+      "hello_world_2_pages_shared_resources_dict.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+  ASSERT_EQ(2, FPDF_GetPageCount(layer.get()));
+
+  CPDF_Document* cpdf_layer = CPDFDocumentFromFPDFDocument(layer.get());
+  RetainPtr<const CPDF_Dictionary> surviving_page =
+      cpdf_layer->GetPageDictionary(0);
+  RetainPtr<const CPDF_Dictionary> deleted_page =
+      cpdf_layer->GetPageDictionary(1);
+  ASSERT_TRUE(surviving_page);
+  ASSERT_TRUE(deleted_page);
+
+  const uint32_t surviving_page_objnum = surviving_page->GetObjNum();
+  const uint32_t deleted_page_objnum = deleted_page->GetObjNum();
+  const uint32_t shared_resources_objnum =
+      GetReferencedObjectNumber(surviving_page.Get(), "Resources");
+  const uint32_t deleted_page_resources_objnum =
+      GetReferencedObjectNumber(deleted_page.Get(), "Resources");
+  const uint32_t shared_contents_objnum =
+      GetReferencedObjectNumber(surviving_page.Get(), "Contents");
+  const uint32_t deleted_page_contents_objnum =
+      GetReferencedObjectNumber(deleted_page.Get(), "Contents");
+
+  ASSERT_NE(0u, surviving_page_objnum);
+  ASSERT_NE(0u, deleted_page_objnum);
+  ASSERT_NE(surviving_page_objnum, deleted_page_objnum);
+  ASSERT_NE(0u, shared_resources_objnum);
+  ASSERT_EQ(shared_resources_objnum, deleted_page_resources_objnum);
+  ASSERT_NE(0u, shared_contents_objnum);
+  ASSERT_EQ(shared_contents_objnum, deleted_page_contents_objnum);
+
+  FPDFPage_Delete(layer.get(), 1);
+  ASSERT_EQ(1, FPDF_GetPageCount(layer.get()));
+
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(layer.get(), this, 0));
+  std::string saved_pdf = GetString();
+  EXPECT_FALSE(saved_pdf.empty());
+
+  EXPECT_TRUE(PdfBytesContainObject(saved_pdf, surviving_page_objnum));
+  EXPECT_FALSE(PdfBytesContainObject(saved_pdf, deleted_page_objnum));
+  EXPECT_TRUE(PdfBytesContainObject(saved_pdf, shared_resources_objnum));
+  EXPECT_TRUE(PdfBytesContainObject(saved_pdf, shared_contents_objnum));
+
+  ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_doc);
+  EXPECT_EQ(1, FPDF_GetPageCount(saved_doc.get()));
+  EXPECT_EQ(surviving_page_objnum,
+            EPDFDoc_GetPageObjectNumberByIndex(saved_doc.get(), 0));
 
   EPDF_ReleaseBaseDocument(base);
 }
