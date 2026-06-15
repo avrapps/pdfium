@@ -1582,6 +1582,96 @@ TEST_F(FPDFViewEmbedderTest,
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest, LayerMovePagesPromotesMovedPageAndReplays) {
+  FileAccessForTesting base_access("rectangles_multi_pages.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status_a = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_a(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_a));
+  ASSERT_TRUE(layer_a);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_a);
+  ASSERT_EQ(5, FPDF_GetPageCount(layer_a.get()));
+
+  std::vector<unsigned int> original_order;
+  for (int i = 0; i < FPDF_GetPageCount(layer_a.get()); ++i) {
+    original_order.push_back(
+        EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), i));
+  }
+  ASSERT_EQ(5u, original_order.size());
+
+  EPDFLayerOpenStatus status_b = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_b(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_b));
+  ASSERT_TRUE(layer_b);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_b);
+
+  int page_to_move = 2;
+  ASSERT_TRUE(FPDF_MovePages(layer_a.get(), &page_to_move, 1, 1));
+  EXPECT_EQ(5, FPDF_GetPageCount(layer_a.get()));
+  EXPECT_EQ(original_order[0],
+            EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 0));
+  EXPECT_EQ(original_order[2],
+            EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 1));
+  EXPECT_EQ(original_order[1],
+            EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 2));
+  EXPECT_EQ(original_order[3],
+            EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 3));
+  EXPECT_EQ(original_order[4],
+            EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 4));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(layer_a.get(), original_order[2]));
+
+  for (int i = 0; i < FPDF_GetPageCount(layer_b.get()); ++i) {
+    EXPECT_EQ(original_order[i],
+              EPDFDoc_GetPageObjectNumberByIndex(layer_b.get(), i));
+  }
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer_b.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_a.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta = GetString();
+  EXPECT_FALSE(delta.empty());
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ASSERT_EQ(5, FPDF_GetPageCount(replayed.get()));
+  EXPECT_EQ(original_order[0],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 0));
+  EXPECT_EQ(original_order[2],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 1));
+  EXPECT_EQ(original_order[1],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 2));
+  EXPECT_EQ(original_order[3],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 3));
+  EXPECT_EQ(original_order[4],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 4));
+
+  page_to_move = 2;
+  ASSERT_TRUE(FPDF_MovePages(replayed.get(), &page_to_move, 1, 1));
+  EXPECT_EQ(original_order[0],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 0));
+  EXPECT_EQ(original_order[1],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 1));
+  EXPECT_EQ(original_order[2],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 2));
+  EXPECT_EQ(original_order[3],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 3));
+  EXPECT_EQ(original_order[4],
+            EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), 4));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
   FileAccessForTesting base_access("rectangles.pdf");
   EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
@@ -2814,11 +2904,13 @@ TEST_F(FPDFViewEmbedderTest,
   const unsigned int duplicate_objnum =
       EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
   ASSERT_NE(0u, duplicate_objnum);
-  ASSERT_EQ(duplicate_objnum, EPDFDoc_GetPageObjectNumberByIndex(document(), 1));
+  ASSERT_EQ(duplicate_objnum,
+            EPDFDoc_GetPageObjectNumberByIndex(document(), 1));
 
   EXPECT_TRUE(EPDFDoc_DeletePageByObjectNumber(document(), duplicate_objnum));
   EXPECT_EQ(3, FPDF_GetPageCount(document()));
-  EXPECT_EQ(duplicate_objnum, EPDFDoc_GetPageObjectNumberByIndex(document(), 0));
+  EXPECT_EQ(duplicate_objnum,
+            EPDFDoc_GetPageObjectNumberByIndex(document(), 0));
 
   EXPECT_TRUE(EPDFDoc_DeletePageByObjectNumber(document(), duplicate_objnum));
   EXPECT_EQ(2, FPDF_GetPageCount(document()));

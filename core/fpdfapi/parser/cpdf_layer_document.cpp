@@ -109,6 +109,17 @@ CPDF_Parser* CPDF_LayerDocument::GetParser() const {
   return base_->GetParser();
 }
 
+const CPDF_Dictionary* CPDF_LayerDocument::GetRoot() const {
+  const uint32_t root_objnum = base_->GetParser()->GetRootObjNum();
+  if (RetainPtr<CPDF_Object> local = FindLocalIndirectObject(root_objnum)) {
+    // The returned pointer is owned by this layer's indirect object holder.
+    // Const root reads must see the effective overlay after delta ingest even
+    // when the mutable root cache has been invalidated.
+    return local->AsDictionary();
+  }
+  return base_->GetRoot();
+}
+
 RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutableRoot() {
   const uint32_t root_objnum = base_->GetParser()->GetRootObjNum();
   RetainPtr<CPDF_Object> live = GetMutableIndirectObject(root_objnum);
@@ -145,6 +156,24 @@ RetainPtr<const CPDF_Dictionary> CPDF_LayerDocument::GetPageDictionary(
   }
 
   return ToDictionary(GetOrParseIndirectObject(objnum));
+}
+
+RetainPtr<CPDF_Dictionary> CPDF_LayerDocument::GetMutablePageDictionary(
+    int iPage) {
+  if (iPage < 0 || static_cast<size_t>(iPage) >= GetPageListSize()) {
+    return nullptr;
+  }
+
+  const uint32_t objnum = GetPageObjNumAt(iPage);
+  if (!objnum) {
+    return nullptr;
+  }
+
+  // EmbedPDF layer documents must never return a const-cast frozen base page
+  // for mutation. Page moves reparent the moved page dictionary, so promote the
+  // page object before returning a mutable handle.
+  RetainPtr<CPDF_Object> live = GetMutableIndirectObject(objnum);
+  return live ? pdfium::WrapRetain(live->AsMutableDictionary()) : nullptr;
 }
 
 uint32_t CPDF_LayerDocument::GetUserPermissions(bool get_owner_perms) const {
