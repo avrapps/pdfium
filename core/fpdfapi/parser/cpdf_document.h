@@ -205,6 +205,12 @@ class CPDF_Document : public Observable,
   void SetCachedInfoDict(RetainPtr<CPDF_Dictionary> info);
   void InvalidateCachedInfoDict();
 
+  // EmbedPDF layer documents represent deletion by removing references from the
+  // promoted owning container, e.g. /Pages /Kids or /Annots. Base objects
+  // remain resolvable through the base xref and are not null-replaced in
+  // append-only layer deltas.
+  virtual bool ShouldReplaceDeletedPageWithNull(uint32_t page_obj_num) const;
+
  private:
   class StockFontClearer {
    public:

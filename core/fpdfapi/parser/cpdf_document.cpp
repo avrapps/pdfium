@@ -61,6 +61,18 @@ NodeType GetNodeType(RetainPtr<CPDF_Dictionary> kid_dict) {
   return has_kids ? NodeType::kBranch : NodeType::kLeaf;
 }
 
+NodeType GetNodeTypeForTraversal(const CPDF_Dictionary* kid_dict) {
+  const ByteString kid_type_value = kid_dict->GetNameFor("Type");
+  if (kid_type_value == "Pages") {
+    return NodeType::kBranch;
+  }
+  if (kid_type_value == "Page") {
+    return NodeType::kLeaf;
+  }
+
+  return kid_dict->KeyExist("Kids") ? NodeType::kBranch : NodeType::kLeaf;
+}
+
 // Returns a value in the range [0, `CPDF_Document::kPageMaxNum`), or nullopt on
 // error. Note that this function may modify `pages_dict` to correct PDF spec
 // violations. By normalizing the in-memory representation, other code that
@@ -636,8 +648,16 @@ bool CPDF_Document::InsertDeletePDFPage(
   }
 
   for (size_t i = 0; i < kids_list->size(); i++) {
-    RetainPtr<CPDF_Dictionary> kid_dict = kids_list->GetMutableDictAt(i);
-    NodeType kid_type = GetNodeType(kid_dict);
+    // EmbedPDF layer documents must not promote a base /Page object merely to
+    // decide whether traversal should skip it or remove its reference from
+    // /Kids. Use const access first, and only request a mutable object for the
+    // branch /Pages node that will be structurally edited.
+    RetainPtr<const CPDF_Dictionary> const_kid_dict = kids_list->GetDictAt(i);
+    if (!const_kid_dict) {
+      return false;
+    }
+
+    NodeType kid_type = GetNodeTypeForTraversal(const_kid_dict.Get());
     if (kid_type == NodeType::kLeaf) {
       if (pages_to_go != 0) {
         pages_to_go--;
@@ -657,10 +677,15 @@ bool CPDF_Document::InsertDeletePDFPage(
     }
 
     CHECK_EQ(kid_type, NodeType::kBranch);
-    int page_count = kid_dict->GetIntegerFor("Count");
+    int page_count = const_kid_dict->GetIntegerFor("Count");
     if (pages_to_go >= page_count) {
       pages_to_go -= page_count;
       continue;
+    }
+
+    RetainPtr<CPDF_Dictionary> kid_dict = kids_list->GetMutableDictAt(i);
+    if (!kid_dict) {
+      return false;
     }
     if (pdfium::Contains(*visited, kid_dict)) {
       return false;
@@ -755,7 +780,15 @@ RetainPtr<const CPDF_Array> CPDF_Document::GetFileIdentifier() const {
 }
 
 uint32_t CPDF_Document::DeletePage(int iPage) {
-  RetainPtr<CPDF_Dictionary> pPages = GetMutablePagesDict();
+  RetainPtr<CPDF_Dictionary> pRoot = GetMutableRoot();
+  if (!pRoot) {
+    return 0;
+  }
+
+  // Use the mutable catalog path so layer documents promote the page tree
+  // before editing /Kids and /Count. A const-cast mutable page tree would leave
+  // no layer overlay object to save.
+  RetainPtr<CPDF_Dictionary> pPages = pRoot->GetMutableDictFor("Pages");
   if (!pPages) {
     return 0;
   }
@@ -795,6 +828,10 @@ void CPDF_Document::SetPageToNullObject(uint32_t page_obj_num) {
     }
   }
 
+  if (!ShouldReplaceDeletedPageWithNull(page_obj_num)) {
+    return;
+  }
+
   // If `page_dict` is no longer in the page tree, replace it with an object of
   // type null.
   //
@@ -804,6 +841,11 @@ void CPDF_Document::SetPageToNullObject(uint32_t page_obj_num) {
   const bool replaced = ReplaceIndirectObjectIfHigherGeneration(
       page_obj_num, pdfium::MakeRetain<CPDF_Null>());
   CHECK(replaced);
+}
+
+bool CPDF_Document::ShouldReplaceDeletedPageWithNull(
+    uint32_t page_obj_num) const {
+  return true;
 }
 
 void CPDF_Document::SetRootForTesting(RetainPtr<CPDF_Dictionary> root) {

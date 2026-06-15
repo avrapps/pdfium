@@ -45,6 +45,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override;
   bool IsLayerDocument() const override;
   FX_FILESIZE GetLayerAppendBaseOffset() const override;
+  bool ShouldReplaceDeletedPageWithNull(uint32_t page_obj_num) const override;
 
   // CPDF_Parser::ParsedObjectsHolder:
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override;

@@ -1524,6 +1524,64 @@ TEST_F(FPDFViewEmbedderTest, LayerMetadataUpdateCreatesInfoWhenBaseHasNone) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+TEST_F(FPDFViewEmbedderTest,
+       LayerDeleteBasePageSavesPromotedPageTreeWithoutNullReplacement) {
+  FileAccessForTesting base_access("rectangles_multi_pages.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status_a = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_a(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_a));
+  ASSERT_TRUE(layer_a);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_a);
+  ASSERT_EQ(5, FPDF_GetPageCount(layer_a.get()));
+
+  EPDFLayerOpenStatus status_b = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_b(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_b));
+  ASSERT_TRUE(layer_b);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status_b);
+  ASSERT_EQ(5, FPDF_GetPageCount(layer_b.get()));
+
+  const unsigned int deleted_page_objnum =
+      EPDFDoc_GetPageObjectNumberByIndex(layer_a.get(), 1);
+  ASSERT_NE(0u, deleted_page_objnum);
+
+  FPDFPage_Delete(layer_a.get(), 1);
+  EXPECT_EQ(4, FPDF_GetPageCount(layer_a.get()));
+  EXPECT_FALSE(EPDFLayer_IsObjectPromoted(layer_a.get(), deleted_page_objnum));
+
+  EXPECT_EQ(5, FPDF_GetPageCount(layer_b.get()));
+  EXPECT_EQ(deleted_page_objnum,
+            EPDFDoc_GetPageObjectNumberByIndex(layer_b.get(), 1));
+  EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer_b.get()));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_a.get(), this, &save_status));
+  EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta = GetString();
+  EXPECT_FALSE(delta.empty());
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+  ASSERT_EQ(4, FPDF_GetPageCount(replayed.get()));
+  for (int i = 0; i < FPDF_GetPageCount(replayed.get()); ++i) {
+    EXPECT_NE(deleted_page_objnum,
+              EPDFDoc_GetPageObjectNumberByIndex(replayed.get(), i));
+  }
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
 TEST_F(FPDFViewEmbedderTest, CreateAnnotOnFreshLayerPromotesOverlayOnly) {
   FileAccessForTesting base_access("rectangles.pdf");
   EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);

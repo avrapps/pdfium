@@ -164,6 +164,20 @@ FX_FILESIZE CPDF_LayerDocument::GetLayerAppendBaseOffset() const {
   return base_->GetLayerAppendBaseOffset();
 }
 
+bool CPDF_LayerDocument::ShouldReplaceDeletedPageWithNull(
+    uint32_t page_obj_num) const {
+  CPDF_Parser* parser = base_->GetParser();
+  if (parser && parser->IsValidObjectNumber(page_obj_num) &&
+      !parser->IsObjectFree(page_obj_num)) {
+    return false;
+  }
+
+  // If the page object was created in this layer, nulling it is a local overlay
+  // change. If it exists in the base document, deletion is represented solely
+  // by the promoted page tree no longer referencing it.
+  return FindPromotedObject(page_obj_num) != nullptr;
+}
+
 RetainPtr<CPDF_Object> CPDF_LayerDocument::ParseIndirectObject(
     uint32_t objnum) {
   NOTREACHED();
