@@ -25,6 +25,7 @@
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_doc.h"
+#include "public/fpdf_edit.h"
 #include "public/fpdf_javascript.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
@@ -2678,6 +2679,96 @@ TEST_F(FPDFViewEmbedderTest, EPDFDocGetPageObjectNumberByIndex) {
   ASSERT_TRUE(page);
   EXPECT_EQ(objnum, EPDFPage_GetObjectNumber(page.get()));
   EXPECT_EQ(1u, doc->GetParsedPageCountForTesting());
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFDocSetPageRotationByObjectNumber) {
+  constexpr char kRotatedPng[] = "rectangles_rotated";
+
+  ASSERT_TRUE(OpenDocument("rectangles.pdf"));
+
+  const unsigned int objnum = EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
+  ASSERT_NE(0u, objnum);
+
+  EXPECT_FALSE(EPDFDoc_SetPageRotationByObjectNumber(nullptr, objnum, 1));
+  EXPECT_FALSE(EPDFDoc_SetPageRotationByObjectNumber(document(), 0, 1));
+  EXPECT_FALSE(EPDFDoc_SetPageRotationByObjectNumber(document(), objnum, -1));
+  EXPECT_FALSE(EPDFDoc_SetPageRotationByObjectNumber(document(), objnum, 4));
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+
+  EXPECT_TRUE(EPDFDoc_SetPageRotationByObjectNumber(document(), objnum, 1));
+  EXPECT_EQ(0u, doc->GetParsedPageCountForTesting());
+
+  {
+    ScopedPage page = LoadScopedPage(0);
+    ASSERT_TRUE(page);
+    EXPECT_EQ(1, FPDFPage_GetRotation(page.get()));
+    EXPECT_EQ(300, static_cast<int>(FPDF_GetPageWidth(page.get())));
+    EXPECT_EQ(200, static_cast<int>(FPDF_GetPageHeight(page.get())));
+    ScopedFPDFBitmap bitmap = RenderLoadedPage(page.get());
+    CompareBitmapWithExpectationSuffix(bitmap.get(), kRotatedPng);
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ScopedSavedDoc saved_document = OpenScopedSavedDocument();
+  ASSERT_TRUE(saved_document);
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(1, FPDFPage_GetRotation(saved_page.get()));
+}
+
+TEST_F(FPDFViewEmbedderTest, EPDFDocDeletePageByObjectNumber) {
+  ASSERT_TRUE(OpenDocument("rectangles_multi_pages.pdf"));
+  ASSERT_EQ(5, FPDF_GetPageCount(document()));
+
+  const unsigned int original_page_1 =
+      EPDFDoc_GetPageObjectNumberByIndex(document(), 1);
+  ASSERT_NE(0u, original_page_1);
+
+  int page_to_move = 1;
+  ASSERT_TRUE(FPDF_MovePages(document(), &page_to_move, 1, 4));
+  ASSERT_EQ(5, FPDF_GetPageCount(document()));
+  EXPECT_EQ(original_page_1, EPDFDoc_GetPageObjectNumberByIndex(document(), 4));
+
+  EXPECT_FALSE(EPDFDoc_DeletePageByObjectNumber(nullptr, original_page_1));
+  EXPECT_FALSE(EPDFDoc_DeletePageByObjectNumber(document(), 0));
+  EXPECT_TRUE(EPDFDoc_DeletePageByObjectNumber(document(), original_page_1));
+  EXPECT_EQ(4, FPDF_GetPageCount(document()));
+
+  for (int i = 0; i < FPDF_GetPageCount(document()); ++i) {
+    EXPECT_NE(original_page_1,
+              EPDFDoc_GetPageObjectNumberByIndex(document(), i));
+  }
+
+  EXPECT_FALSE(EPDFDoc_DeletePageByObjectNumber(document(), original_page_1));
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       EPDFDocDeletePageByObjectNumberDeletesDuplicatePageObjectOccurrence) {
+  // This malformed compatibility fixture references the same /Page object from
+  // multiple visible page positions. Delete-by-object-number removes the first
+  // visible occurrence resolved by PDFium.
+  ASSERT_TRUE(OpenDocument("bug_1229106.pdf"));
+  ASSERT_EQ(4, FPDF_GetPageCount(document()));
+
+  const unsigned int duplicate_objnum =
+      EPDFDoc_GetPageObjectNumberByIndex(document(), 0);
+  ASSERT_NE(0u, duplicate_objnum);
+  ASSERT_EQ(duplicate_objnum, EPDFDoc_GetPageObjectNumberByIndex(document(), 1));
+
+  EXPECT_TRUE(EPDFDoc_DeletePageByObjectNumber(document(), duplicate_objnum));
+  EXPECT_EQ(3, FPDF_GetPageCount(document()));
+  EXPECT_EQ(duplicate_objnum, EPDFDoc_GetPageObjectNumberByIndex(document(), 0));
+
+  EXPECT_TRUE(EPDFDoc_DeletePageByObjectNumber(document(), duplicate_objnum));
+  EXPECT_EQ(2, FPDF_GetPageCount(document()));
+
+  for (int i = 0; i < FPDF_GetPageCount(document()); ++i) {
+    EXPECT_NE(duplicate_objnum,
+              EPDFDoc_GetPageObjectNumberByIndex(document(), i));
+  }
 }
 
 TEST_F(FPDFViewEmbedderTest, EPDFGetPageBoxByIndex) {

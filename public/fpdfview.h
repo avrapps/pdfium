@@ -1891,6 +1891,24 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
 EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 
 // Experimental EmbedPDF Extension API.
+// Load a page by its PDF indirect object number with rotation normalized to
+// 0 degrees. Like EPDFDoc_LoadPageByObjectNumber(), but forces the page's
+// rotation override to 0 so all subsequent operations (GetPageWidth,
+// annotations, text, rendering) use normalized coordinates as if the page had
+// no rotation. The intrinsic rotation is surfaced separately via
+// EPDF_GetPageRotationByIndex().
+//
+//   document - handle to the document.
+//   obj_num  - the indirect object number of the page dictionary.
+//
+// Returns a handle to the loaded page, or NULL if the object number
+// does not correspond to a page. The caller must close the returned
+// handle with FPDF_ClosePage().
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumberNormalized(FPDF_DOCUMENT document,
+                                         unsigned int obj_num);
+
+// Experimental EmbedPDF Extension API.
 // Get the PDF indirect object number of a page's dictionary by page index.
 // Unlike FPDF_LoadPage(), this does not construct a page object or parse page
 // content.
@@ -1903,6 +1921,42 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
 // page is an XFA page.
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index);
+
+// Experimental EmbedPDF Extension API.
+// Delete the first visible page whose page dictionary has |obj_num| as its PDF
+// indirect object number. Unlike FPDFPage_Delete(), this remains stable across
+// page moves because it is keyed by page identity rather than page position.
+//
+//   document - handle to the document.
+//   obj_num  - the indirect object number of the page dictionary.
+//
+// Returns TRUE if a matching page was found and deleted, or FALSE if |document|
+// is invalid, |obj_num| is 0, or |obj_num| does not correspond to a visible
+// page. If a malformed PDF references the same /Page object more than once,
+// the first visible occurrence resolved by PDFium is deleted.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_DeletePageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
+
+// Experimental EmbedPDF Extension API.
+// Set the rotation of the page whose page dictionary has |obj_num| as its PDF
+// indirect object number. Unlike FPDFPage_SetRotation(), this does not require
+// loading or parsing the page.
+//
+//   document - handle to the document.
+//   obj_num  - the indirect object number of the page dictionary.
+//   rotate   - the rotation value, one of:
+//                0 - No rotation.
+//                1 - Rotated 90 degrees clockwise.
+//                2 - Rotated 180 degrees clockwise.
+//                3 - Rotated 270 degrees clockwise.
+//
+// Returns TRUE if a matching page was found and updated, or FALSE if |document|
+// is invalid, |obj_num| is 0, |rotate| is outside 0..3, or |obj_num| does not
+// correspond to a visible page.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetPageRotationByObjectNumber(FPDF_DOCUMENT document,
+                                      unsigned int obj_num,
+                                      int rotate);
 
 // Experimental EmbedPDF Extension API.
 // Get the PDF indirect object number of a page's dictionary.

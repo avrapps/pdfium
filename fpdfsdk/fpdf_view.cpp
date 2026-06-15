@@ -723,10 +723,14 @@ namespace {
 
 // Shared body of FPDF_LoadPage and EPDFDoc_LoadPageByObjectNumber. Validates
 // `page_index` against the document's page count, then constructs and returns
-// a leaked page handle. Returns nullptr on any failure.
+// a leaked page handle. When `normalize` is true, the page's rotation is
+// overridden to 0 so all subsequent operations use normalized 0-degree
+// coordinates (the intrinsic rotation is surfaced separately via
+// EPDF_GetPageRotationByIndex). Returns nullptr on any failure.
 FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
                                    CPDF_Document* doc,
-                                   int page_index) {
+                                   int page_index,
+                                   bool normalize) {
   if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
     return nullptr;
   }
@@ -750,6 +754,12 @@ FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
   pPage->AddPageImageCache();
   pPage->ParseContent();
 
+  // Force rotation to 0 - this re-runs UpdateDimensions() so page_size_ and
+  // page_matrix_ are calculated as if rotation=0.
+  if (normalize) {
+    pPage->SetRotationOverride(0);
+  }
+
   return FPDFPageFromIPDFPage(pPage.Leak());
 }
 
@@ -761,7 +771,8 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
   if (!doc) {
     return nullptr;
   }
-  return LoadPageByValidatedIndex(document, doc, page_index);
+  return LoadPageByValidatedIndex(document, doc, page_index,
+                                  /*normalize=*/false);
 }
 
 FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
@@ -770,7 +781,19 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
   if (!doc || obj_num == 0) {
     return nullptr;
   }
-  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num));
+  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num),
+                                  /*normalize=*/false);
+}
+
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumberNormalized(FPDF_DOCUMENT document,
+                                         unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0) {
+    return nullptr;
+  }
+  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num),
+                                  /*normalize=*/true);
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
@@ -790,6 +813,68 @@ EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index) {
 
   RetainPtr<const CPDF_Dictionary> dict = doc->GetPageDictionary(page_index);
   return dict ? dict->GetObjNum() : 0;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_DeletePageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0) {
+    return false;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match the other
+  // EPDFDoc_*ByObjectNumber APIs and reject object-number page mutations for
+  // XFA-backed documents.
+  if (doc->GetExtension()) {
+    return false;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  const int page_index = doc->GetPageIndex(obj_num);
+  if (page_index < 0) {
+    return false;
+  }
+
+  const uint32_t deleted_obj_num = doc->DeletePage(page_index);
+  if (deleted_obj_num == 0) {
+    return false;
+  }
+
+  doc->SetPageToNullObject(deleted_obj_num);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetPageRotationByObjectNumber(FPDF_DOCUMENT document,
+                                      unsigned int obj_num,
+                                      int rotate) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0 || rotate < 0 || rotate > 3) {
+    return false;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match the other
+  // EPDFDoc_*ByObjectNumber APIs and reject object-number page mutations for
+  // XFA-backed documents.
+  if (doc->GetExtension()) {
+    return false;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  if (doc->GetPageIndex(obj_num) < 0) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      ToDictionary(doc->GetMutableIndirectObject(obj_num));
+  if (!page_dict) {
+    return false;
+  }
+
+  page_dict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, rotate * 90);
+  return true;
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
