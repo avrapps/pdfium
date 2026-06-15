@@ -35,6 +35,20 @@ executable("epdf_layer_replay_soak") {
   configs += [ "../../:pdfium_common_config" ]
 }
 
+# EmbedPDF: thread-confined runtime soak. Multi-thread init/open/render/save/
+# close harness used (under TSAN) to validate the thread_local globals work.
+executable("epdf_thread_soak") {
+  testonly = true
+  sources = [ "epdf_thread_soak.cpp" ]
+  deps = [
+    ":epdf_layer_tool_support",
+    "../../:pdfium_public_headers",
+    "../../fpdfsdk",
+    "//build/win:default_exe_manifest",
+  ]
+  configs += [ "../../:pdfium_common_config" ]
+}
+
 if (pdf_is_standalone) {
   # Generates the list of inputs required by `test_runner.py` tests.
   action("test_runner_py") {

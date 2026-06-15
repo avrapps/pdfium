@@ -7,12 +7,16 @@
 #include "core/fxge/cfx_gemodule.h"
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxge/cfx_folderfontinfo.h"
 #include "core/fxge/cfx_fontmgr.h"
 
 namespace {
 
-CFX_GEModule* g_pGEModule = nullptr;
+// EmbedPDF: thread-confined runtime - each worker thread owns its own
+// CFX_GEModule (FreeType FT_Library + font/glyph caches), created and destroyed
+// on that thread.
+EPDF_TLS CFX_GEModule* g_pGEModule = nullptr;
 
 }  // namespace
 

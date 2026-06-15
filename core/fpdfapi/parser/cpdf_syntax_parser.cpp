@@ -76,7 +76,7 @@ class ReadableSubStream final : public IFX_SeekableReadStream {
 }  // namespace
 
 // static
-int CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
+EPDF_TLS int CPDF_SyntaxParser::s_CurrentRecursionDepth = 0;
 
 // static
 std::unique_ptr<CPDF_SyntaxParser> CPDF_SyntaxParser::CreateForTesting(

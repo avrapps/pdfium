@@ -91,6 +91,14 @@ declare_args() {
 
   # Don't build against bundled zlib.
   use_system_zlib = false
+
+  # EmbedPDF: thread-confined runtime. When true, PDFium's process-global
+  # singletons become per-thread (thread_local via EPDF_TLS), so each worker
+  # thread owns its own PDFium state and N threads can render shared-nothing in
+  # one process. Default off keeps globals process-wide; enable only for native
+  # server targets that follow the per-thread init/shutdown contract. Never
+  # makes arbitrary PDFium usage thread-safe; handles must not cross threads.
+  embedpdf_thread_local_globals = false
 }
 
 assert(!pdf_is_complete_lib || !is_component_build,

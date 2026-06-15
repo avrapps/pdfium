@@ -18,10 +18,13 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/epdf_tls.h"
 
 namespace {
 
-CPDF_FontGlobals* g_FontGlobals = nullptr;
+// EmbedPDF: thread-confined runtime - each worker thread owns its own font
+// globals (stock fonts + predefined CMaps), created/destroyed on that thread.
+EPDF_TLS CPDF_FontGlobals* g_FontGlobals = nullptr;
 
 RetainPtr<const CPDF_CMap> LoadPredefinedCMap(ByteStringView name) {
   if (!name.IsEmpty() && name[0] == '/') {
