@@ -29,59 +29,8 @@ namespace {
 
 constexpr char kRegisteredFontResourcePrefix[] = "ERegF";
 
-ByteString NormalizeBaseFontName(ByteString name) {
-  name.Remove(' ');
-  return name.IsEmpty() ? ByteString(CFX_Font::kUntitledFontName) : name;
-}
-
-ByteString BaseFontNameForRegisteredFont(CFX_FontRegistry::FontId font_id,
-                                         const CFX_Font* font) {
-  ByteString name = CFX_FontRegistry::GetBaseFontName(font_id);
-  if (name.IsEmpty() && font) {
-    name = font->GetBaseFontName();
-  }
-  return NormalizeBaseFontName(std::move(name));
-}
-
-std::optional<CFX_FontRegistry::FontId> FontIdFromResourceKey(
-    const ByteString& resource_key) {
-  constexpr size_t kPrefixLength = sizeof(kRegisteredFontResourcePrefix) - 1;
-  if (resource_key.First(kPrefixLength) != kRegisteredFontResourcePrefix) {
-    return std::nullopt;
-  }
-
-  ByteString id_string = resource_key.Substr(kPrefixLength);
-  if (id_string.IsEmpty()) {
-    return std::nullopt;
-  }
-
-  uint32_t font_id = 0;
-  for (char ch : id_string.AsStringView()) {
-    if (ch < '0' || ch > '9') {
-      return std::nullopt;
-    }
-    FX_SAFE_UINT32 safe_font_id = font_id;
-    safe_font_id *= 10;
-    safe_font_id += ch - '0';
-    if (!safe_font_id.IsValid()) {
-      return std::nullopt;
-    }
-    font_id = safe_font_id.ValueOrDie();
-  }
-
-  if (!CFX_FontRegistry::IsValidFont(font_id)) {
-    return std::nullopt;
-  }
-  return font_id;
-}
-
 ByteString ResourceKeyForRegisteredFont(CFX_FontRegistry::FontId font_id) {
   return ByteString::Format("%s%u", kRegisteredFontResourcePrefix, font_id);
-}
-
-bool FontDictMatchesBaseFontName(const CPDF_Dictionary* font_dict,
-                                 const ByteString& base_font_name) {
-  return font_dict && font_dict->GetNameFor("BaseFont") == base_font_name;
 }
 
 bool PDFontSupportsUnicode(const RetainPtr<CPDF_Font>& font, uint16_t word) {
@@ -108,7 +57,11 @@ CPDF_AnnotFontMap::CPDF_AnnotFontMap(CPDF_Document* doc,
   FontEntry entry;
   entry.font = std::move(default_font);
   entry.alias = default_font_alias;
-  if (auto font_id = FontIdFromResourceKey(default_font_alias)) {
+  RetainPtr<const CPDF_Dictionary> default_font_dict =
+      entry.font ? entry.font->GetFontDict() : nullptr;
+  if (auto font_id =
+          CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
+              default_font_dict.Get())) {
     RetainPtr<CPDF_Font> registered_font = CreateRegisteredLayoutFont(*font_id);
     if (registered_font) {
       entry.font = std::move(registered_font);
@@ -146,12 +99,14 @@ bool CPDF_AnnotFontMap::EnsureRegisteredFontMarkerInDocument(
   RetainPtr<CPDF_Dictionary> font_res =
       acroform_dict->GetOrCreateDictFor("DR")->GetOrCreateDictFor("Font");
 
-  const ByteString base_font_name =
-      BaseFontNameForRegisteredFont(font_id, nullptr);
   ByteString key = ResourceKeyForRegisteredFont(font_id);
   if (RetainPtr<CPDF_Dictionary> existing_font_dict =
           font_res->GetMutableDictFor(key.AsStringView())) {
-    if (FontDictMatchesBaseFontName(existing_font_dict.Get(), base_font_name)) {
+    // EmbedPDF: registered-font identity is stored in the marker dictionary,
+    // not inferred from the resource alias. This survives alias collisions,
+    // suffixes, and resource renaming during save/merge.
+    if (CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
+            existing_font_dict.Get()) == font_id) {
       *resource_key = key;
       return true;
     }

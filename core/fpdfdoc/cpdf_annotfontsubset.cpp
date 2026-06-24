@@ -39,6 +39,7 @@
 
 namespace {
 
+constexpr char kRegisteredFontIdKey[] = "EmbedPDFRegisteredFontId";
 constexpr uint32_t kMaxBfCharBfRangeEntries = 100;
 constexpr uint32_t kMaxPdfCid = 0xffff;
 
@@ -119,6 +120,10 @@ void AppendReferenceOrDirect(CPDF_Array* array,
 ByteString MakeSubsetBaseFontName(
     const ByteString& base_font_name,
     const CPDF_AnnotFontSubset::GlyphUnicodeMap& glyph_to_unicode) {
+  // EmbedPDF: a deterministic six-letter PDF subset tag is enough to keep
+  // subsets distinguishable for readers/debugging. A theoretical hash collision
+  // is harmless because each AP resource dictionary still points at its own
+  // embedded subset font object.
   uint32_t hash = 2166136261u;
   auto mix = [&hash](uint32_t value) {
     for (int i = 0; i < 4; ++i) {
@@ -664,5 +669,40 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotFontSubset::CreateMarkerFontDict(
       "BaseFont", BaseFontNameForRegisteredFont(font_id, nullptr));
   font_dict->SetNewFor<CPDF_Name>("Encoding",
                                   pdfium::font_encodings::kWinAnsiEncoding);
+  font_dict->SetNewFor<CPDF_String>(kRegisteredFontIdKey,
+                                    ByteString::Format("%u", font_id));
   return font_dict;
+}
+
+// static
+std::optional<CFX_FontRegistry::FontId>
+CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
+    const CPDF_Dictionary* font_dict) {
+  if (!font_dict) {
+    return std::nullopt;
+  }
+
+  ByteString id_string = font_dict->GetByteStringFor(kRegisteredFontIdKey);
+  if (id_string.IsEmpty()) {
+    return std::nullopt;
+  }
+
+  uint32_t font_id = 0;
+  for (char ch : id_string.AsStringView()) {
+    if (ch < '0' || ch > '9') {
+      return std::nullopt;
+    }
+    FX_SAFE_UINT32 safe_font_id = font_id;
+    safe_font_id *= 10;
+    safe_font_id += ch - '0';
+    if (!safe_font_id.IsValid()) {
+      return std::nullopt;
+    }
+    font_id = safe_font_id.ValueOrDie();
+  }
+
+  if (!CFX_FontRegistry::IsValidFont(font_id)) {
+    return std::nullopt;
+  }
+  return font_id;
 }

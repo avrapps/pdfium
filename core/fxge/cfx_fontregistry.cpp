@@ -215,7 +215,10 @@ void CFX_FontRegistry::ClearRegisteredFonts() {
   }
   g_registry->fallback_order.clear();
   g_registry->fonts.clear();
-  g_registry->next_font_id = 1;
+  // EmbedPDF: do not reset next_font_id. Documents can keep registered-font
+  // marker resources after ClearRegisteredFonts(); reusing ids could make an
+  // old marker resolve to a different font registered later in the same
+  // runtime/thread.
 }
 
 // static

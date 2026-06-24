@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "core/fxcrt/retain_ptr.h"
@@ -48,6 +49,9 @@ class CPDF_AnnotFontSubset final {
   static RetainPtr<CPDF_Dictionary> CreateMarkerFontDict(
       CPDF_Document* doc,
       CFX_FontRegistry::FontId font_id);
+
+  static std::optional<CFX_FontRegistry::FontId>
+  GetRegisteredFontIdFromMarkerFontDict(const CPDF_Dictionary* font_dict);
 };
 
 #endif  // CORE_FPDFDOC_CPDF_ANNOTFONTSUBSET_H_

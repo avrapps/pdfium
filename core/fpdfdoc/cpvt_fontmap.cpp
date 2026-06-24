@@ -16,28 +16,7 @@
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_codepage.h"
-
-namespace {
-
-// EmbedPDF: CPVT_FontMap is used by upstream FreeText appearance generation,
-// but upstream left these font-selection hooks as NOTREACHED(). Registered
-// annotation fonts need real default behavior so CPVT_VariableText can ask the
-// active font map whether a specific glyph is supported.
-bool FontSupportsUnicode(const RetainPtr<CPDF_Font>& font, uint16_t word) {
-  if (!font) {
-    return false;
-  }
-
-  uint32_t charcode = font->CharCodeFromUnicode(word);
-  if (charcode == CPDF_Font::kInvalidCharCode || (charcode == 0 && word != 0)) {
-    return false;
-  }
-
-  bool vert_glyph = false;
-  return font->GlyphFromCharCode(charcode, &vert_glyph) > 0;
-}
-
-}  // namespace
+#include "core/fxcrt/numerics/safe_conversions.h"
 
 CPVT_FontMap::CPVT_FontMap(CPDF_Document* doc,
                            RetainPtr<CPDF_Dictionary> pResDict,
@@ -102,32 +81,37 @@ ByteString CPVT_FontMap::GetPDFFontAlias(int32_t nFontIndex) {
 int32_t CPVT_FontMap::GetWordFontIndex(uint16_t word,
                                        FX_Charset charset,
                                        int32_t nFontIndex) {
-  // EmbedPDF: keep the current font when it can draw the word, otherwise fall
-  // back to the default DA font and then PDFium's native annotation font.
-  if (nFontIndex >= 0 && FontSupportsUnicode(GetPDFFont(nFontIndex), word)) {
-    return nFontIndex;
+  // EmbedPDF: preserve upstream shared AP behavior for the default form/popup
+  // font map: choose the DA font first, then PDFium's native annotation font,
+  // based only on CharCodeFromUnicode(). Stricter glyph checks live in
+  // CPDF_AnnotFontMap, which is used only by registered FreeText fonts.
+  if (RetainPtr<CPDF_Font> pDefFont = GetPDFFont(0)) {
+    if (pDefFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
+      return 0;
+    }
   }
-  if (FontSupportsUnicode(GetPDFFont(0), word)) {
-    return 0;
-  }
-  if (FontSupportsUnicode(GetPDFFont(1), word)) {
-    return 1;
+  if (RetainPtr<CPDF_Font> pSysFont = GetPDFFont(1)) {
+    if (pSysFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
+      return 1;
+    }
   }
   return -1;
 }
 
 int32_t CPVT_FontMap::CharCodeFromUnicode(int32_t nFontIndex, uint16_t word) {
-  // EmbedPDF: expose a common unicode-to-charcode hook so specialized font maps
-  // can return registered-font subset glyph ids without changing PVT layout.
+  // EmbedPDF: default implementation is equivalent to the old shared AP path's
+  // direct pdf_font->CharCodeFromUnicode() call. The hook exists so specialized
+  // font maps can return registered-font subset glyph ids.
   RetainPtr<CPDF_Font> font = GetPDFFont(nFontIndex);
   if (!font) {
     return -1;
   }
   uint32_t charcode = font->CharCodeFromUnicode(word);
-  if (charcode == CPDF_Font::kInvalidCharCode || (charcode == 0 && word != 0)) {
+  if (charcode == CPDF_Font::kInvalidCharCode ||
+      !pdfium::IsValueInRangeForNumericType<int32_t>(charcode)) {
     return -1;
   }
-  return charcode;
+  return static_cast<int32_t>(charcode);
 }
 
 FX_Charset CPVT_FontMap::CharSetFromUnicode(uint16_t word,

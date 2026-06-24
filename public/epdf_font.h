@@ -20,6 +20,11 @@ typedef uint32_t EPDF_FONT_ID;
 
 // Experimental EmbedPDF Extension API.
 // Register a font for runtime fallback use and PDF authoring from file access.
+// Font registration follows PDFium's normal handle/thread ownership model. In
+// TLS builds, register and use fonts on the initialized worker thread that owns
+// the document/page handles, and call EPDF_ShutdownThread() on that worker to
+// release registered font state. In non-TLS builds, do not mutate the registry
+// concurrently with rendering, saving, or editing.
 //
 //   family_name  - optional family/resource base name. Pass NULL or "" to
 //                  infer from the font.
@@ -68,6 +73,10 @@ EPDFFont_RegisterMemFont64(FPDF_BYTESTRING family_name,
 
 // Experimental EmbedPDF Extension API.
 // Clear all registered fonts and the fallback font order.
+//
+// Existing documents may still contain registered-font DA marker resources
+// after this call; those markers are invalid until their fonts are registered
+// again.
 FPDF_EXPORT void FPDF_CALLCONV EPDFFont_ClearRegisteredFonts(void);
 
 // Experimental EmbedPDF Extension API.
