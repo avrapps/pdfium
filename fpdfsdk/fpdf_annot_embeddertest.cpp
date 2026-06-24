@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -95,6 +96,32 @@ std::vector<uint8_t> LoadRobotoFontData() {
     return {};
   }
   return GetFileContents(font_path.c_str());
+}
+
+std::vector<uint8_t> LoadDroidSansFallbackFullFontData() {
+  std::string font_path =
+      PathService::GetTestFilePath("fonts/DroidSansFallbackFull.ttf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find DroidSansFallbackFull test font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+EPDF_FONT_ID RegisterDroidSansFallbackFullFont() {
+  std::vector<uint8_t> font_data = LoadDroidSansFallbackFullFontData();
+  if (font_data.empty()) {
+    return 0;
+  }
+
+  EPDF_FONT_ID font_id = EPDFFont_RegisterMemFont64(
+      "DroidSansFallbackFull", /*weight=*/400, /*italic=*/0, font_data.data(),
+      font_data.size());
+  if (font_id == 0 || !EPDFFont_AddFallbackFont(font_id)) {
+    ADD_FAILURE() << "Failed to register DroidSansFallbackFull as fallback";
+    return 0;
+  }
+  return font_id;
 }
 
 std::wstring GetNormalAppearance(FPDF_ANNOTATION annot) {
@@ -251,11 +278,11 @@ bool AppearanceFontHasEmbeddedSubset(const CPDF_Dictionary* font_dict) {
   }
 
   ByteString base_font = font_dict->GetNameFor("BaseFont");
-  return base_font.GetLength() > 7 && base_font[6] == '+' &&
-         base_font.Last(6) == "Roboto";
+  return base_font.GetLength() > 7 && base_font[6] == '+';
 }
 
-bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict, char value) {
+bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict,
+                               wchar_t value) {
   RetainPtr<const CPDF_Stream> to_unicode =
       font_dict ? font_dict->GetStreamFor("ToUnicode") : nullptr;
   if (!to_unicode) {
@@ -264,6 +291,19 @@ bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict, char value) {
 
   CPDF_ToUnicodeMap to_unicode_map(std::move(to_unicode));
   return to_unicode_map.ReverseLookup(value) != 0;
+}
+
+void ExpectRegisteredAppearanceMapsUnicode(
+    FPDF_ANNOTATION annot,
+    EPDF_FONT_ID font_id,
+    std::initializer_list<wchar_t> unicodes) {
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot, RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(font_dict.Get()));
+  for (wchar_t unicode : unicodes) {
+    EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), unicode));
+  }
 }
 
 std::string BitmapChecksum(FPDF_BITMAP bitmap) {
@@ -870,6 +910,33 @@ TEST_F(FPDFAnnotEmbedderTest, FreeTextAppearanceFallsBackToRegisteredFont) {
   EXPECT_THAT(appearance, HasSubstr(L"/ERegF"));
 }
 
+TEST_F(FPDFAnnotEmbedderTest, FreeTextKoreanUsesRegisteredDroidFallbackFont) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
+  ASSERT_NE(0u, font_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"Hello \xD55C\xAE00");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             18.0f, 0, 0, 0));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
+                                        {L'\xD55C', L'\xAE00'});
+}
+
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontEmbedsSubsetInSavedPdf) {
   ScopedRegisteredFonts scoped_fonts;
 
@@ -1021,6 +1088,106 @@ TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontMarkerSurvivesAliasSuffix) {
   EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
   EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'B'));
   EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'C'));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, TextFieldKoreanUsesRegisteredDroidFallbackFont) {
+  ScopedRegisteredFonts scoped_fonts;
+  EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
+  ASSERT_NE(0u, font_id);
+
+  CreateEmptyDocument();
+  {
+    ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+    ASSERT_TRUE(page);
+
+    ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_text");
+    ScopedFPDFAnnotation annot(EPDFPage_CreateFormField(
+        page.get(), form_handle(), FPDF_FORMFIELD_TEXTFIELD, field_name.get()));
+    ASSERT_TRUE(annot);
+
+    const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                               18.0f, 0, 0, 0));
+    ScopedFPDFWideString value = GetFPDFWideString(L"\xD55C\xAE00");
+    ASSERT_TRUE(
+        EPDFAnnot_SetFormFieldValue(form_handle(), annot.get(), value.get()));
+
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+    ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
+                                          {L'\xD55C', L'\xAE00'});
+  }
+  CloseDocument();
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ComboBoxKoreanUsesRegisteredDroidFallbackFont) {
+  ScopedRegisteredFonts scoped_fonts;
+  EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
+  ASSERT_NE(0u, font_id);
+
+  CreateEmptyDocument();
+  {
+    ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+    ASSERT_TRUE(page);
+
+    ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_combo");
+    ScopedFPDFAnnotation annot(EPDFPage_CreateFormField(
+        page.get(), form_handle(), FPDF_FORMFIELD_COMBOBOX, field_name.get()));
+    ASSERT_TRUE(annot);
+
+    const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                               18.0f, 0, 0, 0));
+
+    ScopedFPDFWideString latin_option = GetFPDFWideString(L"Latin");
+    ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
+    FPDF_WIDESTRING labels[] = {latin_option.get(), korean_option.get()};
+    ASSERT_TRUE(
+        EPDFAnnot_SetFormFieldOptions(form_handle(), annot.get(), labels, 2));
+    ASSERT_TRUE(EPDFAnnot_SetFormFieldValue(form_handle(), annot.get(),
+                                            korean_option.get()));
+
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+    ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
+                                          {L'\xD55C', L'\xAE00'});
+  }
+  CloseDocument();
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ListBoxKoreanUsesRegisteredDroidFallbackFont) {
+  ScopedRegisteredFonts scoped_fonts;
+  EPDF_FONT_ID font_id = RegisterDroidSansFallbackFullFont();
+  ASSERT_NE(0u, font_id);
+
+  CreateEmptyDocument();
+  {
+    ScopedFPDFPage page(FPDFPage_New(document(), 0, 400, 400));
+    ASSERT_TRUE(page);
+
+    ScopedFPDFWideString field_name = GetFPDFWideString(L"korean_list");
+    ScopedFPDFAnnotation annot(EPDFPage_CreateFormField(
+        page.get(), form_handle(), FPDF_FORMFIELD_LISTBOX, field_name.get()));
+    ASSERT_TRUE(annot);
+
+    const FS_RECTF rect{50.0f, 220.0f, 350.0f, 330.0f};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                               18.0f, 0, 0, 0));
+
+    ScopedFPDFWideString latin_option = GetFPDFWideString(L"Latin");
+    ScopedFPDFWideString korean_option = GetFPDFWideString(L"\xD55C\xAE00");
+    FPDF_WIDESTRING labels[] = {latin_option.get(), korean_option.get()};
+    ASSERT_TRUE(
+        EPDFAnnot_SetFormFieldOptions(form_handle(), annot.get(), labels, 2));
+    ASSERT_TRUE(EPDFAnnot_SetFormFieldValue(form_handle(), annot.get(),
+                                            korean_option.get()));
+
+    ASSERT_TRUE(EPDFAnnot_GenerateFormFieldAP(annot.get()));
+    ExpectRegisteredAppearanceMapsUnicode(annot.get(), font_id,
+                                          {L'\xD55C', L'\xAE00'});
+  }
+  CloseDocument();
 }
 
 TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontSubsetsAreLayerLocal) {

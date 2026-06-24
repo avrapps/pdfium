@@ -244,6 +244,11 @@ void CFX_FontRegistry::ClearFallbackFonts() {
 }
 
 // static
+bool CFX_FontRegistry::HasFallbackFonts() {
+  return g_registry && !g_registry->fallback_order.empty();
+}
+
+// static
 bool CFX_FontRegistry::IsValidFont(FontId font_id) {
   return GetRegisteredFont(font_id) != nullptr;
 }

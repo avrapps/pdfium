@@ -38,6 +38,7 @@ class CFX_FontRegistry {
 
   static bool AddFallbackFont(FontId font_id);
   static void ClearFallbackFonts();
+  static bool HasFallbackFonts();
 
   static bool IsValidFont(FontId font_id);
   static ByteString GetBaseFontName(FontId font_id);

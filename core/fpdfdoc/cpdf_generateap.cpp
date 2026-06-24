@@ -35,6 +35,7 @@
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotfontmap.h"
+#include "core/fpdfdoc/cpdf_annotfontsubset.h"
 #include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
@@ -46,6 +47,7 @@
 #include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/notreached.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_renderdevice.h"
 
 namespace {
@@ -2996,6 +2998,12 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
   if (!default_font) {
     return false;
   }
+  const bool use_registered_font_map =
+      target->IsPersistent() &&
+      (CFX_FontRegistry::HasFallbackFonts() ||
+       CPDF_AnnotFontSubset::GetRegisteredFontIdFromMarkerFontDict(
+           font_dict.Get())
+           .has_value());
 
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
@@ -3030,26 +3038,53 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
                                            std::move(resource_font_dict));
   }
 
+  auto generate_form_stream = [&](CPVT_VariableText::Provider& provider,
+                                  fxcrt::ostringstream& app_stream) {
+    switch (type) {
+      case CPDF_GenerateAP::kTextField:
+        GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
+                                default_appearance_info.value(), provider);
+        break;
+      case CPDF_GenerateAP::kComboBox:
+        GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
+                               default_appearance_info.value(), provider);
+        break;
+      case CPDF_GenerateAP::kListBox:
+        GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
+                              default_appearance_info.value(), provider);
+        break;
+    }
+  };
+
+  if (use_registered_font_map) {
+    // EmbedPDF: form widgets need the same registered fallback/subset path as
+    // FreeText when their value/options contain glyphs outside the DA font.
+    // Keep the old CPVT_FontMap path unless a registered font is actually
+    // involved so existing form AP output remains stable by default.
+    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
+                          /*allow_registered_fallbacks=*/true);
+    CPVT_VariableText::Provider provider(&map);
+
+    fxcrt::ostringstream app_stream;
+    generate_form_stream(provider, app_stream);
+
+    normal_stream->SetDataFromStringstreamAndRemoveFilter(&app_stream);
+    RetainPtr<CPDF_Dictionary> stream_dict = normal_stream->GetMutableDict();
+    stream_dict->SetMatrixFor("Matrix", dims.matrix);
+    stream_dict->SetRectFor("BBox", dims.bbox);
+    RetainPtr<CPDF_Dictionary> stream_resources =
+        stream_dict->GetOrCreateDictFor("Resources");
+    stream_resources->SetFor("Font", map.CreateFontResourceDict());
+    return true;
+  }
+
   RetainPtr<CPDF_Dictionary> ephemeral_resources_dict = resources_dict;
   CPVT_FontMap map(doc, std::move(resources_dict), std::move(default_font),
                    font_name);
   CPVT_VariableText::Provider provider(&map);
 
   fxcrt::ostringstream app_stream;
-  switch (type) {
-    case CPDF_GenerateAP::kTextField:
-      GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
-                              default_appearance_info.value(), provider);
-      break;
-    case CPDF_GenerateAP::kComboBox:
-      GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
-                             default_appearance_info.value(), provider);
-      break;
-    case CPDF_GenerateAP::kListBox:
-      GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
-                            default_appearance_info.value(), provider);
-      break;
-  }
+  generate_form_stream(provider, app_stream);
 
   if (!target->IsPersistent()) {
     return GenerateAPDict(
