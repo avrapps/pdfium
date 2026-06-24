@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fxge/cfx_fontregistry.h"
 
 class CPDF_Dictionary;
 class CPDF_Document;
@@ -72,6 +73,15 @@ class CPDF_GenerateAP {
                                       CPDF_Annot::StandardFont font,
                                       float font_size,
                                       const CFX_Color& color);
+
+  // EmbedPDF: Set FreeText DA to a registered runtime font. The actual AP path
+  // later embeds a subset for only the characters used by the annotation/layer.
+  static bool UpdateDefaultAppearanceRegisteredFont(
+      CPDF_Document* doc,
+      CPDF_Dictionary* annot_dict,
+      CFX_FontRegistry::FontId font_id,
+      float font_size,
+      const CFX_Color& color);
 
   CPDF_GenerateAP() = delete;
   CPDF_GenerateAP(const CPDF_GenerateAP&) = delete;

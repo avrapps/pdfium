@@ -6,12 +6,14 @@
 #define PUBLIC_FPDF_ANNOT_H_
 
 #include <stddef.h>
-
 // NOLINTNEXTLINE(build/include)
 #include "fpdfview.h"
 
 // NOLINTNEXTLINE(build/include)
 #include "fpdf_formfill.h"
+
+// NOLINTNEXTLINE(build/include)
+#include "epdf_font.h"
 
 // NOLINTNEXTLINE(build/include)
 #include "epdf_redact.h"
@@ -1610,6 +1612,24 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
                                unsigned int R,
                                unsigned int G,
                                unsigned int B);
+
+// Experimental EmbedPDF Extension API.
+// Set the default appearance of a FreeText annotation using a registered font.
+//
+//   annot     - handle to an annotation.
+//   font_id   - font id returned by EPDFFont_RegisterFont() or
+//               EPDFFont_RegisterMemFont64().
+//   font_size - the font size to be set.
+//   R, G, B   - the color to be set.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
+                                             EPDF_FONT_ID font_id,
+                                             float font_size,
+                                             unsigned int R,
+                                             unsigned int G,
+                                             unsigned int B);
 
 // Experimental EmbedPDF Extension API.
 // Get the default appearance of a FreeText annotation.

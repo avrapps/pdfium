@@ -15,11 +15,13 @@
 
 #include "build/build_config.h"
 #include "constants/annotation_common.h"
+#include "core/fpdfapi/font/cpdf_tounicodemap.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
@@ -31,6 +33,7 @@
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
+#include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
@@ -38,9 +41,12 @@
 #include "testing/fx_string_testhelpers.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/utils/file_util.h"
 #include "testing/utils/hash.h"
+#include "testing/utils/path_service.h"
 
 using pdfium::kAnnotationStampWithApPng;
+using testing::HasSubstr;
 
 namespace {
 
@@ -64,12 +70,144 @@ std::wstring ExtractPageText(FPDF_PAGE page) {
   return GetPlatformWString(buffer.data());
 }
 
+std::vector<uint8_t> LoadNotoSansSCFontData() {
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "NotoSansCJK/NotoSansSC-Regular.subset.otf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find NotoSansSC subset font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+std::vector<uint8_t> LoadRobotoFontData() {
+  std::string font_path = PathService::GetThirdPartyFilePath(
+      "harfbuzz-ng/src/perf/fonts/Roboto-Regular.ttf");
+  if (font_path.empty()) {
+    ADD_FAILURE() << "Failed to find Roboto test font";
+    return {};
+  }
+  return GetFileContents(font_path.c_str());
+}
+
+std::wstring GetNormalAppearance(FPDF_ANNOTATION annot) {
+  unsigned long length_bytes =
+      FPDFAnnot_GetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, nullptr, 0);
+  if (length_bytes == 0) {
+    ADD_FAILURE() << "Missing normal appearance stream";
+    return L"";
+  }
+
+  std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length_bytes);
+  EXPECT_EQ(length_bytes,
+            FPDFAnnot_GetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                            buffer.data(), length_bytes));
+  return GetPlatformWString(buffer.data());
+}
+
 struct RedactionReport {
   std::vector<uint32_t> object_numbers;
   uint32_t written_count = 0;
   uint32_t total_count = 0;
   uint32_t nm_utf8_bytes_used = 0;
 };
+
+class ScopedRegisteredFonts {
+ public:
+  ScopedRegisteredFonts() { EPDFFont_ClearRegisteredFonts(); }
+  ~ScopedRegisteredFonts() { EPDFFont_ClearRegisteredFonts(); }
+};
+
+class MemoryFontFileAccess final : public FPDF_FILEACCESS {
+ public:
+  explicit MemoryFontFileAccess(std::vector<uint8_t> data)
+      : data_(std::move(data)) {
+    m_FileLen = static_cast<unsigned long>(data_.size());
+    m_GetBlock = &MemoryFontFileAccess::GetBlock;
+    m_Param = this;
+  }
+
+ private:
+  static int GetBlock(void* param,
+                      unsigned long pos,
+                      unsigned char* buf,
+                      unsigned long size) {
+    auto* file_access = static_cast<MemoryFontFileAccess*>(param);
+    if (!file_access || !buf || pos > file_access->data_.size() ||
+        size > file_access->data_.size() - pos) {
+      return 0;
+    }
+
+    std::copy_n(file_access->data_.data() + pos, size, buf);
+    return 1;
+  }
+
+  std::vector<uint8_t> data_;
+};
+
+ByteString RegisteredFontAlias(EPDF_FONT_ID font_id) {
+  return ByteString::Format("ERegF%u", font_id);
+}
+
+RetainPtr<const CPDF_Dictionary> GetAppearanceFontDict(
+    FPDF_ANNOTATION annot,
+    const ByteString& font_alias) {
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return nullptr;
+  }
+
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return nullptr;
+  }
+
+  RetainPtr<const CPDF_Dictionary> ap_dict =
+      annot_dict->GetDictFor(pdfium::annotation::kAP);
+  RetainPtr<const CPDF_Dictionary> stream_dict =
+      ap_dict ? ap_dict->GetDictFor("N") : nullptr;
+  RetainPtr<const CPDF_Dictionary> resources_dict =
+      stream_dict ? stream_dict->GetDictFor("Resources") : nullptr;
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      resources_dict ? resources_dict->GetDictFor("Font") : nullptr;
+  return font_dict ? font_dict->GetDictFor(font_alias.AsStringView()) : nullptr;
+}
+
+bool AppearanceFontHasEmbeddedSubset(const CPDF_Dictionary* font_dict) {
+  if (!font_dict || font_dict->GetNameFor("Subtype") != "Type0" ||
+      !font_dict->GetStreamFor("ToUnicode")) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Array> descendant_fonts =
+      font_dict->GetArrayFor("DescendantFonts");
+  if (!descendant_fonts || descendant_fonts->size() == 0) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> cid_font_dict =
+      descendant_fonts->GetDictAt(0);
+  RetainPtr<const CPDF_Dictionary> font_descriptor =
+      cid_font_dict ? cid_font_dict->GetDictFor("FontDescriptor") : nullptr;
+  if (!font_descriptor || !font_descriptor->GetStreamFor("FontFile2")) {
+    return false;
+  }
+
+  ByteString base_font = font_dict->GetNameFor("BaseFont");
+  return base_font.GetLength() > 7 && base_font[6] == '+' &&
+         base_font.Last(6) == "Roboto";
+}
+
+bool AppearanceFontMapsUnicode(const CPDF_Dictionary* font_dict, char value) {
+  RetainPtr<const CPDF_Stream> to_unicode =
+      font_dict ? font_dict->GetStreamFor("ToUnicode") : nullptr;
+  if (!to_unicode) {
+    return false;
+  }
+
+  CPDF_ToUnicodeMap to_unicode_map(std::move(to_unicode));
+  return to_unicode_map.ReverseLookup(value) != 0;
+}
 
 RedactionReport ApplyRedactionWithReport(FPDF_PAGE page,
                                          FPDF_ANNOTATION annot) {
@@ -504,6 +642,264 @@ TEST_F(FPDFAnnotEmbedderTest, ExplicitGenerateAppearanceAllowed) {
   EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
 
   EXPECT_GT(doc->GetLastObjNum(), before);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, FreeTextAppearanceUsesRegisteredMemoryFont) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  std::vector<uint8_t> font_data = LoadNotoSansSCFontData();
+  ASSERT_FALSE(font_data.empty());
+
+  EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("NotoSansSC", /*weight=*/400, /*italic=*/0,
+                                 font_data.data(), font_data.size());
+  ASSERT_NE(0u, font_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"这是第一句。");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                           18.0f, 0, 0, 0));
+
+  FPDF_STANDARD_FONT font = FPDF_FONT_COURIER;
+  float font_size = 0.0f;
+  unsigned int r = 0;
+  unsigned int g = 0;
+  unsigned int b = 0;
+  ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &font, &font_size, &r,
+                                             &g, &b));
+  EXPECT_EQ(FPDF_FONT_UNKNOWN, font);
+  EXPECT_FLOAT_EQ(18.0f, font_size);
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  EXPECT_THAT(GetNormalAppearance(annot.get()), HasSubstr(L"/ERegF"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, FreeTextAppearanceFallsBackToRegisteredFont) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  std::vector<uint8_t> font_data = LoadNotoSansSCFontData();
+  ASSERT_FALSE(font_data.empty());
+
+  EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("NotoSansSC", /*weight=*/400, /*italic=*/0,
+                                 font_data.data(), font_data.size());
+  ASSERT_NE(0u, font_id);
+  ASSERT_TRUE(EPDFFont_AddFallbackFont(font_id));
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"Hello 这是");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), FPDF_FONT_HELVETICA,
+                                             18.0f, 0, 0, 0));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  std::wstring appearance = GetNormalAppearance(annot.get());
+  EXPECT_THAT(appearance, HasSubstr(L"/Helv"));
+  EXPECT_THAT(appearance, HasSubstr(L"/ERegF"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontEmbedsSubsetInSavedPdf) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  std::vector<uint8_t> font_data = LoadRobotoFontData();
+  ASSERT_FALSE(font_data.empty());
+
+  EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400, /*italic=*/0,
+                                 font_data.data(), font_data.size());
+  ASSERT_NE(0u, font_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"ABC");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                           18.0f, 0, 0, 0));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(font_dict.Get()));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'B'));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'C'));
+
+  unsigned long saved_size = 0;
+  void* saved_buffer =
+      EPDF_SaveDocumentToOwnedBuffer(doc.get(), /*flags=*/0, &saved_size);
+  ASSERT_TRUE(saved_buffer);
+  std::string saved_pdf(static_cast<const char*>(saved_buffer), saved_size);
+  EPDF_FreeBuffer(saved_buffer);
+
+  EXPECT_LT(saved_pdf.size(), font_data.size() / 2);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, FreeTextRegistersFontFromFileAccess) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  std::vector<uint8_t> font_data = LoadRobotoFontData();
+  ASSERT_FALSE(font_data.empty());
+  const size_t original_font_size = font_data.size();
+  MemoryFontFileAccess font_access(std::move(font_data));
+
+  EPDF_FONT_ID font_id = EPDFFont_RegisterFont("Roboto", /*weight=*/400,
+                                               /*italic=*/0, &font_access);
+  ASSERT_NE(0u, font_id);
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ScopedFPDFWideString contents = GetFPDFWideString(L"ABC");
+  ASSERT_TRUE(
+      FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+  ASSERT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(annot.get(), font_id,
+                                                           18.0f, 0, 0, 0));
+
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+  ASSERT_TRUE(font_dict);
+  EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(font_dict.Get()));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'A'));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'B'));
+  EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), 'C'));
+
+  unsigned long saved_size = 0;
+  void* saved_buffer =
+      EPDF_SaveDocumentToOwnedBuffer(doc.get(), /*flags=*/0, &saved_size);
+  ASSERT_TRUE(saved_buffer);
+  std::string saved_pdf(static_cast<const char*>(saved_buffer), saved_size);
+  EPDF_FreeBuffer(saved_buffer);
+
+  EXPECT_LT(saved_pdf.size(), original_font_size / 2);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, FreeTextRegisteredFontSubsetsAreLayerLocal) {
+  ScopedRegisteredFonts scoped_fonts;
+
+  std::vector<uint8_t> font_data = LoadRobotoFontData();
+  ASSERT_FALSE(font_data.empty());
+
+  EPDF_FONT_ID font_id =
+      EPDFFont_RegisterMemFont64("Roboto", /*weight=*/400, /*italic=*/0,
+                                 font_data.data(), font_data.size());
+  ASSERT_NE(0u, font_id);
+
+  FileAccessForTesting base_access("rectangles.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  struct LayerSubsetResult {
+    std::string delta;
+    ByteString subset_base_font;
+  };
+
+  auto save_layer_with_text = [&](const wchar_t* text,
+                                  const std::vector<char>& expected_chars,
+                                  const std::vector<char>& unexpected_chars) {
+    EPDFLayerOpenStatus open_status = EPDFLayerOpenStatus_kOpenFailed;
+    ScopedFPDFDocument layer(
+        EPDFLayer_OpenLayer(base, nullptr, nullptr, &open_status));
+    EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, open_status);
+    EXPECT_TRUE(layer);
+
+    ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+    EXPECT_TRUE(page);
+    ScopedFPDFAnnotation annot(
+        EPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+    EXPECT_TRUE(annot);
+
+    const FS_RECTF rect{50.0f, 250.0f, 350.0f, 320.0f};
+    EXPECT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ScopedFPDFWideString contents = GetFPDFWideString(text);
+    EXPECT_TRUE(
+        FPDFAnnot_SetStringValue(annot.get(), "Contents", contents.get()));
+    EXPECT_TRUE(EPDFAnnot_SetDefaultAppearanceRegisteredFont(
+        annot.get(), font_id, 18.0f, 0, 0, 0));
+    EXPECT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+    RetainPtr<const CPDF_Dictionary> font_dict =
+        GetAppearanceFontDict(annot.get(), RegisteredFontAlias(font_id));
+    EXPECT_TRUE(font_dict);
+    EXPECT_TRUE(AppearanceFontHasEmbeddedSubset(font_dict.Get()));
+    for (char value : expected_chars) {
+      EXPECT_TRUE(AppearanceFontMapsUnicode(font_dict.Get(), value));
+    }
+    for (char value : unexpected_chars) {
+      EXPECT_FALSE(AppearanceFontMapsUnicode(font_dict.Get(), value));
+    }
+
+    ByteString subset_base_font =
+        font_dict ? font_dict->GetNameFor("BaseFont") : ByteString();
+
+    unsigned long delta_size = 0;
+    EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+    void* delta_buffer = EPDFLayer_SaveDeltaToOwnedBuffer(
+        layer.get(), &delta_size, &save_status);
+    EXPECT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+    EXPECT_TRUE(delta_buffer);
+    std::string delta(static_cast<const char*>(delta_buffer), delta_size);
+    EPDF_FreeBuffer(delta_buffer);
+    return LayerSubsetResult{std::move(delta), std::move(subset_base_font)};
+  };
+
+  LayerSubsetResult layer_a =
+      save_layer_with_text(L"ABC", {'A', 'B', 'C'}, {'D', 'E', 'F'});
+  LayerSubsetResult layer_b =
+      save_layer_with_text(L"DEF", {'D', 'E', 'F'}, {'A', 'B', 'C'});
+  EPDF_ReleaseBaseDocument(base);
+
+  EXPECT_FALSE(layer_a.delta.empty());
+  EXPECT_FALSE(layer_b.delta.empty());
+  EXPECT_LT(layer_a.delta.size(), font_data.size() / 2);
+  EXPECT_LT(layer_b.delta.size(), font_data.size() / 2);
+  EXPECT_NE(layer_a.subset_base_font, layer_b.subset_base_font);
+  EXPECT_NE(std::string::npos,
+            layer_a.delta.find(layer_a.subset_base_font.c_str()));
+  EXPECT_NE(std::string::npos,
+            layer_b.delta.find(layer_b.subset_base_font.c_str()));
+  EXPECT_EQ(std::string::npos,
+            layer_a.delta.find(layer_b.subset_base_font.c_str()));
+  EXPECT_EQ(std::string::npos,
+            layer_b.delta.find(layer_a.subset_base_font.c_str()));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, ExtractHighlightLongContent) {

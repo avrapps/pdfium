@@ -9,6 +9,7 @@
 
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
+#include "public/epdf_font.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_catalog.h"
@@ -106,6 +107,15 @@ int CheckPDFiumCApi() {
     CHK(FPDFPage_GetAnnotCount);
     CHK(FPDFPage_GetAnnotIndex);
     CHK(FPDFPage_RemoveAnnot);
+    CHK(EPDFAnnot_SetDefaultAppearanceRegisteredFont);
+
+    // epdf_font.h
+    CHK(EPDFFont_AddFallbackFont);
+    CHK(EPDFFont_ClearFallbackFonts);
+    CHK(EPDFFont_ClearRegisteredFonts);
+    CHK(EPDFFont_RegisterFont);
+    CHK(EPDFFont_RegisterMemFont);
+    CHK(EPDFFont_RegisterMemFont64);
 
     // fpdf_attachment.h
     CHK(FPDFAttachment_GetFile);

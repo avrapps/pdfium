@@ -33,6 +33,10 @@ source_set("fxge") {
     "cfx_font.h",
     "cfx_fontmapper.cpp",
     "cfx_fontmapper.h",
+    # EmbedPDF: runtime font registry shared by page fallback rendering and
+    # annotation authoring/subset embedding.
+    "cfx_fontregistry.cpp",
+    "cfx_fontregistry.h",
     "cfx_fontmgr.cpp",
     "cfx_fontmgr.h",
     "cfx_gemodule.cpp",

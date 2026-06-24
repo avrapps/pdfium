@@ -8,6 +8,8 @@ import("../testing/test.gni")
 source_set("fpdfsdk") {
   sources = [
     "epdf_base_document.cpp",
+    # EmbedPDF: implements EPDFFont_* runtime font registration APIs.
+    "epdf_font.cpp",
     "epdf_layer.cpp",
     "epdf_outline.cpp",
     "epdf_page_content_helpers.cpp",

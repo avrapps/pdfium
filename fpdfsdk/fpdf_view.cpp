@@ -56,6 +56,7 @@
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphcache.h"
 #include "core/fxge/cfx_renderdevice.h"
@@ -280,6 +281,9 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary() {
   CFX_GlyphCache::DestroyGlobals();
 #endif
 
+  // EmbedPDF: registered runtime fonts are global/TLS-backed PDFium state, so
+  // tear them down with the rest of the library singletons.
+  CFX_FontRegistry::DestroyGlobals();
   pdfium::DestroyPageModule();
   CFX_GEModule::Destroy();
   CFX_Timer::DestroyGlobals();

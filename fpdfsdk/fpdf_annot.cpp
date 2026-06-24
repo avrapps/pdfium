@@ -50,6 +50,7 @@
 #include "core/fxcrt/ptr_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_color.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
@@ -3642,6 +3643,46 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
   auto internal_font = static_cast<CPDF_Annot::StandardFont>(font);
   return CPDF_GenerateAP::UpdateDefaultAppearance(
       doc, annot_dict.Get(), internal_font, font_size, CFX_Color(R, G, B));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
+                                             EPDF_FONT_ID font_id,
+                                             float font_size,
+                                             unsigned int R,
+                                             unsigned int G,
+                                             unsigned int B) {
+  // EmbedPDF: annotation-specific bridge from public API to the registered font
+  // AP pipeline. Generic EPDFFont_* registration lives in epdf_font.cpp because
+  // the same registry is also used for page-rendering fallback.
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict) {
+    return false;
+  }
+
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
+      subtype != FPDF_ANNOT_REDACT) {
+    return false;
+  }
+
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return false;
+  }
+
+  if (!CFX_FontRegistry::IsValidFont(font_id) || font_size < 0 || R > 255 ||
+      G > 255 || B > 255) {
+    return false;
+  }
+
+  return CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
+      doc, annot_dict.Get(), font_id, font_size, CFX_Color(R, G, B));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

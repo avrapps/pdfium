@@ -34,6 +34,7 @@
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_annotfontmap.h"
 #include "core/fpdfdoc/cpdf_cloudy_border.h"
 #include "core/fpdfdoc/cpdf_color_utils.h"
 #include "core/fpdfdoc/cpdf_defaultappearance.h"
@@ -262,9 +263,12 @@ ByteString GetPDFWordString(IPVT_FontMap* font_map,
   }
 
   ByteString word_string;
-  uint32_t char_code = pdf_font->CharCodeFromUnicode(word);
-  if (char_code != CPDF_Font::kInvalidCharCode) {
-    pdf_font->AppendChar(&word_string, char_code);
+  // EmbedPDF: route unicode-to-charcode mapping through IPVT_FontMap so
+  // CPDF_AnnotFontMap can use registered fallback fonts and subset-local glyph
+  // ids when generating FreeText appearance streams.
+  int32_t char_code = font_map->CharCodeFromUnicode(font_index, word);
+  if (char_code >= 0) {
+    pdf_font->AppendChar(&word_string, static_cast<uint32_t>(char_code));
   }
   return word_string;
 }
@@ -1839,7 +1843,11 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
       actual_text_color = fpdfdoc::CFXColorFromArray(*tc);
     }
 
-    CPVT_FontMap map(doc, nullptr, std::move(default_font), font_name);
+    // EmbedPDF: use the annotation font map instead of CPVT_FontMap so
+    // FreeText AP generation can fall back to registered fonts and produce
+    // persistent, per-annotation subsets when saving.
+    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
+                          target->IsPersistent());
     CPVT_VariableText::Provider provider(&map);
     CPVT_VariableText vt(&provider);
 
@@ -1882,8 +1890,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
 
     // Finalize AP dict.
     auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-    auto resource_font_dict =
-        GenerateResourceFontDict(doc, font_name, font_dict.Get());
+    // EmbedPDF: collect both the original DA font and any registered fallback
+    // fonts actually used by this annotation into the AP resource dictionary.
+    auto resource_font_dict = map.CreateFontResourceDict();
     auto resource_dict = GenerateResourcesDict(
         doc, std::move(graphics_state_dict), std::move(resource_font_dict));
     GenerateAndSetAPDict(target, annot_dict, &appearance_stream,
@@ -1916,7 +1925,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
       appearance_stream << "q\n" << border_stream << "Q\n";
     }
 
-    CPVT_FontMap map(doc, nullptr, std::move(default_font), font_name);
+    // EmbedPDF: same registered-font/subset path as the callout branch above.
+    CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
+                          target->IsPersistent());
     CPVT_VariableText::Provider provider(&map);
     CPVT_VariableText vt(&provider);
 
@@ -1961,8 +1972,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     }
 
     auto graphics_state_dict = GenerateExtGStateDict(*annot_dict, blend_name);
-    auto resource_font_dict =
-        GenerateResourceFontDict(doc, font_name, font_dict.Get());
+    // EmbedPDF: include registered fallback subset fonts used by this FreeText
+    // appearance, scoped to this annotation/layer.
+    auto resource_font_dict = map.CreateFontResourceDict();
     auto resource_dict = GenerateResourcesDict(
         doc, std::move(graphics_state_dict), std::move(resource_font_dict));
     if (rot_info.is_rotated) {
@@ -3591,6 +3603,35 @@ bool CPDF_GenerateAP::UpdateDefaultAppearance(CPDF_Document* doc,
   ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
   // EmbedPDF: Strip trailing newlines and write color before font.
   // See comment in GenerateDefaultAppearanceWithColor for rationale.
+  da_color_part.TrimBack('\n');
+  da_font_part.TrimBack('\n');
+
+  annot_dict->SetNewFor<CPDF_String>("DA", da_color_part + " " + da_font_part);
+  return true;
+}
+
+bool CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
+    CPDF_Document* doc,
+    CPDF_Dictionary* annot_dict,
+    CFX_FontRegistry::FontId font_id,
+    float font_size,
+    const CFX_Color& color) {
+  // EmbedPDF: allow FreeText DA to reference a registered runtime font. The DA
+  // stores a lightweight marker resource; actual subset embedding happens when
+  // AP generation knows the characters used by this annotation/layer.
+  if (!doc || !annot_dict || !CFX_FontRegistry::IsValidFont(font_id)) {
+    return false;
+  }
+
+  ByteString resource_key;
+  if (!CPDF_AnnotFontMap::EnsureRegisteredFontMarkerInDocument(doc, font_id,
+                                                               &resource_key) ||
+      resource_key.IsEmpty()) {
+    return false;
+  }
+
+  ByteString da_font_part = StringFromFontNameAndSize(resource_key, font_size);
+  ByteString da_color_part = GenerateColorAP(color, PaintOperation::kFill);
   da_color_part.TrimBack('\n');
   da_font_part.TrimBack('\n');
 
