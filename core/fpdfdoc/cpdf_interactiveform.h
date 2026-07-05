@@ -82,17 +82,30 @@ class CPDF_InteractiveForm {
   bool CheckRequiredFields(const std::vector<CPDF_FormField*>* fields,
                            bool bIncludeOrExclude) const;
 
-  std::unique_ptr<CFDF_Document> ExportToFDF(const WideString& pdf_path) const;
+  // EmbedPDF: |skip_empty_required| preserves the historic submission
+  // behavior of omitting required fields whose value is empty; pass false
+  // for faithful interchange exports.
+  std::unique_ptr<CFDF_Document> ExportToFDF(
+      const WideString& pdf_path,
+      bool skip_empty_required = true) const;
   std::unique_ptr<CFDF_Document> ExportToFDF(
       const WideString& pdf_path,
       const std::vector<CPDF_FormField*>& fields,
-      bool bIncludeOrExclude) const;
+      bool bIncludeOrExclude,
+      bool skip_empty_required = true) const;
 
   void ResetForm();
   void ResetForm(pdfium::span<CPDF_FormField*> fields, bool bIncludeOrExclude);
 
   void SetNotifierIface(NotifierIface* notify);
   void FixPageFields(CPDF_Page* page);
+
+  // EmbedPDF: Load a widget annotation that is reachable from a page's
+  // /Annots array but not from the /AcroForm /Fields tree. Climbs the
+  // /Parent chain to the field root first, so sibling widgets of a
+  // partially linked field reconcile onto a single logical field.
+  // In-memory reconciliation only; never writes to the document.
+  void ReconcileWidget(RetainPtr<const CPDF_Dictionary> widget_dict);
 
   // Wrap callbacks thru NotifierIface.
   bool NotifyBeforeValueChange(CPDF_FormField* field, const WideString& value);
@@ -108,6 +121,13 @@ class CPDF_InteractiveForm {
   CPDF_Document* document() { return document_; }
 
  private:
+  // EmbedPDF: Rebind an indirect dictionary to the document's current view
+  // of that object number. On layer documents this returns the promoted
+  // clone when one exists; references held by frozen base objects resolve
+  // to stale frozen instances otherwise. Identity on plain documents.
+  RetainPtr<const CPDF_Dictionary> ResolveCurrentDict(
+      RetainPtr<const CPDF_Dictionary> dict) const;
+
   void LoadField(RetainPtr<const CPDF_Dictionary> field_dict, int nLevel);
   void AddTerminalField(RetainPtr<const CPDF_Dictionary> field_dict);
   CPDF_FormControl* AddControl(CPDF_FormField* field,

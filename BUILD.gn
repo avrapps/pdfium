@@ -198,6 +198,11 @@ source_set("pdfium_public_headers_impl") {
   sources = [
     "public/cpp/fpdf_deleters.h",
     "public/cpp/fpdf_scopers.h",
+    # EmbedPDF: public runtime font registration API used by page fallback
+    # rendering and annotation authoring.
+    "public/epdf_font.h",
+    # EmbedPDF: session-free AcroForm model, write transactions, FDF/XFDF.
+    "public/epdf_form.h",
     "public/epdf_redact.h",
     "public/fpdf_annot.h",
     "public/fpdf_attachment.h",

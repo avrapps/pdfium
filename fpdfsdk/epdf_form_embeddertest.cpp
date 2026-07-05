@@ -1,0 +1,1204 @@
+// Copyright 2026 The PDFium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "public/epdf_form.h"
+
+#include <string>
+#include <vector>
+
+#include "public/fpdf_annot.h"
+#include "public/fpdf_save.h"
+#include "public/fpdfview.h"
+#include "testing/test_loader.h"
+#include "testing/embedder_test.h"
+#include "testing/fx_string_testhelpers.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "testing/utils/file_util.h"
+#include "testing/utils/path_service.h"
+
+namespace {
+
+using WideStringGetter = unsigned long (*)(EPDF_FORM_MODEL,
+                                           int,
+                                           FPDF_WCHAR*,
+                                           unsigned long);
+
+std::wstring GetWideString(WideStringGetter getter,
+                           EPDF_FORM_MODEL model,
+                           int field_index) {
+  unsigned long length_bytes = getter(model, field_index, nullptr, 0);
+  if (length_bytes == 0) {
+    return std::wstring();
+  }
+  std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length_bytes);
+  EXPECT_EQ(length_bytes,
+            getter(model, field_index, buffer.data(), length_bytes));
+  return GetPlatformWString(buffer.data());
+}
+
+std::wstring GetWidgetExportValue(EPDF_FORM_MODEL model,
+                                  int field_index,
+                                  int widget_index) {
+  unsigned long length_bytes = EPDFForm_GetFieldWidgetExportValue(
+      model, field_index, widget_index, nullptr, 0);
+  if (length_bytes == 0) {
+    return std::wstring();
+  }
+  std::vector<FPDF_WCHAR> buffer = GetFPDFWideStringBuffer(length_bytes);
+  EXPECT_EQ(length_bytes,
+            EPDFForm_GetFieldWidgetExportValue(model, field_index, widget_index,
+                                               buffer.data(), length_bytes));
+  return GetPlatformWString(buffer.data());
+}
+
+std::string GetWidgetOnState(EPDF_FORM_MODEL model,
+                             int field_index,
+                             int widget_index) {
+  unsigned long length_bytes = EPDFForm_GetFieldWidgetOnState(
+      model, field_index, widget_index, nullptr, 0);
+  if (length_bytes == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length_bytes);
+  EXPECT_EQ(length_bytes,
+            EPDFForm_GetFieldWidgetOnState(model, field_index, widget_index,
+                                           buffer.data(), length_bytes));
+  // |length_bytes| includes the trailing NUL.
+  return std::string(buffer.data());
+}
+
+int FieldIndexByName(EPDF_FORM_MODEL model, const wchar_t* name) {
+  for (int i = 0; i < EPDFForm_CountFields(model); ++i) {
+    if (GetWideString(EPDFForm_GetFieldName, model, i) == name) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+class EPDFFormEmbedderTest : public EmbedderTest {
+ protected:
+  // A base document plus a fresh empty layer over it, for delta assertions.
+  struct LayerDoc {
+    std::vector<uint8_t> bytes;
+    EPDF_BASE_DOCUMENT base = nullptr;
+    FPDF_DOCUMENT layer = nullptr;
+
+    ~LayerDoc() {
+      if (layer) {
+        FPDF_CloseDocument(layer);
+      }
+      if (base) {
+        EPDF_ReleaseBaseDocument(base);
+      }
+    }
+  };
+
+  bool OpenLayer(const char* file_name, LayerDoc* out) {
+    std::string file_path = PathService::GetTestFilePath(file_name);
+    if (file_path.empty()) {
+      return false;
+    }
+    out->bytes = GetFileContents(file_path.c_str());
+    if (out->bytes.empty()) {
+      return false;
+    }
+    out->base = EPDF_LoadMemBaseDocument(
+        out->bytes.data(), static_cast<int>(out->bytes.size()), nullptr);
+    if (!out->base) {
+      return false;
+    }
+    EPDFLayerOpenStatus status;
+    out->layer = EPDFLayer_OpenLayer(out->base, nullptr, nullptr, &status);
+    return out->layer && status == EPDFLayerOpenStatus_kSuccess;
+  }
+};
+
+}  // namespace
+
+TEST_F(EPDFFormEmbedderTest, NoFormYieldsEmptyModel) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_NONE, EPDFForm_GetFormKind(model));
+  EXPECT_FALSE(EPDFForm_GetNeedAppearances(model));
+  EXPECT_EQ(0, EPDFForm_CountFields(model));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, TextFormModel) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_ACROFORM, EPDFForm_GetFormKind(model));
+  ASSERT_EQ(1, EPDFForm_CountFields(model));
+
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_TEXT, EPDFForm_GetFieldFamily(model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM, EPDFForm_GetFieldOrigin(model, 0));
+  EXPECT_EQ(L"Text Box", GetWideString(EPDFForm_GetFieldName, model, 0));
+  EXPECT_EQ(4u, EPDFForm_GetFieldObjNum(model, 0));
+
+  // Merged field/widget dictionary: one widget sharing the field's object
+  // number, placed on the page (object 3).
+  ASSERT_EQ(1, EPDFForm_CountFieldWidgets(model, 0));
+  EXPECT_EQ(4u, EPDFForm_GetFieldWidgetObjNum(model, 0, 0));
+  EXPECT_EQ(3u, EPDFForm_GetFieldWidgetPageObjNum(model, 0, 0));
+  EXPECT_EQ(0, EPDFForm_GetFieldIndexForWidget(model, 4u));
+  EXPECT_EQ(0, EPDFForm_GetFieldIndexByObjNum(model, 4u));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, ClickFormModel) {
+  ASSERT_TRUE(OpenDocument("click_form.pdf"));
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_ACROFORM, EPDFForm_GetFormKind(model));
+  ASSERT_EQ(4, EPDFForm_CountFields(model));
+
+  // Field 0: merged read-only checkbox, checked via /AS /Yes.
+  EXPECT_EQ(L"readOnlyCheckbox", GetWideString(EPDFForm_GetFieldName, model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_CHECKBOX, EPDFForm_GetFieldFamily(model, 0));
+  EXPECT_TRUE(EPDFForm_GetFieldFlags(model, 0) & 1);  // ReadOnly.
+  EXPECT_EQ(L"Yes", GetWideString(EPDFForm_GetFieldValue, model, 0));
+  ASSERT_EQ(1, EPDFForm_CountFieldWidgets(model, 0));
+  EXPECT_EQ("Yes", GetWidgetOnState(model, 0, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, 0, 0));
+
+  // Field 1: merged checkbox, unchecked.
+  EXPECT_EQ(L"checkbox", GetWideString(EPDFForm_GetFieldName, model, 1));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_CHECKBOX, EPDFForm_GetFieldFamily(model, 1));
+  EXPECT_EQ(L"Off", GetWideString(EPDFForm_GetFieldValue, model, 1));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, 1, 0));
+
+  // Field 2: read-only radio group with three separate widget kids.
+  EXPECT_EQ(L"readOnlyRadioButton",
+            GetWideString(EPDFForm_GetFieldName, model, 2));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_RADIO, EPDFForm_GetFieldFamily(model, 2));
+  ASSERT_EQ(3, EPDFForm_CountFieldWidgets(model, 2));
+  EXPECT_EQ("value1", GetWidgetOnState(model, 2, 0));
+  EXPECT_EQ("value2", GetWidgetOnState(model, 2, 1));
+  EXPECT_EQ("value3", GetWidgetOnState(model, 2, 2));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, 2, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, 2, 2));
+  EXPECT_EQ(L"value3", GetWideString(EPDFForm_GetFieldValue, model, 2));
+  EXPECT_EQ(L"value3", GetWidgetExportValue(model, 2, 2));
+
+  // Field 3: radio group; widgets 13/14/15 all map back to it.
+  EXPECT_EQ(L"radioButton", GetWideString(EPDFForm_GetFieldName, model, 3));
+  ASSERT_EQ(3, EPDFForm_CountFieldWidgets(model, 3));
+  EXPECT_EQ(3, EPDFForm_GetFieldIndexForWidget(model, 13u));
+  EXPECT_EQ(3, EPDFForm_GetFieldIndexForWidget(model, 14u));
+  EXPECT_EQ(3, EPDFForm_GetFieldIndexForWidget(model, 15u));
+  EXPECT_EQ(-1, EPDFForm_GetFieldIndexForWidget(model, 9999u));
+
+  // Everything in this document is properly linked into /AcroForm /Fields.
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM,
+              EPDFForm_GetFieldOrigin(model, i));
+  }
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, OrphanWidgetsRecovered) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_ACROFORM, EPDFForm_GetFormKind(model));
+
+  // /AcroForm /Fields only lists the text field; the checkbox and the whole
+  // radio group are reachable through page /Annots alone. Without the sweep
+  // this model would contain one field instead of three.
+  ASSERT_EQ(3, EPDFForm_CountFields(model));
+
+  EXPECT_EQ(L"linked_text", GetWideString(EPDFForm_GetFieldName, model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_TEXT, EPDFForm_GetFieldFamily(model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM, EPDFForm_GetFieldOrigin(model, 0));
+  EXPECT_EQ(L"hello", GetWideString(EPDFForm_GetFieldValue, model, 0));
+
+  EXPECT_EQ(L"orphan_check", GetWideString(EPDFForm_GetFieldName, model, 1));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_CHECKBOX, EPDFForm_GetFieldFamily(model, 1));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_RECOVERED,
+            EPDFForm_GetFieldOrigin(model, 1));
+  EXPECT_EQ(5u, EPDFForm_GetFieldObjNum(model, 1));
+  ASSERT_EQ(1, EPDFForm_CountFieldWidgets(model, 1));
+  EXPECT_EQ("Yes", GetWidgetOnState(model, 1, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, 1, 0));
+  EXPECT_EQ(L"Yes", GetWideString(EPDFForm_GetFieldValue, model, 1));
+
+  // The radio group's parent field dictionary is not referenced anywhere in
+  // /AcroForm /Fields. The sweep climbs /Parent from the first widget it
+  // sees, so BOTH widgets must land on ONE logical field.
+  EXPECT_EQ(L"orphan_radio", GetWideString(EPDFForm_GetFieldName, model, 2));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_RADIO, EPDFForm_GetFieldFamily(model, 2));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_RECOVERED,
+            EPDFForm_GetFieldOrigin(model, 2));
+  EXPECT_EQ(6u, EPDFForm_GetFieldObjNum(model, 2));
+  EXPECT_TRUE(EPDFForm_GetFieldFlags(model, 2) & 0x8000);  // Radio.
+  ASSERT_EQ(2, EPDFForm_CountFieldWidgets(model, 2));
+  EXPECT_EQ(8u, EPDFForm_GetFieldWidgetObjNum(model, 2, 0));
+  EXPECT_EQ(9u, EPDFForm_GetFieldWidgetObjNum(model, 2, 1));
+  EXPECT_EQ(3u, EPDFForm_GetFieldWidgetPageObjNum(model, 2, 0));
+  EXPECT_EQ("a", GetWidgetOnState(model, 2, 0));
+  EXPECT_EQ("b", GetWidgetOnState(model, 2, 1));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, 2, 0));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, 2, 1));
+  EXPECT_EQ(L"a", GetWideString(EPDFForm_GetFieldValue, model, 2));
+
+  EXPECT_EQ(2, EPDFForm_GetFieldIndexForWidget(model, 8u));
+  EXPECT_EQ(2, EPDFForm_GetFieldIndexForWidget(model, 9u));
+  EXPECT_EQ(2, EPDFForm_GetFieldIndexByObjNum(model, 6u));
+  EPDFForm_CloseModel(model);
+}
+
+// Building a form model must be a pure read: over a layer document it must
+// not promote a single object into the layer, even while it reconciles
+// orphan widgets in memory.
+TEST_F(EPDFFormEmbedderTest, LayerModelLoadIsPure) {
+  std::string file_path = PathService::GetTestFilePath("orphan_widgets.pdf");
+  ASSERT_FALSE(file_path.empty());
+  std::vector<uint8_t> contents = GetFileContents(file_path.c_str());
+  ASSERT_FALSE(contents.empty());
+
+  EPDF_BASE_DOCUMENT base = EPDF_LoadMemBaseDocument(
+      contents.data(), static_cast<int>(contents.size()), nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status;
+  FPDF_DOCUMENT layer = EPDFLayer_OpenLayer(base, nullptr, nullptr, &status);
+  ASSERT_TRUE(layer);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(layer);
+  ASSERT_TRUE(model);
+  EXPECT_EQ(3, EPDFForm_CountFields(model));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_RECOVERED, EPDFForm_GetFieldOrigin(model, 2));
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(layer));
+  EPDFForm_CloseModel(model);
+
+  FPDF_CloseDocument(layer);
+  EPDF_ReleaseBaseDocument(base);
+}
+
+// The radio walkthrough: flipping the group promotes exactly the field plus
+// the two widgets whose /AS changed - the minimal FDF-shaped delta.
+TEST_F(EPDFFormEmbedderTest, SetToggleRadioOnLayer) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &doc));
+
+  uint32_t changed[4] = {};
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetToggle(doc.layer, 6u, "b", changed, 4,
+                                 &changed_count));
+  EXPECT_EQ(2ul, changed_count);
+  EXPECT_EQ(8u, changed[0]);  // /AS a -> Off
+  EXPECT_EQ(9u, changed[1]);  // /AS Off -> b
+  EXPECT_EQ(3ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 6u));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 8u));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 9u));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(doc.layer);
+  ASSERT_TRUE(model);
+  const int field = EPDFForm_GetFieldIndexByObjNum(model, 6u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"b", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, field, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 1));
+  EPDFForm_CloseModel(model);
+
+  // Idempotence: re-setting the same state changes nothing and promotes
+  // nothing further.
+  ASSERT_TRUE(EPDFForm_SetToggle(doc.layer, 6u, "b", nullptr, 0,
+                                 &changed_count));
+  EXPECT_EQ(0ul, changed_count);
+  EXPECT_EQ(3ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+}
+
+// A failed transaction must be side-effect free: zero objects promoted.
+TEST_F(EPDFFormEmbedderTest, SetToggleFailuresAreSideEffectFree) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &doc));
+
+  // Unknown on-state.
+  EXPECT_FALSE(EPDFForm_SetToggle(doc.layer, 6u, "zz", nullptr, 0, nullptr));
+  // Not a toggle field (the text field).
+  EXPECT_FALSE(EPDFForm_SetToggle(doc.layer, 4u, "Yes", nullptr, 0, nullptr));
+  // Unknown field object number.
+  EXPECT_FALSE(EPDFForm_SetToggle(doc.layer, 9999u, "a", nullptr, 0, nullptr));
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+}
+
+TEST_F(EPDFFormEmbedderTest, SetToggleClearRadioGroup) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+  // orphan_radio has no NoToggleToOff flag, so clearing is legal.
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 6u, nullptr, nullptr, 0,
+                                 &changed_count));
+  EXPECT_EQ(1ul, changed_count);  // Only widget 8 was checked.
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int field = EPDFForm_GetFieldIndexByObjNum(model, 6u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"Off", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, field, 0));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, field, 1));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, ToggleSemantics) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+
+  // NoToggleToOff: clearing the group is rejected; switching is fine.
+  EXPECT_FALSE(EPDFForm_SetToggle(document(), 5u, nullptr, nullptr, 0,
+                                  nullptr));
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 5u, "y", nullptr, 0, nullptr));
+
+  // Radios in unison: both /u1 widgets check together.
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 8u, "u1", nullptr, 0,
+                                 &changed_count));
+  EXPECT_EQ(2ul, changed_count);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int field = EPDFForm_GetFieldIndexByObjNum(model, 5u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"y", GetWideString(EPDFForm_GetFieldValue, model, field));
+
+  field = EPDFForm_GetFieldIndexByObjNum(model, 8u);
+  ASSERT_GE(field, 0);
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 1));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, field, 2));
+  EXPECT_EQ(L"u1", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EPDFForm_CloseModel(model);
+
+  // Switching to /u2 unchecks both unison widgets: three /AS flips.
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 8u, "u2", nullptr, 0,
+                                 &changed_count));
+  EXPECT_EQ(3ul, changed_count);
+
+  // Checkbox with /Opt: /V becomes the control index name, and the field
+  // value reads back as the /Opt export value (Acrobat convention).
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 12u, "On", nullptr, 0, nullptr));
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  field = EPDFForm_GetFieldIndexByObjNum(model, 12u);
+  ASSERT_GE(field, 0);
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 0));
+  EXPECT_EQ(L"Alpha", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, SetTextValue) {
+  ASSERT_TRUE(OpenDocument("text_form.pdf"));
+
+  ScopedFPDFWideString text = GetFPDFWideString(L"Hello EmbedPDF");
+  uint32_t changed[2] = {};
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetTextValue(document(), 4u, text.get(), changed, 2,
+                                    &changed_count));
+  EXPECT_EQ(1ul, changed_count);
+  EXPECT_EQ(4u, changed[0]);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(L"Hello EmbedPDF",
+            GetWideString(EPDFForm_GetFieldValue, model, 0));
+  EPDFForm_CloseModel(model);
+
+  // The widget's normal appearance stream was regenerated.
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page, 0));
+    ASSERT_TRUE(annot);
+    EXPECT_GT(FPDFAnnot_GetAP(annot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                              nullptr, 0),
+              2u);
+  }
+  UnloadPage(page);
+
+  // Idempotence: same value again reports zero changes.
+  ASSERT_TRUE(EPDFForm_SetTextValue(document(), 4u, text.get(), nullptr, 0,
+                                    &changed_count));
+  EXPECT_EQ(0ul, changed_count);
+}
+
+TEST_F(EPDFFormEmbedderTest, SetTextValueMaxLenAndLayerDelta) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("toggle_fields.pdf", &doc));
+
+  // Six characters against /MaxLen 5: rejected, side-effect free.
+  ScopedFPDFWideString too_long = GetFPDFWideString(L"abcdef");
+  EXPECT_FALSE(EPDFForm_SetTextValue(doc.layer, 4u, too_long.get(), nullptr,
+                                     0, nullptr));
+  EXPECT_EQ(0ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+
+  ScopedFPDFWideString fits = GetFPDFWideString(L"abcde");
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetTextValue(doc.layer, 4u, fits.get(), nullptr, 0,
+                                    &changed_count));
+  EXPECT_EQ(1ul, changed_count);
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 4u));
+  // Merged field/widget plus the regenerated appearance machinery; the
+  // delta must stay small.
+  EXPECT_LE(EPDFLayer_GetPromotedObjectCount(doc.layer), 4ul);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(doc.layer);
+  ASSERT_TRUE(model);
+  const int field = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"abcde", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, SetChoiceValuesCombo) {
+  ASSERT_TRUE(OpenDocument("combobox_form.pdf"));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int combo1 = FieldIndexByName(model, L"Combo1");
+  const int editable = FieldIndexByName(model, L"Combo_Editable");
+  ASSERT_GE(combo1, 0);
+  ASSERT_GE(editable, 0);
+  const uint32_t combo1_objnum = EPDFForm_GetFieldObjNum(model, combo1);
+  const uint32_t editable_objnum = EPDFForm_GetFieldObjNum(model, editable);
+  EPDFForm_CloseModel(model);
+
+  // Non-edit combo: option values only.
+  ScopedFPDFWideString cherry = GetFPDFWideString(L"Cherry");
+  FPDF_WIDESTRING one_value[] = {cherry.get()};
+  ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), combo1_objnum, one_value,
+                                       1, nullptr, 0, nullptr));
+  ScopedFPDFWideString bogus = GetFPDFWideString(L"NotAnOption");
+  FPDF_WIDESTRING bogus_value[] = {bogus.get()};
+  EXPECT_FALSE(EPDFForm_SetChoiceValues(document(), combo1_objnum, bogus_value,
+                                        1, nullptr, 0, nullptr));
+
+  // Edit combo: free text is accepted and clears /I; an option export value
+  // selects that option.
+  ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), editable_objnum,
+                                       bogus_value, 1, nullptr, 0, nullptr));
+  ScopedFPDFWideString bar = GetFPDFWideString(L"bar");
+  FPDF_WIDESTRING bar_value[] = {bar.get()};
+  ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), editable_objnum, bar_value,
+                                       1, nullptr, 0, nullptr));
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(L"Cherry", GetWideString(EPDFForm_GetFieldValue, model, combo1));
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, combo1, 2));
+  EXPECT_EQ(L"bar", GetWideString(EPDFForm_GetFieldValue, model, editable));
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, editable, 1));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, SetChoiceValuesListbox) {
+  ASSERT_TRUE(OpenDocument("listbox_form.pdf"));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int multi = FieldIndexByName(model, L"Listbox_MultiSelect");
+  const int single = FieldIndexByName(model, L"Listbox_SingleSelect");
+  ASSERT_GE(multi, 0);
+  ASSERT_GE(single, 0);
+  const uint32_t multi_objnum = EPDFForm_GetFieldObjNum(model, multi);
+  const uint32_t single_objnum = EPDFForm_GetFieldObjNum(model, single);
+  EPDFForm_CloseModel(model);
+
+  // Multi-select accepts several values regardless of input order.
+  ScopedFPDFWideString cherry = GetFPDFWideString(L"Cherry");
+  ScopedFPDFWideString apple = GetFPDFWideString(L"Apple");
+  FPDF_WIDESTRING two_values[] = {cherry.get(), apple.get()};
+  ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), multi_objnum, two_values,
+                                       2, nullptr, 0, nullptr));
+  // Single-select rejects multiple values.
+  EXPECT_FALSE(EPDFForm_SetChoiceValues(document(), single_objnum, two_values,
+                                        2, nullptr, 0, nullptr));
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, multi, 0));   // Apple
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, multi, 1));  // Banana
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, multi, 2));   // Cherry
+  EPDFForm_CloseModel(model);
+
+  // Clearing the selection.
+  ASSERT_TRUE(EPDFForm_SetChoiceValues(document(), multi_objnum, nullptr, 0,
+                                       nullptr, 0, nullptr));
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, multi, 0));
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, multi, 2));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, ResetField) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+
+  // Toggle reset restores the /DV state.
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), 5u, "y", nullptr, 0, nullptr));
+  ASSERT_TRUE(EPDFForm_ResetField(document(), 5u, nullptr, 0, nullptr));
+
+  // Text reset with no /DV removes the value.
+  ScopedFPDFWideString text = GetFPDFWideString(L"xyz");
+  ASSERT_TRUE(EPDFForm_SetTextValue(document(), 4u, text.get(), nullptr, 0,
+                                    nullptr));
+  ASSERT_TRUE(EPDFForm_ResetField(document(), 4u, nullptr, 0, nullptr));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int field = EPDFForm_GetFieldIndexByObjNum(model, 5u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"x", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 0));
+  EXPECT_FALSE(EPDFForm_IsFieldWidgetChecked(model, field, 1));
+
+  field = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EPDFForm_CloseModel(model);
+}
+
+namespace {
+
+std::string ExportFdf(FPDF_DOCUMENT doc) {
+  unsigned long length = EPDFForm_ExportFDF(doc, nullptr, 0, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length);
+  EXPECT_EQ(length,
+            EPDFForm_ExportFDF(doc, nullptr, 0, buffer.data(), length));
+  return std::string(buffer.data(), length);
+}
+
+std::string ExportXfdf(FPDF_DOCUMENT doc) {
+  unsigned long length = EPDFForm_ExportXFDF(doc, nullptr, 0, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length);
+  EXPECT_EQ(length,
+            EPDFForm_ExportXFDF(doc, nullptr, 0, buffer.data(), length));
+  return std::string(buffer.data(), length);
+}
+
+}  // namespace
+
+TEST_F(EPDFFormEmbedderTest, ExportFDF) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  const std::string fdf = ExportFdf(document());
+  ASSERT_FALSE(fdf.empty());
+  EXPECT_NE(std::string::npos, fdf.find("%FDF-1.2"));
+  EXPECT_NE(std::string::npos, fdf.find("(maxlen_text)"));
+  EXPECT_NE(std::string::npos, fdf.find("(abc)"));
+  EXPECT_NE(std::string::npos, fdf.find("(ntto_radio)"));
+  // Hierarchical fields export with their fully qualified name.
+  EXPECT_NE(std::string::npos, fdf.find("(billing.name)"));
+}
+
+TEST_F(EPDFFormEmbedderTest, ExportFDFIncludesRecoveredFields) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+  const std::string fdf = ExportFdf(document());
+  ASSERT_FALSE(fdf.empty());
+  // Only linked_text is reachable through /AcroForm /Fields; the exporter
+  // must see the reconciled view.
+  EXPECT_NE(std::string::npos, fdf.find("(linked_text)"));
+  EXPECT_NE(std::string::npos, fdf.find("(orphan_check)"));
+  EXPECT_NE(std::string::npos, fdf.find("(orphan_radio)"));
+}
+
+TEST_F(EPDFFormEmbedderTest, ImportFDF) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+  static const char kFdf[] =
+      "%FDF-1.2\r\n"
+      "1 0 obj\r\n"
+      "<< /FDF << /Fields [\r\n"
+      "<< /T (linked_text) /V (imported) >>\r\n"
+      "<< /T (orphan_radio) /V (b) >>\r\n"
+      "<< /T (no_such_field) /V (x) >>\r\n"
+      "] >> >>\r\n"
+      "endobj\r\n"
+      "trailer\r\n"
+      "<< /Root 1 0 R >>\r\n"
+      "%%EOF\r\n";
+
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(EPDFForm_ImportFDF(document(), kFdf, sizeof(kFdf) - 1, &result));
+  EXPECT_EQ(3u, result.fields_total);
+  EXPECT_EQ(2u, result.fields_applied);
+  EXPECT_EQ(1u, result.fields_skipped);
+  EXPECT_EQ(3u, result.widgets_changed);  // text widget + both radio kids
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int field = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  EXPECT_EQ(L"imported", GetWideString(EPDFForm_GetFieldValue, model, field));
+  field = EPDFForm_GetFieldIndexByObjNum(model, 6u);
+  EXPECT_EQ(L"b", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, field, 1));
+  EPDFForm_CloseModel(model);
+
+  // Garbage payloads are rejected.
+  EXPECT_FALSE(EPDFForm_ImportFDF(document(), "not fdf", 7, &result));
+}
+
+// Fill a layer, export its FDF, and replay it onto a second fresh layer of
+// the same base: values must survive and only touched objects promote.
+TEST_F(EPDFFormEmbedderTest, FdfRoundTripAcrossLayers) {
+  LayerDoc first;
+  ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &first));
+  ScopedFPDFWideString bob = GetFPDFWideString(L"Bob");
+  ASSERT_TRUE(EPDFForm_SetTextValue(first.layer, 4u, bob.get(), nullptr, 0,
+                                    nullptr));
+  ASSERT_TRUE(EPDFForm_SetToggle(first.layer, 6u, "b", nullptr, 0, nullptr));
+
+  unsigned long length =
+      EPDFForm_ExportFDF(first.layer, nullptr, 0, nullptr, 0);
+  ASSERT_GT(length, 0u);
+  std::vector<char> fdf(length);
+  ASSERT_EQ(length,
+            EPDFForm_ExportFDF(first.layer, nullptr, 0, fdf.data(), length));
+
+  LayerDoc second;
+  ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &second));
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(
+      EPDFForm_ImportFDF(second.layer, fdf.data(), length, &result));
+  EXPECT_EQ(3u, result.fields_total);  // linked_text, orphan_check, orphan_radio
+  EXPECT_EQ(3u, result.fields_applied);
+  EXPECT_EQ(0u, result.fields_skipped);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(second.layer);
+  ASSERT_TRUE(model);
+  int field = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  EXPECT_EQ(L"Bob", GetWideString(EPDFForm_GetFieldValue, model, field));
+  field = EPDFForm_GetFieldIndexByObjNum(model, 6u);
+  EXPECT_EQ(L"b", GetWideString(EPDFForm_GetFieldValue, model, field));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, ExportXFDF) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  const std::string xfdf = ExportXfdf(document());
+  ASSERT_FALSE(xfdf.empty());
+  EXPECT_NE(std::string::npos, xfdf.find("<?xml version=\"1.0\""));
+  // Attributes serialize in map order (xml:space before xmlns); assert them
+  // individually rather than positionally.
+  EXPECT_NE(std::string::npos, xfdf.find("<xfdf "));
+  EXPECT_NE(std::string::npos, xfdf.find("xmlns=\"http://ns.adobe.com/xfdf/\""));
+  EXPECT_NE(std::string::npos, xfdf.find("xml:space=\"preserve\""));
+  // Values are whitespace-exact: no injected newlines inside <value>.
+  EXPECT_NE(std::string::npos, xfdf.find("<value>abc</value>"));
+  EXPECT_NE(std::string::npos, xfdf.find("<value>x</value>"));
+  // Hierarchical names nest per component.
+  EXPECT_NE(std::string::npos, xfdf.find("<field name=\"billing\">"));
+  EXPECT_NE(std::string::npos, xfdf.find("<field name=\"name\""));
+}
+
+TEST_F(EPDFFormEmbedderTest, ImportXFDF) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  static const char kXfdf[] =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<xfdf xmlns=\"http://ns.adobe.com/xfdf/\" xml:space=\"preserve\">"
+      "<fields>"
+      "<field name=\"billing\"><field name=\"name\">"
+      "<value>Bob &amp; Co</value></field></field>"
+      "<field name=\"ntto_radio\"><value>y</value></field>"
+      "</fields></xfdf>";
+
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(
+      EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, &result));
+  EXPECT_EQ(2u, result.fields_total);
+  EXPECT_EQ(2u, result.fields_applied);
+  EXPECT_EQ(0u, result.fields_skipped);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int billing_name = FieldIndexByName(model, L"billing.name");
+  ASSERT_GE(billing_name, 0);
+  // Entity decoding round-trips.
+  EXPECT_EQ(L"Bob & Co",
+            GetWideString(EPDFForm_GetFieldValue, model, billing_name));
+  const int radio = EPDFForm_GetFieldIndexByObjNum(model, 5u);
+  EXPECT_EQ(L"y", GetWideString(EPDFForm_GetFieldValue, model, radio));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, ImportXFDFMultiSelect) {
+  ASSERT_TRUE(OpenDocument("listbox_form.pdf"));
+  static const char kXfdf[] =
+      "<?xml version=\"1.0\"?>"
+      "<xfdf xmlns=\"http://ns.adobe.com/xfdf/\"><fields>"
+      "<field name=\"Listbox_MultiSelect\">"
+      "<value>Cherry</value><value>Apple</value>"
+      "</field>"
+      "</fields></xfdf>";
+
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(
+      EPDFForm_ImportXFDF(document(), kXfdf, sizeof(kXfdf) - 1, &result));
+  EXPECT_EQ(1u, result.fields_total);
+  EXPECT_EQ(1u, result.fields_applied);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int multi = FieldIndexByName(model, L"Listbox_MultiSelect");
+  ASSERT_GE(multi, 0);
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, multi, 0));   // Apple
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, multi, 1));  // Banana
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, multi, 2));   // Cherry
+  EPDFForm_CloseModel(model);
+}
+
+// The full circle: export XFDF from a filled document and re-import it into
+// a pristine copy via a fresh layer - values must match exactly.
+TEST_F(EPDFFormEmbedderTest, XfdfRoundTripPreservesValues) {
+  LayerDoc first;
+  ASSERT_TRUE(OpenLayer("toggle_fields.pdf", &first));
+  ScopedFPDFWideString tricky = GetFPDFWideString(L"a<b>&\"c\" 'd'");
+  ASSERT_TRUE(EPDFForm_SetTextValue(first.layer, 17u, tricky.get(), nullptr,
+                                    0, nullptr));
+
+  unsigned long length =
+      EPDFForm_ExportXFDF(first.layer, nullptr, 0, nullptr, 0);
+  ASSERT_GT(length, 0u);
+  std::vector<char> xfdf(length);
+  ASSERT_EQ(length, EPDFForm_ExportXFDF(first.layer, nullptr, 0, xfdf.data(),
+                                        length));
+
+  LayerDoc second;
+  ASSERT_TRUE(OpenLayer("toggle_fields.pdf", &second));
+  EPDF_FORM_IMPORT_RESULT result;
+  ASSERT_TRUE(
+      EPDFForm_ImportXFDF(second.layer, xfdf.data(), length, &result));
+  EXPECT_EQ(0u, result.fields_skipped);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(second.layer);
+  ASSERT_TRUE(model);
+  const int billing_name = FieldIndexByName(model, L"billing.name");
+  ASSERT_GE(billing_name, 0);
+  EXPECT_EQ(L"a<b>&\"c\" 'd'",
+            GetWideString(EPDFForm_GetFieldValue, model, billing_name));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, RepairLinksRecoveredFields) {
+  ASSERT_TRUE(OpenDocument("orphan_widgets.pdf"));
+
+  EPDF_FORM_REPAIR_REPORT report;
+  ASSERT_TRUE(EPDFForm_Repair(document(), 0, &report));
+  EXPECT_EQ(0u, report.acroform_created);
+  EXPECT_EQ(2u, report.fields_linked);  // orphan_check + orphan_radio root
+  EXPECT_EQ(0u, report.widgets_linked);
+  EXPECT_EQ(0u, report.fields_unrepairable);
+
+  // The reconciliation is now durable structure, not an in-memory patch.
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  ASSERT_EQ(3, EPDFForm_CountFields(model));
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM,
+              EPDFForm_GetFieldOrigin(model, i));
+  }
+  EPDFForm_CloseModel(model);
+
+  // Idempotent: a second pass fixes nothing.
+  ASSERT_TRUE(EPDFForm_Repair(document(), 0, &report));
+  EXPECT_EQ(0u, report.fields_linked);
+  EXPECT_EQ(0u, report.widgets_linked);
+}
+
+TEST_F(EPDFFormEmbedderTest, RepairCreatesAcroFormAndLinksKids) {
+  ASSERT_TRUE(OpenDocument("widgets_no_acroform.pdf"));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_NONE, EPDFForm_GetFormKind(model));
+  ASSERT_EQ(2, EPDFForm_CountFields(model));
+  EPDFForm_CloseModel(model);
+
+  EPDF_FORM_REPAIR_REPORT report;
+  ASSERT_TRUE(EPDFForm_Repair(document(), 0, &report));
+  EXPECT_EQ(1u, report.acroform_created);
+  EXPECT_EQ(2u, report.fields_linked);   // orphan_text + gap_radio
+  EXPECT_EQ(1u, report.widgets_linked);  // widget 7 into gap_radio's /Kids
+  EXPECT_EQ(0u, report.fields_unrepairable);
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_ACROFORM, EPDFForm_GetFormKind(model));
+  ASSERT_EQ(2, EPDFForm_CountFields(model));
+  const int radio = EPDFForm_GetFieldIndexByObjNum(model, 5u);
+  ASSERT_GE(radio, 0);
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM,
+            EPDFForm_GetFieldOrigin(model, radio));
+  EXPECT_EQ(2, EPDFForm_CountFieldWidgets(model, radio));
+  EPDFForm_CloseModel(model);
+}
+
+// Repair on a layer is a tiny structural delta, and it survives a delta
+// save/reload: the repaired document stays repaired.
+TEST_F(EPDFFormEmbedderTest, RepairOnLayerIsDurable) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("orphan_widgets.pdf", &doc));
+
+  EPDF_FORM_REPAIR_REPORT report;
+  ASSERT_TRUE(EPDFForm_Repair(doc.layer, 0, &report));
+  EXPECT_EQ(2u, report.fields_linked);
+  // /AcroForm lives inline in the catalog, so linking promotes exactly the
+  // root object and nothing else.
+  EXPECT_EQ(1ul, EPDFLayer_GetPromotedObjectCount(doc.layer));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 1u));
+
+  // Round-trip the delta into a second layer over the same base.
+  ClearString();
+  EPDFLayerSaveStatus save_status;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(doc.layer, this, &save_status));
+  const std::string delta = GetString();
+  ASSERT_FALSE(delta.empty());
+
+  TestLoader loader(pdfium::as_bytes(pdfium::span(delta.data(), delta.size())));
+  FPDF_FILEACCESS file_access = {};
+  file_access.m_FileLen = static_cast<unsigned long>(delta.size());
+  file_access.m_GetBlock = TestLoader::GetBlock;
+  file_access.m_Param = &loader;
+
+  EPDFLayerOpenStatus status;
+  FPDF_DOCUMENT second =
+      EPDFLayer_OpenLayer(doc.base, &file_access, nullptr, &status);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(second);
+  ASSERT_TRUE(model);
+  ASSERT_EQ(3, EPDFForm_CountFields(model));
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM,
+              EPDFForm_GetFieldOrigin(model, i));
+  }
+  EPDFForm_CloseModel(model);
+  FPDF_CloseDocument(second);
+}
+
+TEST_F(EPDFFormEmbedderTest, RepairBakesMissingAppearances) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+
+  EPDF_FORM_REPAIR_REPORT report;
+  ASSERT_TRUE(EPDFForm_Repair(document(), EPDF_FORM_REPAIR_BAKE_APPEARANCES,
+                              &report));
+  // maxlen_text (4) and billing.name (17) ship without /AP.
+  EXPECT_GE(report.appearances_baked, 2u);
+  EXPECT_EQ(0u, report.need_appearances_cleared);  // flag was never set
+
+  // billing.name is /Annots index 7 on the page; it has an /AP now.
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page, 7));
+    ASSERT_TRUE(annot);
+    EXPECT_GT(FPDFAnnot_GetAP(annot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                              nullptr, 0),
+              2u);
+  }
+  UnloadPage(page);
+
+  // Idempotent: everything has an appearance now.
+  ASSERT_TRUE(EPDFForm_Repair(document(), EPDF_FORM_REPAIR_BAKE_APPEARANCES,
+                              &report));
+  EXPECT_EQ(0u, report.appearances_baked);
+}
+
+namespace {
+
+// Create an unattached widget annotation through the ANNOTATION API - the
+// authoring model's first step (widgets are born as annotations).
+uint32_t CreateWidgetAnnot(FPDF_PAGE page, float left, float bottom,
+                           float right, float top) {
+  // EPDFPage_CreateAnnot creates an INDIRECT annotation (durable object
+  // number), unlike upstream FPDFPage_CreateAnnot.
+  ScopedFPDFAnnotation annot(EPDFPage_CreateAnnot(page, FPDF_ANNOT_WIDGET));
+  if (!annot) {
+    return 0;
+  }
+  FS_RECTF rect{left, top, right, bottom};
+  if (!FPDFAnnot_SetRect(annot.get(), &rect)) {
+    return 0;
+  }
+  return EPDFAnnot_GetObjectNumber(annot.get());
+}
+
+}  // namespace
+
+TEST_F(EPDFFormEmbedderTest, CreateUnplacedFieldBootstrapsAcroForm) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 4 /* text */, GetFPDFWideString(L"billing.name").get());
+  ASSERT_GT(field, 0u);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(EPDF_FORMKIND_ACROFORM, EPDFForm_GetFormKind(model));
+  ASSERT_EQ(1, EPDFForm_CountFields(model));
+  EXPECT_EQ(L"billing.name", GetWideString(EPDFForm_GetFieldName, model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_FAMILY_TEXT, EPDFForm_GetFieldFamily(model, 0));
+  EXPECT_EQ(EPDF_FORMFIELD_ORIGIN_ACROFORM, EPDFForm_GetFieldOrigin(model, 0));
+  EXPECT_EQ(0, EPDFForm_CountFieldWidgets(model, 0));  // unplaced
+  EPDFForm_CloseModel(model);
+
+  // Sibling collisions fail without touching the tree.
+  EXPECT_EQ(0u, EPDFForm_CreateField(document(), 4,
+                                     GetFPDFWideString(L"billing.name").get()));
+  EXPECT_EQ(0u, EPDFForm_CreateField(document(), 4,
+                                     GetFPDFWideString(L"billing").get()));
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  EXPECT_EQ(1, EPDFForm_CountFields(model));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, AttachWidgetsFormsARadioGroup) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 3 /* radio */, GetFPDFWideString(L"gender").get());
+  ASSERT_GT(field, 0u);
+  const uint32_t w1 = CreateWidgetAnnot(page, 20, 200, 40, 220);
+  const uint32_t w2 = CreateWidgetAnnot(page, 60, 200, 80, 220);
+  ASSERT_GT(w1, 0u);
+  ASSERT_GT(w2, 0u);
+
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w1, "male"));
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, w2, "female"));
+  // Re-attaching an already attached widget fails.
+  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, "male"));
+  // Toggles demand a usable on-state name.
+  EXPECT_FALSE(EPDFForm_AttachWidget(document(), field, w1, nullptr));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, field);
+  ASSERT_GE(index, 0);
+  ASSERT_EQ(2, EPDFForm_CountFieldWidgets(model, index));
+  EXPECT_EQ("male", GetWidgetOnState(model, index, 0));
+  EXPECT_EQ("female", GetWidgetOnState(model, index, 1));
+  EPDFForm_CloseModel(model);
+
+  // The newborn group is immediately fillable through the P1 transaction.
+  unsigned long changed = 0;
+  ASSERT_TRUE(EPDFForm_SetToggle(document(), field, "male", nullptr, 0, &changed));
+  EXPECT_EQ(1ul, changed);
+  model = EPDFForm_LoadModel(document());
+  EXPECT_EQ(L"male", GetWideString(EPDFForm_GetFieldValue, model,
+                                   EPDFForm_GetFieldIndexByObjNum(model, field)));
+  EPDFForm_CloseModel(model);
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, AttachToLegacyMergedFieldKeepsFieldId) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+  const int annots_before = FPDFPage_GetAnnotCount(page);
+
+  // maxlen_text (object 4) is a merged field/widget.
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 20, 280, 36);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), 4u, widget, nullptr));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  ASSERT_GE(index, 0);  // the FIELD object number never changes
+  ASSERT_EQ(2, EPDFForm_CountFieldWidgets(model, index));
+  // The split widget is a NEW object; neither widget is the field dict.
+  EXPECT_NE(4u, EPDFForm_GetFieldWidgetObjNum(model, index, 0));
+  EXPECT_EQ(widget, EPDFForm_GetFieldWidgetObjNum(model, index, 1));
+  EPDFForm_CloseModel(model);
+
+  // /Annots: merged entry swapped for the split widget, new widget appended.
+  EXPECT_EQ(annots_before + 1, FPDFPage_GetAnnotCount(page));
+
+  // Both widgets still fill together.
+  ScopedFPDFWideString value = GetFPDFWideString(L"ab");
+  ASSERT_TRUE(EPDFForm_SetTextValue(document(), 4u, value.get(), nullptr, 0, nullptr));
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, DetachWidgetKeepsFieldVisible) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 4, GetFPDFWideString(L"note").get());
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr));
+  ASSERT_TRUE(EPDFForm_DetachWidget(document(), field, widget));
+  // Detaching twice fails (no longer attached).
+  EXPECT_FALSE(EPDFForm_DetachWidget(document(), field, widget));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, field);
+  ASSERT_GE(index, 0);  // the field survives, unplaced
+  EXPECT_EQ(0, EPDFForm_CountFieldWidgets(model, index));
+  // The widget is inert again: no field claims it.
+  EXPECT_EQ(-1, EPDFForm_GetFieldIndexForWidget(model, widget));
+  EPDFForm_CloseModel(model);
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, DeleteFieldDetachesAndPrunesAncestors) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  const uint32_t field = EPDFForm_CreateField(
+      document(), 4, GetFPDFWideString(L"billing.name").get());
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
+  ASSERT_TRUE(EPDFForm_AttachWidget(document(), field, widget, nullptr));
+
+  uint32_t detached[4] = {};
+  unsigned long detached_count = 0;
+  ASSERT_TRUE(EPDFForm_DeleteField(document(), field, detached, 4, &detached_count));
+  EXPECT_EQ(1ul, detached_count);
+  EXPECT_EQ(widget, detached[0]);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  // The empty "billing" ancestor was pruned along with the field.
+  EXPECT_EQ(0, EPDFForm_CountFields(model));
+  EPDFForm_CloseModel(model);
+  UnloadPage(page);
+}
+
+TEST_F(EPDFFormEmbedderTest, FieldSettersValidateAndApply) {
+  ASSERT_TRUE(OpenDocument("toggle_fields.pdf"));
+
+  // Rename: the /T segment only; sibling collisions fail.
+  ASSERT_TRUE(EPDFForm_SetFieldName(document(), 17u,
+                                    GetFPDFWideString(L"fullName").get()));
+  EXPECT_FALSE(EPDFForm_SetFieldName(document(), 4u,
+                                     GetFPDFWideString(L"unison_radio").get()));
+  EXPECT_FALSE(EPDFForm_SetFieldName(document(), 4u,
+                                     GetFPDFWideString(L"a.b").get()));
+
+  // Flags: masked update works; family-defining bits are immutable.
+  ASSERT_TRUE(EPDFForm_SetFieldFlags(document(), 4u, 1u << 1, 0));  // +Required
+  EXPECT_FALSE(EPDFForm_SetFieldFlags(document(), 4u, 1u << 15, 0));
+
+  // MaxLen: cannot cut below the current value ("abc").
+  EXPECT_FALSE(EPDFForm_SetFieldMaxLen(document(), 4u, 2));
+  ASSERT_TRUE(EPDFForm_SetFieldMaxLen(document(), 4u, 10));
+
+  ASSERT_TRUE(EPDFForm_SetFieldDefaultValue(document(), 4u,
+                                            GetFPDFWideString(L"dflt").get()));
+  ASSERT_TRUE(EPDFForm_SetFieldAlternateName(
+      document(), 4u, GetFPDFWideString(L"Your name").get()));
+  ASSERT_TRUE(EPDFForm_SetFieldMappingName(document(), 4u,
+                                           GetFPDFWideString(L"name_x").get()));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int index = EPDFForm_GetFieldIndexByObjNum(model, 17u);
+  EXPECT_EQ(L"billing.fullName", GetWideString(EPDFForm_GetFieldName, model, index));
+  index = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  EXPECT_TRUE(EPDFForm_GetFieldFlags(model, index) & (1u << 1));
+  EXPECT_EQ(10, EPDFForm_GetFieldMaxLen(model, index));
+  EXPECT_EQ(L"dflt", GetWideString(EPDFForm_GetFieldDefaultValue, model, index));
+  EXPECT_EQ(L"Your name",
+            GetWideString(EPDFForm_GetFieldAlternateName, model, index));
+  EXPECT_EQ(L"name_x", GetWideString(EPDFForm_GetFieldMappingName, model, index));
+  EPDFForm_CloseModel(model);
+
+  // Reset now restores the fresh /DV through the P1 transaction.
+  ASSERT_TRUE(EPDFForm_ResetField(document(), 4u, nullptr, 0, nullptr));
+  model = EPDFForm_LoadModel(document());
+  index = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  EXPECT_EQ(L"dflt", GetWideString(EPDFForm_GetFieldValue, model, index));
+  EPDFForm_CloseModel(model);
+}
+
+TEST_F(EPDFFormEmbedderTest, SetFieldOptionsResyncsSelection) {
+  ASSERT_TRUE(OpenDocument("listbox_form.pdf"));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  int index = FieldIndexByName(model, L"Listbox_MultiSelectMultipleValues");
+  ASSERT_GE(index, 0);
+  const uint32_t field = EPDFForm_GetFieldObjNum(model, index);
+  EPDFForm_CloseModel(model);
+
+  // Current /V is [Epsilon, Gamma]; the new option list keeps only Gamma.
+  ScopedFPDFWideString alpha = GetFPDFWideString(L"Alpha");
+  ScopedFPDFWideString gamma = GetFPDFWideString(L"Gamma");
+  ScopedFPDFWideString zeta = GetFPDFWideString(L"Zeta");
+  FPDF_WIDESTRING labels[] = {alpha.get(), gamma.get(), zeta.get()};
+  ASSERT_TRUE(EPDFForm_SetFieldOptions(document(), field, labels, labels, 3));
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  index = EPDFForm_GetFieldIndexByObjNum(model, field);
+  ASSERT_EQ(3, EPDFForm_CountFieldOptions(model, index));
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, index, 0));  // Alpha
+  EXPECT_TRUE(EPDFForm_IsFieldOptionSelected(model, index, 1));   // Gamma kept
+  EXPECT_FALSE(EPDFForm_IsFieldOptionSelected(model, index, 2));  // Zeta
+  EPDFForm_CloseModel(model);
+}
+
+// Authoring on a layer produces a minimal, durable delta.
+TEST_F(EPDFFormEmbedderTest, AuthoringOnLayerIsDurable) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("hello_world.pdf", &doc));
+
+  const uint32_t field = EPDFForm_CreateField(
+      doc.layer, 4, GetFPDFWideString(L"layer_field").get());
+  ASSERT_GT(field, 0u);
+  FPDF_PAGE page = FPDF_LoadPage(doc.layer, 0);
+  ASSERT_TRUE(page);
+  const uint32_t widget = CreateWidgetAnnot(page, 20, 200, 200, 220);
+  ASSERT_GT(widget, 0u);
+  ASSERT_TRUE(EPDFForm_AttachWidget(doc.layer, field, widget, nullptr));
+  FPDF_ClosePage(page);
+
+  // Duplicate create fails without growing the delta.
+  const unsigned long promoted = EPDFLayer_GetPromotedObjectCount(doc.layer);
+  EXPECT_EQ(0u, EPDFForm_CreateField(doc.layer, 4,
+                                     GetFPDFWideString(L"layer_field").get()));
+  EXPECT_EQ(promoted, EPDFLayer_GetPromotedObjectCount(doc.layer));
+
+  ClearString();
+  EPDFLayerSaveStatus save_status;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(doc.layer, this, &save_status));
+  const std::string delta = GetString();
+  ASSERT_FALSE(delta.empty());
+
+  TestLoader loader(pdfium::as_bytes(pdfium::span(delta.data(), delta.size())));
+  FPDF_FILEACCESS file_access = {};
+  file_access.m_FileLen = static_cast<unsigned long>(delta.size());
+  file_access.m_GetBlock = TestLoader::GetBlock;
+  file_access.m_Param = &loader;
+  EPDFLayerOpenStatus status;
+  FPDF_DOCUMENT second =
+      EPDFLayer_OpenLayer(doc.base, &file_access, nullptr, &status);
+  ASSERT_TRUE(second);
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(second);
+  ASSERT_TRUE(model);
+  const int index = EPDFForm_GetFieldIndexByObjNum(model, field);
+  ASSERT_GE(index, 0);
+  EXPECT_EQ(L"layer_field", GetWideString(EPDFForm_GetFieldName, model, index));
+  EXPECT_EQ(1, EPDFForm_CountFieldWidgets(model, index));
+  EPDFForm_CloseModel(model);
+  FPDF_CloseDocument(second);
+}
