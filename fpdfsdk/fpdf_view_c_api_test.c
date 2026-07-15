@@ -300,6 +300,8 @@ int CheckPDFiumCApi() {
     CHK(FSDK_SetUnSpObjProcessHandler);
 
     // fpdf_flatten.h
+    CHK(EPDFAnnot_Flatten);
+    CHK(EPDFPage_Flatten);
     CHK(FPDFPage_Flatten);
 
     // fpdf_fwlevent.h - no exports.

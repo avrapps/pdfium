@@ -7,11 +7,16 @@ import("../testing/test.gni")
 
 source_set("fpdfsdk") {
   sources = [
+    # EmbedPDF: detached, read-only PDF action models.
+    "epdf_action.cpp",
+    "epdf_action_helpers.h",
     "epdf_base_document.cpp",
     # EmbedPDF: implements EPDFFont_* runtime font registration APIs.
     "epdf_font.cpp",
     # EmbedPDF: session-free AcroForm model snapshot (EPDFForm_* APIs).
     "epdf_form.cpp",
+    # EmbedPDF: layer-safe selective page and annotation flattening.
+    "epdf_flatten.cpp",
     "epdf_layer.cpp",
     "epdf_outline.cpp",
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
@@ -143,6 +148,8 @@ pdfium_embeddertest_source_set("embeddertests") {
   sources = [
     "cpdfsdk_annotiterator_embeddertest.cpp",
     "cpdfsdk_baannot_embeddertest.cpp",
+    # EmbedPDF: covers detached action models and owner-specific readers.
+    "epdf_action_embeddertest.cpp",
     # EmbedPDF: covers the EPDFForm_* session-free form APIs.
     "epdf_form_embeddertest.cpp",
     # EmbedPDF: covers generic document/page /PieceInfo metadata APIs.

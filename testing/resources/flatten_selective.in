@@ -1,0 +1,120 @@
+{{header}}
+{{object 1 0}}
+<< /Type /Catalog /Pages 2 0 R /AcroForm 11 0 R >>
+endobj
+{{object 2 0}}
+<<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+  /MediaBox [0 0 200 200]
+  /Resources << /ExtGState << /GS0 << /Type /ExtGState /CA 1 >> >> >>
+>>
+endobj
+{{object 3 0}}
+<<
+  /Type /Page
+  /Parent 2 0 R
+  /Contents 15 0 R
+  /Annots [4 0 R 5 0 R 6 0 R 9 0 R 13 0 R 16 0 R]
+>>
+endobj
+{{object 4 0}}
+<<
+  /Type /Annot
+  /Subtype /Square
+  /Rect [10 10 40 40]
+  /F 4
+  /AP << /N 7 0 R >>
+>>
+endobj
+{{object 5 0}}
+<<
+  /Type /Annot
+  /Subtype /Square
+  /Rect [50 10 80 40]
+  /F 2
+  /AP << /N 8 0 R >>
+>>
+endobj
+{{object 6 0}}
+<<
+  /Type /Annot
+  /Subtype /Text
+  /Rect [90 10 120 40]
+>>
+endobj
+{{object 7 0}}
+<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources <<>> {{streamlen}} >>
+stream
+0 0 1 rg 0 0 10 10 re f
+endstream
+endobj
+{{object 8 0}}
+<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources <<>> {{streamlen}} >>
+stream
+1 0 0 rg 0 0 10 10 re f
+endstream
+endobj
+{{object 9 0}}
+<<
+  /Type /Annot
+  /Subtype /Square
+  /Rect [130 10 160 40]
+  /F 1
+  /AP << /N 10 0 R >>
+>>
+endobj
+{{object 10 0}}
+<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources <<>> {{streamlen}} >>
+stream
+0 1 0 rg 0 0 10 10 re f
+endstream
+endobj
+{{object 11 0}}
+<< /Fields [12 0 R] >>
+endobj
+{{object 12 0}}
+<< /FT /Tx /T (Separate field) /Kids [13 0 R] >>
+endobj
+{{object 13 0}}
+<<
+  /Type /Annot
+  /Subtype /Widget
+  /Parent 12 0 R
+  /Rect [10 60 80 85]
+  /F 4
+  /AP << /N 14 0 R >>
+>>
+endobj
+{{object 14 0}}
+<< /Type /XObject /Subtype /Form /BBox [0 0 70 25] /Resources <<>> {{streamlen}} >>
+stream
+0.8 0.8 0.8 rg 0 0 70 25 re f
+endstream
+endobj
+{{object 15 0}}
+<< {{streamlen}} >>
+stream
+0 0 m 1 1 l S
+endstream
+endobj
+{{object 16 0}}
+<<
+  /Type /Annot
+  /Subtype /Square
+  /Rect [90 60 120 90]
+  /F 0
+  /AP << /N 17 0 R >>
+>>
+endobj
+{{object 17 0}}
+<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources <<>> {{streamlen}} >>
+stream
+0 1 1 rg 0 0 10 10 re f
+endstream
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

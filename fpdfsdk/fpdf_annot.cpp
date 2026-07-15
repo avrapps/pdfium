@@ -54,7 +54,6 @@
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
-#include "fpdfsdk/epdf_page_content_helpers.h"
 
 namespace {
 
@@ -4383,72 +4382,6 @@ EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot) {
   }
 
   return dict->GetBooleanFor("Repeat", false);
-}
-
-namespace {
-
-// Find the index of an annotation in the page's annotation array.
-// Returns -1 if not found.
-int GetAnnotIndexOnPage(const CPDF_Page* page,
-                        const CPDF_Dictionary* annot_dict) {
-  if (!page || !annot_dict) {
-    return -1;
-  }
-
-  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
-  if (!annots) {
-    return -1;
-  }
-
-  for (size_t i = 0; i < annots->size(); ++i) {
-    if (annots->GetDictAt(i) == annot_dict) {
-      return static_cast<int>(i);
-    }
-  }
-  return -1;
-}
-
-}  // namespace
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
-                                                      FPDF_ANNOTATION annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
-    return false;
-  }
-
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return false;
-  }
-
-  // Get the annotation's Normal appearance stream (AP/N)
-  RetainPtr<const CPDF_Dictionary> ap_dict =
-      annot_dict->GetDictFor(pdfium::annotation::kAP);
-  if (!ap_dict) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Stream> ap_stream = ap_dict->GetStreamFor("N");
-  if (!ap_stream) {
-    return false;
-  }
-
-  CFX_FloatRect annot_rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  annot_rect.Normalize();
-
-  EpdfAppendFormXObjectToPage(pPage, ap_stream, annot_rect);
-
-  // Remove the annotation from the page
-  int annot_index = GetAnnotIndexOnPage(pPage, annot_dict);
-  if (annot_index >= 0) {
-    RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-    if (annots) {
-      annots->RemoveAt(annot_index);
-    }
-  }
-
-  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

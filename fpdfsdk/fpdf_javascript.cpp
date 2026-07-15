@@ -14,11 +14,46 @@
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_action_helpers.h"
+#include "public/epdf_action.h"
 
 struct CPDF_JavaScript {
   WideString name;
   WideString script;
 };
+
+namespace {
+
+RetainPtr<CPDF_Dictionary> GetNamedJavaScriptActionDictionary(
+    FPDF_DOCUMENT document,
+    int index,
+    WideString* name,
+    std::optional<WideString>* script) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || index < 0) {
+    return nullptr;
+  }
+
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "JavaScript");
+  if (!name_tree || static_cast<size_t>(index) >= name_tree->GetCount()) {
+    return nullptr;
+  }
+
+  RetainPtr<CPDF_Dictionary> dictionary =
+      ToDictionary(name_tree->LookupValueAndName(index, name));
+  if (!dictionary) {
+    return nullptr;
+  }
+
+  CPDF_Action action(pdfium::WrapRetain(dictionary.Get()));
+  if (action.GetType() != CPDF_Action::Type::kJavaScript) {
+    return nullptr;
+  }
+  *script = action.MaybeGetJavaScript();
+  return script->has_value() ? std::move(dictionary) : nullptr;
+}
+
+}  // namespace
 
 FPDF_EXPORT int FPDF_CALLCONV
 FPDFDoc_GetJavaScriptActionCount(FPDF_DOCUMENT document) {
@@ -33,31 +68,9 @@ FPDFDoc_GetJavaScriptActionCount(FPDF_DOCUMENT document) {
 
 FPDF_EXPORT FPDF_JAVASCRIPT_ACTION FPDF_CALLCONV
 FPDFDoc_GetJavaScriptAction(FPDF_DOCUMENT document, int index) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || index < 0) {
-    return nullptr;
-  }
-
-  auto name_tree = CPDF_NameTree::CreateForReading(doc, "JavaScript");
-  if (!name_tree || static_cast<size_t>(index) >= name_tree->GetCount()) {
-    return nullptr;
-  }
-
   WideString name;
-  RetainPtr<CPDF_Dictionary> obj =
-      ToDictionary(name_tree->LookupValueAndName(index, &name));
-  if (!obj) {
-    return nullptr;
-  }
-
-  // Validate |obj|. Type is optional, but must be valid if present.
-  CPDF_Action action(std::move(obj));
-  if (action.GetType() != CPDF_Action::Type::kJavaScript) {
-    return nullptr;
-  }
-
-  std::optional<WideString> script = action.MaybeGetJavaScript();
-  if (!script.has_value()) {
+  std::optional<WideString> script;
+  if (!GetNamedJavaScriptActionDictionary(document, index, &name, &script)) {
     return nullptr;
   }
 
@@ -65,6 +78,17 @@ FPDFDoc_GetJavaScriptAction(FPDF_DOCUMENT document, int index) {
   js->name = name;
   js->script = script.value();
   return FPDFJavaScriptActionFromCPDFJavaScriptAction(js.release());
+}
+
+FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
+EPDFDoc_GetNamedJavaScriptActionModel(FPDF_DOCUMENT document, int index) {
+  WideString name;
+  std::optional<WideString> script;
+  RetainPtr<CPDF_Dictionary> dictionary =
+      GetNamedJavaScriptActionDictionary(document, index, &name, &script);
+  return dictionary ? epdf::MakeActionModelHandle(epdf::BuildActionModel(
+                          CPDF_Action(std::move(dictionary))))
+                    : nullptr;
 }
 
 FPDF_EXPORT void FPDF_CALLCONV

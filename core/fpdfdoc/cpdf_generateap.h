@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_fontregistry.h"
 
 class CPDF_Dictionary;
@@ -24,6 +25,13 @@ class CPDF_GenerateAP {
   static void GenerateFormAP(CPDF_Document* doc,
                              CPDF_Dictionary* pAnnotDict,
                              FormType type);
+
+  // EmbedPDF: regenerate a text/combo widget appearance from display text
+  // without changing the field's semantic /V value.
+  static bool GenerateFormAPWithValueOverride(CPDF_Document* doc,
+                                              CPDF_Dictionary* annot_dict,
+                                              FormType type,
+                                              const WideString& value_override);
 
   static void GenerateCheckboxFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict);

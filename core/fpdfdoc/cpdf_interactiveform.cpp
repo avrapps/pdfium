@@ -1138,12 +1138,14 @@ std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
 
     // EmbedPDF: |skip_empty_required| makes the historic omit-empty-required
     // submission behavior optional so interchange exports stay faithful.
-    if (skip_empty_required &&
-        (dwFlags & pdfium::form_flags::kRequired) != 0 &&
-        field->GetFieldDict()
-            ->GetByteStringFor(pdfium::form_fields::kV)
-            .IsEmpty()) {
-      continue;
+    if (skip_empty_required && (dwFlags & pdfium::form_flags::kRequired) != 0) {
+      RetainPtr<const CPDF_Object> value =
+          field->GetFieldAttr(pdfium::form_fields::kV);
+      if (!value || value->IsNull() ||
+          (value->IsArray() ? value->AsArray()->IsEmpty()
+                            : value->GetString().IsEmpty())) {
+        continue;
+      }
     }
 
     WideString fullname =

@@ -1389,10 +1389,13 @@ void GenerateLineEndings(fxcrt::ostringstream& ap,
 ByteString GenerateTextFieldAP(const CPDF_Dictionary* annot_dict,
                                const CFX_FloatRect& body_rect,
                                float font_size,
-                               CPVT_VariableText& vt) {
+                               CPVT_VariableText& vt,
+                               const WideString* value_override) {
   RetainPtr<const CPDF_Object> v_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, pdfium::form_fields::kV);
-  WideString value = v_field ? v_field->GetUnicodeText() : WideString();
+  WideString value = value_override
+                         ? *value_override
+                         : (v_field ? v_field->GetUnicodeText() : WideString());
   RetainPtr<const CPDF_Object> q_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, "Q");
   const int32_t align = q_field ? q_field->GetInteger() : 0;
@@ -1439,12 +1442,15 @@ ByteString GenerateComboBoxAP(const CPDF_Dictionary* annot_dict,
                               const CFX_FloatRect& body_rect,
                               const CFX_Color& text_color,
                               float font_size,
-                              CPVT_VariableText::Provider& provider) {
+                              CPVT_VariableText::Provider& provider,
+                              const WideString* value_override) {
   fxcrt::ostringstream body_stream;
 
   RetainPtr<const CPDF_Object> v_field =
       CPDF_FormField::GetFieldAttrForDict(annot_dict, pdfium::form_fields::kV);
-  WideString value = v_field ? v_field->GetUnicodeText() : WideString();
+  WideString value = value_override
+                         ? *value_override
+                         : (v_field ? v_field->GetUnicodeText() : WideString());
   CPVT_VariableText vt(&provider);
   CFX_FloatRect button_rect = body_rect;
   button_rect.left = button_rect.right - 13;
@@ -2712,7 +2718,8 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
                              const CPDF_Dictionary* annot_dict,
                              const CFX_FloatRect& bbox,
                              const DefaultAppearanceInfo& da_info,
-                             CPVT_VariableText::Provider& provider) {
+                             CPVT_VariableText::Provider& provider,
+                             const WideString* value_override) {
   const AppearanceCharacteristics mk =
       GetAppearanceCharacteristics(annot_dict->GetDictFor("MK"));
   const bool has_bg =
@@ -2753,8 +2760,8 @@ void GenerateTextFieldFormAP(fxcrt::ostringstream& app_stream,
   WriteRect(app_stream, clip_rect) << " re W n\n";
 
   CPVT_VariableText vt(&provider);
-  ByteString body =
-      GenerateTextFieldAP(annot_dict, body_rect, da_info.font_size, vt);
+  ByteString body = GenerateTextFieldAP(annot_dict, body_rect,
+                                        da_info.font_size, vt, value_override);
 
   app_stream << "BT\n";
   app_stream << GenerateColorAP(da_info.text_color, PaintOperation::kStroke);
@@ -2773,7 +2780,8 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
                             const CPDF_Dictionary* annot_dict,
                             const CFX_FloatRect& bbox,
                             const DefaultAppearanceInfo& da_info,
-                            CPVT_VariableText::Provider& provider) {
+                            CPVT_VariableText::Provider& provider,
+                            const WideString* value_override) {
   const AnnotationDimensionsAndColor dims =
       GetAnnotationDimensionsAndColor(annot_dict);
   const BorderStyleInfo border_info =
@@ -2796,7 +2804,7 @@ void GenerateComboBoxFormAP(fxcrt::ostringstream& app_stream,
   body_rect.Deflate(border_info.width, border_info.width);
 
   app_stream << GenerateComboBoxAP(annot_dict, body_rect, da_info.text_color,
-                                   da_info.font_size, provider);
+                                   da_info.font_size, provider, value_override);
 }
 
 void GenerateListBoxFormAP(fxcrt::ostringstream& app_stream,
@@ -2953,7 +2961,8 @@ std::optional<CPDF_GenerateAP::FormType> GetWidgetFormType(
 
 bool GenerateFormAPToTarget(APGenerationTarget* target,
                             CPDF_Dictionary* annot_dict,
-                            CPDF_GenerateAP::FormType type) {
+                            CPDF_GenerateAP::FormType type,
+                            const WideString* value_override) {
   CPDF_Document* const doc = target->doc;
   const CPDF_Dictionary* root_dict = doc->GetRoot();
   if (!root_dict) {
@@ -3043,11 +3052,13 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     switch (type) {
       case CPDF_GenerateAP::kTextField:
         GenerateTextFieldFormAP(app_stream, annot_dict, dims.bbox,
-                                default_appearance_info.value(), provider);
+                                default_appearance_info.value(), provider,
+                                value_override);
         break;
       case CPDF_GenerateAP::kComboBox:
         GenerateComboBoxFormAP(app_stream, annot_dict, dims.bbox,
-                               default_appearance_info.value(), provider);
+                               default_appearance_info.value(), provider,
+                               value_override);
         break;
       case CPDF_GenerateAP::kListBox:
         GenerateListBoxFormAP(app_stream, annot_dict, dims.bbox,
@@ -3114,7 +3125,17 @@ void CPDF_GenerateAP::GenerateFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict,
                                      FormType type) {
   APGenerationTarget target{doc, annot_dict};
-  GenerateFormAPToTarget(&target, annot_dict, type);
+  GenerateFormAPToTarget(&target, annot_dict, type, nullptr);
+}
+
+// static
+bool CPDF_GenerateAP::GenerateFormAPWithValueOverride(
+    CPDF_Document* doc,
+    CPDF_Dictionary* annot_dict,
+    FormType type,
+    const WideString& value_override) {
+  APGenerationTarget target{doc, annot_dict};
+  return GenerateFormAPToTarget(&target, annot_dict, type, &value_override);
 }
 
 // static
@@ -3124,7 +3145,7 @@ CPDF_GenerateAP::GenerateEphemeralFormAP(CPDF_Document* doc,
                                          FormType type) {
   APGenerationTarget target{doc, nullptr};
   if (!GenerateFormAPToTarget(&target, const_cast<CPDF_Dictionary*>(annot_dict),
-                              type)) {
+                              type, nullptr)) {
     return std::nullopt;
   }
   return GeneratedAP{std::move(target.normal_stream)};

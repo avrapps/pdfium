@@ -1881,22 +1881,6 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Flatten an annotation's normal appearance (AP/N) to page content.
-// The annotation's appearance becomes part of the page itself.
-// The annotation is automatically removed from the page after flattening.
-//
-// The caller is responsible for:
-//   1. Closing the annotation handle with FPDFPage_CloseAnnot after this call
-//   2. Calling FPDFPage_GenerateContent to persist changes
-//
-//   page  - handle to the page containing the annotation
-//   annot - handle to an annotation with an appearance stream
-//
-// Returns TRUE on success, FALSE if no appearance stream or error.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
-                                                      FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
 // Set an annotation's normal appearance (AP/N) from a page of another document.
 // The page's content stream and resources are deep-cloned into the annotation's
 // document as a Form XObject and set as the AP/N entry.

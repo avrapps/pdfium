@@ -5,6 +5,7 @@
 #include "public/epdf_form.h"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "constants/annotation_flags.h"
 #include "constants/form_fields.h"
 #include "constants/form_flags.h"
 #include "core/fpdfapi/parser/cfdf_document.h"
@@ -23,6 +25,8 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
+#include "core/fpdfdoc/cpdf_aaction.h"
+#include "core/fpdfdoc/cpdf_action.h"
 #include "core/fpdfdoc/cpdf_formcontrol.h"
 #include "core/fpdfdoc/cpdf_formfield.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
@@ -43,6 +47,7 @@
 #include "core/fxcrt/xml/cfx_xmlparser.h"
 #include "core/fxcrt/xml/cfx_xmltext.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "fpdfsdk/epdf_action_helpers.h"
 
 namespace {
 
@@ -60,6 +65,11 @@ struct OptionRecord {
   bool selected = false;
 };
 
+struct FieldValueRecord {
+  int kind = EPDF_FORM_VALUE_NONE;
+  std::vector<WideString> values;
+};
+
 struct FieldRecord {
   uint32_t objnum = 0;
   int family = EPDF_FORMFIELD_FAMILY_UNKNOWN;
@@ -69,10 +79,11 @@ struct FieldRecord {
   WideString fqn;
   WideString alternate_name;
   WideString mapping_name;
-  WideString value;
-  WideString default_value;
+  FieldValueRecord value;
+  FieldValueRecord default_value;
   std::vector<OptionRecord> options;
   std::vector<WidgetRecord> widgets;
+  std::array<epdf::ActionModelDataPtr, 4> actions;
 };
 
 // A detached, immutable snapshot. Holds no pointers into the document, so
@@ -84,6 +95,7 @@ struct FormModel {
   std::vector<FieldRecord> fields;
   std::map<uint32_t, int> field_index_by_objnum;
   std::map<uint32_t, int> field_index_by_widget_objnum;
+  std::vector<int> calculation_order;
 };
 
 FormModel* FormModelFromHandle(EPDF_FORM_MODEL model) {
@@ -159,6 +171,36 @@ bool IsChoiceFamily(int family) {
          family == EPDF_FORMFIELD_FAMILY_LISTBOX;
 }
 
+FieldValueRecord SnapshotFieldValue(RetainPtr<const CPDF_Object> object) {
+  FieldValueRecord record;
+  if (!object || object->IsNull()) {
+    return record;
+  }
+  if (object->IsString() || object->IsName()) {
+    record.kind = EPDF_FORM_VALUE_SCALAR;
+    record.values.push_back(object->GetUnicodeText());
+    return record;
+  }
+  const CPDF_Array* array = object->AsArray();
+  if (!array) {
+    record.kind = EPDF_FORM_VALUE_UNSUPPORTED;
+    return record;
+  }
+
+  record.kind = EPDF_FORM_VALUE_ARRAY;
+  record.values.reserve(array->size());
+  for (size_t i = 0; i < array->size(); ++i) {
+    RetainPtr<const CPDF_Object> element = array->GetDirectObjectAt(i);
+    if (!element || !element->IsString()) {
+      record.kind = EPDF_FORM_VALUE_UNSUPPORTED;
+      record.values.clear();
+      return record;
+    }
+    record.values.push_back(element->GetUnicodeText());
+  }
+  return record;
+}
+
 size_t CountFormFields(const CPDF_InteractiveForm& form) {
   return form.CountFields(WideString());
 }
@@ -207,7 +249,8 @@ std::map<const CPDF_Dictionary*, uint32_t> SweepPageWidgets(
       }
       RetainPtr<const CPDF_Dictionary> annot;
       if (const CPDF_Reference* ref = element->AsReference()) {
-        annot = ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
+        annot =
+            ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
       } else {
         annot = ToDictionary(std::move(element));
       }
@@ -251,8 +294,21 @@ FieldRecord SnapshotField(
   record.fqn = field->GetFullName();
   record.alternate_name = field->GetAlternateName();
   record.mapping_name = field->GetMappingName();
-  record.value = field->GetValue();
-  record.default_value = field->GetDefaultValue();
+  record.value = SnapshotFieldValue(
+      CPDF_FormField::GetFieldAttrForDict(field_dict, pdfium::form_fields::kV));
+  record.default_value = SnapshotFieldValue(CPDF_FormField::GetFieldAttrForDict(
+      field_dict, pdfium::form_fields::kDV));
+
+  static constexpr std::array<CPDF_AAction::AActionType, 4> kActionTypes = {
+      CPDF_AAction::kKeyStroke, CPDF_AAction::kFormat, CPDF_AAction::kValidate,
+      CPDF_AAction::kCalculate};
+  CPDF_AAction additional_actions = field->GetAdditionalAction();
+  for (size_t i = 0; i < kActionTypes.size(); ++i) {
+    if (additional_actions.ActionExist(kActionTypes[i])) {
+      record.actions[i] =
+          epdf::BuildActionModel(additional_actions.GetAction(kActionTypes[i]));
+    }
+  }
   if (record.family == EPDF_FORMFIELD_FAMILY_TEXT) {
     record.max_len = field->GetMaxLen();
   }
@@ -313,9 +369,9 @@ constexpr char kOffState[] = "Off";
 
 // One widget of a terminal field, resolved for a transaction.
 struct TxnControl {
-  uint32_t objnum = 0;   // 0 for direct (spec-violating) kid dictionaries.
+  uint32_t objnum = 0;  // 0 for direct (spec-violating) kid dictionaries.
   size_t kids_index = 0;
-  bool merged = false;   // The control IS the field dictionary.
+  bool merged = false;  // The control IS the field dictionary.
   RetainPtr<const CPDF_Dictionary> dict;  // Planning-phase resolution.
   ByteString on_state;
   WideString export_value;
@@ -333,15 +389,43 @@ RetainPtr<const CPDF_Dictionary> ResolveFieldDict(CPDF_Document* doc,
   return ToDictionary(doc->GetOrParseIndirectObject(field_objnum));
 }
 
+RetainPtr<const CPDF_Dictionary> ResolveParentFieldDict(
+    CPDF_Document* doc,
+    const CPDF_Dictionary* field) {
+  RetainPtr<const CPDF_Object> parent_object =
+      field ? field->GetObjectFor(pdfium::form_fields::kParent) : nullptr;
+  if (!parent_object) {
+    return nullptr;
+  }
+  if (const CPDF_Reference* reference = parent_object->AsReference()) {
+    return ToDictionary(
+        doc->GetOrParseIndirectObject(reference->GetRefObjNum()));
+  }
+  return ToDictionary(parent_object->GetDirect());
+}
+
+bool HasInheritedFieldAttribute(CPDF_Document* doc,
+                                const CPDF_Dictionary* field,
+                                ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> current = ResolveParentFieldDict(doc, field);
+  for (int depth = 0; current && depth < 32; ++depth) {
+    if (current->KeyExist(key)) {
+      return true;
+    }
+    current = ResolveParentFieldDict(doc, current.Get());
+  }
+  return false;
+}
+
 ByteString InheritedFieldType(const CPDF_Dictionary* field_dict) {
-  RetainPtr<const CPDF_Object> ft = CPDF_FormField::GetFieldAttrForDict(
-      field_dict, pdfium::form_fields::kFT);
+  RetainPtr<const CPDF_Object> ft =
+      CPDF_FormField::GetFieldAttrForDict(field_dict, pdfium::form_fields::kFT);
   return ft ? ft->GetString() : ByteString();
 }
 
 uint32_t InheritedFieldFlags(const CPDF_Dictionary* field_dict) {
-  RetainPtr<const CPDF_Object> ff = CPDF_FormField::GetFieldAttrForDict(
-      field_dict, pdfium::form_fields::kFf);
+  RetainPtr<const CPDF_Object> ff =
+      CPDF_FormField::GetFieldAttrForDict(field_dict, pdfium::form_fields::kFf);
   return ff ? static_cast<uint32_t>(ff->GetInteger()) : 0;
 }
 
@@ -382,8 +466,7 @@ bool CollectTxnControls(CPDF_Document* doc,
                         std::vector<TxnControl>* out) {
   RetainPtr<const CPDF_Array> opt_array;
   if (want_toggle_info) {
-    opt_array = ToArray(
-        CPDF_FormField::GetFieldAttrForDict(field_dict, "Opt"));
+    opt_array = ToArray(CPDF_FormField::GetFieldAttrForDict(field_dict, "Opt"));
   }
 
   auto finish_control = [&](TxnControl control) {
@@ -476,9 +559,116 @@ void ReportChangedWidgets(const std::vector<uint32_t>& changed_objnums,
 }
 
 CPDF_GenerateAP::FormType ChoiceFormType(uint32_t flags) {
-  return (flags & pdfium::form_flags::kChoiceCombo)
-             ? CPDF_GenerateAP::kComboBox
-             : CPDF_GenerateAP::kListBox;
+  return (flags & pdfium::form_flags::kChoiceCombo) ? CPDF_GenerateAP::kComboBox
+                                                    : CPDF_GenerateAP::kListBox;
+}
+
+struct NormalizedChoiceValues {
+  bool free_text = false;
+  std::vector<std::pair<size_t, WideString>> matched;
+};
+
+std::optional<std::vector<WideString>> ReadChoiceValues(
+    const CPDF_Object* object) {
+  std::vector<WideString> values;
+  if (!object || object->IsNull()) {
+    return values;
+  }
+  if (object->IsString()) {
+    values.push_back(object->GetUnicodeText());
+    return values;
+  }
+  const CPDF_Array* array = object->AsArray();
+  if (!array) {
+    return std::nullopt;
+  }
+  values.reserve(array->size());
+  for (size_t i = 0; i < array->size(); ++i) {
+    RetainPtr<const CPDF_Object> element = array->GetDirectObjectAt(i);
+    if (!element || !element->IsString()) {
+      return std::nullopt;
+    }
+    values.push_back(element->GetUnicodeText());
+  }
+  return values;
+}
+
+std::vector<WideString> FilterChoiceValues(
+    const std::vector<WideString>& values,
+    const std::vector<WideString>& available_exports,
+    bool preserve_free_text) {
+  std::vector<WideString> kept;
+  for (const WideString& value : values) {
+    if (pdfium::Contains(available_exports, value)) {
+      kept.push_back(value);
+    }
+  }
+  if (kept.empty() && preserve_free_text && !values.empty()) {
+    kept = values;
+  }
+  return kept;
+}
+
+std::optional<NormalizedChoiceValues> NormalizeChoiceValues(
+    const CPDF_Dictionary* field,
+    uint32_t flags,
+    const std::vector<WideString>& values) {
+  const bool is_combo = flags & pdfium::form_flags::kChoiceCombo;
+  const bool is_edit = flags & pdfium::form_flags::kChoiceEdit;
+  const bool is_multi = flags & pdfium::form_flags::kChoiceMultiSelect;
+  if (values.size() > 1 && (is_combo || !is_multi)) {
+    return std::nullopt;
+  }
+
+  RetainPtr<const CPDF_Array> opt_array =
+      ToArray(CPDF_FormField::GetFieldAttrForDict(field, "Opt"));
+  NormalizedChoiceValues normalized;
+  bool all_matched = true;
+  for (const WideString& value : values) {
+    bool found = false;
+    if (opt_array) {
+      for (size_t i = 0; i < opt_array->size(); ++i) {
+        if (OptExportAt(opt_array.Get(), i) == value) {
+          normalized.matched.emplace_back(i, value);
+          found = true;
+          break;
+        }
+      }
+    }
+    all_matched = all_matched && found;
+  }
+  normalized.free_text = !all_matched;
+  if (normalized.free_text && !(is_combo && is_edit && values.size() == 1)) {
+    return std::nullopt;
+  }
+
+  std::sort(normalized.matched.begin(), normalized.matched.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  normalized.matched.erase(
+      std::unique(
+          normalized.matched.begin(), normalized.matched.end(),
+          [](const auto& a, const auto& b) { return a.first == b.first; }),
+      normalized.matched.end());
+  return normalized;
+}
+
+void WriteChoiceDefaultValues(CPDF_Dictionary* field,
+                              const std::vector<WideString>& requested_values,
+                              const NormalizedChoiceValues& normalized) {
+  if (normalized.free_text) {
+    field->SetNewFor<CPDF_String>(pdfium::form_fields::kDV,
+                                  requested_values[0].AsStringView());
+    return;
+  }
+  if (normalized.matched.size() == 1) {
+    field->SetNewFor<CPDF_String>(pdfium::form_fields::kDV,
+                                  normalized.matched[0].second.AsStringView());
+    return;
+  }
+  auto defaults = field->SetNewFor<CPDF_Array>(pdfium::form_fields::kDV);
+  for (const auto& entry : normalized.matched) {
+    defaults->AppendNew<CPDF_String>(entry.second.AsStringView());
+  }
 }
 
 // Toggle transactions mirror CPDF_FormField::CheckControl semantics:
@@ -510,8 +700,7 @@ bool PrepareToggle(CPDF_Document* doc,
 }
 
 bool RejectClearForNoToggleToOff(const ToggleContext& ctx) {
-  return ctx.is_radio &&
-         (ctx.flags & pdfium::form_flags::kButtonNoToggleToOff);
+  return ctx.is_radio && (ctx.flags & pdfium::form_flags::kButtonNoToggleToOff);
 }
 
 bool ExecuteToggle(CPDF_Document* doc,
@@ -549,14 +738,12 @@ bool ExecuteToggle(CPDF_Document* doc,
       ToArray(CPDF_FormField::GetFieldAttrForDict(ctx.field.Get(), "Opt"));
   ByteString new_v = kOffState;
   if (target) {
-    new_v = opt_array
-                ? ByteString::FormatInteger(
-                      pdfium::checked_cast<int>(target_ordinal))
-                : PDF_EncodeText(target->export_value.AsStringView());
+    new_v = opt_array ? ByteString::FormatInteger(
+                            pdfium::checked_cast<int>(target_ordinal))
+                      : PDF_EncodeText(target->export_value.AsStringView());
   }
-  RetainPtr<const CPDF_Object> current_v =
-      CPDF_FormField::GetFieldAttrForDict(ctx.field.Get(),
-                                          pdfium::form_fields::kV);
+  RetainPtr<const CPDF_Object> current_v = CPDF_FormField::GetFieldAttrForDict(
+      ctx.field.Get(), pdfium::form_fields::kV);
   const bool v_changes = !current_v || current_v->GetString() != new_v;
 
   if (steps.empty() && !v_changes) {
@@ -567,8 +754,7 @@ bool ExecuteToggle(CPDF_Document* doc,
 
   // Apply. First mutable access happens here; promotion is now safe.
   const bool need_promoted_field =
-      v_changes ||
-      std::any_of(steps.begin(), steps.end(), [&](const Step& s) {
+      v_changes || std::any_of(steps.begin(), steps.end(), [&](const Step& s) {
         const TxnControl& c = ctx.controls[s.control_index];
         return c.merged || c.objnum == 0;
       });
@@ -635,8 +821,7 @@ bool ApplyToggle(CPDF_Document* doc,
     }
   }
   return ExecuteToggle(doc, field_objnum, ctx, target, target_ordinal,
-                       changed_widget_objnums, buffer_size,
-                       out_changed_count);
+                       changed_widget_objnums, buffer_size, out_changed_count);
 }
 
 // Select the target widget by export value - the identity FDF/XFDF carry.
@@ -669,18 +854,71 @@ bool ApplyToggleByExport(CPDF_Document* doc,
     }
   }
   return ExecuteToggle(doc, field_objnum, ctx, target, target_ordinal,
-                       changed_widget_objnums, buffer_size,
-                       out_changed_count);
+                       changed_widget_objnums, buffer_size, out_changed_count);
+}
+
+bool ResolveToggleDefault(const ToggleContext& ctx,
+                          const CPDF_Object* default_value,
+                          const TxnControl** out_target,
+                          size_t* out_target_ordinal) {
+  *out_target = nullptr;
+  *out_target_ordinal = 0;
+  if (!default_value || default_value->IsNull()) {
+    return true;
+  }
+  if (!default_value->IsName()) {
+    return false;
+  }
+
+  const ByteString raw_default = default_value->GetString();
+  if (raw_default == kOffState) {
+    return true;
+  }
+  RetainPtr<const CPDF_Array> opt_array =
+      ToArray(CPDF_FormField::GetFieldAttrForDict(ctx.field.Get(), "Opt"));
+  for (size_t i = 0; i < ctx.controls.size(); ++i) {
+    const ByteString checked_value =
+        opt_array ? ByteString::FormatInteger(pdfium::checked_cast<int>(i))
+                  : ctx.controls[i].on_state;
+    if (checked_value == raw_default) {
+      *out_target = &ctx.controls[i];
+      *out_target_ordinal = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ApplyToggleDefault(CPDF_Document* doc,
+                        uint32_t field_objnum,
+                        const CPDF_Object* default_value,
+                        uint32_t* changed_widget_objnums,
+                        unsigned long buffer_size,
+                        unsigned long* out_changed_count) {
+  ToggleContext ctx;
+  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+    return false;
+  }
+  const TxnControl* target = nullptr;
+  size_t target_ordinal = 0;
+  if (!ResolveToggleDefault(ctx, default_value, &target, &target_ordinal)) {
+    return false;
+  }
+  // NoToggleToOff governs interactive changes, not restoring the declared
+  // default. A missing or explicit /Off default must still reset to Off.
+  return ExecuteToggle(doc, field_objnum, ctx, target, target_ordinal,
+                       changed_widget_objnums, buffer_size, out_changed_count);
 }
 
 // Regenerate the /AP of every control and report them all as changed.
-bool RegenerateControlAppearances(CPDF_Document* doc,
-                                  const std::vector<TxnControl>& controls,
-                                  const RetainPtr<CPDF_Dictionary>& promoted_field,
-                                  CPDF_GenerateAP::FormType type,
-                                  uint32_t* changed_widget_objnums,
-                                  unsigned long buffer_size,
-                                  unsigned long* out_changed_count) {
+bool RegenerateControlAppearances(
+    CPDF_Document* doc,
+    const std::vector<TxnControl>& controls,
+    const RetainPtr<CPDF_Dictionary>& promoted_field,
+    CPDF_GenerateAP::FormType type,
+    uint32_t* changed_widget_objnums,
+    unsigned long buffer_size,
+    unsigned long* out_changed_count) {
   std::vector<uint32_t> changed;
   unsigned long total_changed = 0;
   for (const TxnControl& control : controls) {
@@ -715,9 +953,10 @@ bool ApplyTextValue(CPDF_Document* doc,
   RetainPtr<const CPDF_Object> max_len_obj =
       CPDF_FormField::GetFieldAttrForDict(field.Get(), "MaxLen");
   const int max_len = max_len_obj ? max_len_obj->GetInteger() : 0;
-  if (max_len > 0 && new_value.GetLength() > static_cast<size_t>(max_len)) {
-    return false;
-  }
+  const WideString normalized_value =
+      max_len > 0 && new_value.GetLength() > static_cast<size_t>(max_len)
+          ? new_value.First(static_cast<size_t>(max_len))
+          : new_value;
 
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
@@ -726,11 +965,10 @@ bool ApplyTextValue(CPDF_Document* doc,
   }
 
   RetainPtr<const CPDF_Object> current_v =
-      CPDF_FormField::GetFieldAttrForDict(field.Get(),
-                                          pdfium::form_fields::kV);
+      CPDF_FormField::GetFieldAttrForDict(field.Get(), pdfium::form_fields::kV);
   const WideString current_value =
       current_v ? current_v->GetUnicodeText() : WideString();
-  if (current_value == new_value && !field->KeyExist("RV")) {
+  if (current_value == normalized_value && !field->KeyExist("RV")) {
     ReportChangedWidgets({}, 0, changed_widget_objnums, buffer_size,
                          out_changed_count);
     return true;
@@ -742,7 +980,7 @@ bool ApplyTextValue(CPDF_Document* doc,
     return false;
   }
   promoted_field->SetNewFor<CPDF_String>(pdfium::form_fields::kV,
-                                         new_value.AsStringView());
+                                         normalized_value.AsStringView());
   // A rich text value would now contradict /V; drop it rather than lie.
   promoted_field->RemoveFor("RV");
 
@@ -763,34 +1001,9 @@ bool ApplyChoiceValues(CPDF_Document* doc,
     return false;
   }
   const uint32_t flags = InheritedFieldFlags(field.Get());
-  const bool is_combo = flags & pdfium::form_flags::kChoiceCombo;
-  const bool is_edit = flags & pdfium::form_flags::kChoiceEdit;
-  const bool is_multi = flags & pdfium::form_flags::kChoiceMultiSelect;
-  if (new_values.size() > 1 && (is_combo || !is_multi)) {
-    return false;
-  }
-
-  // Match every value against the option export values. `matched` pairs are
-  // (option index, value), used for option-ordered /V and a sorted /I.
-  RetainPtr<const CPDF_Array> opt_array =
-      ToArray(CPDF_FormField::GetFieldAttrForDict(field.Get(), "Opt"));
-  std::vector<std::pair<size_t, WideString>> matched;
-  bool all_matched = true;
-  for (const WideString& new_value : new_values) {
-    bool found = false;
-    if (opt_array) {
-      for (size_t i = 0; i < opt_array->size(); ++i) {
-        if (OptExportAt(opt_array.Get(), i) == new_value) {
-          matched.emplace_back(i, new_value);
-          found = true;
-          break;
-        }
-      }
-    }
-    all_matched = all_matched && found;
-  }
-  const bool free_text = !all_matched;
-  if (free_text && !(is_combo && is_edit && new_values.size() == 1)) {
+  std::optional<NormalizedChoiceValues> normalized =
+      NormalizeChoiceValues(field.Get(), flags, new_values);
+  if (!normalized.has_value()) {
     return false;
   }
 
@@ -807,32 +1020,44 @@ bool ApplyChoiceValues(CPDF_Document* doc,
   }
 
   if (new_values.empty()) {
-    promoted_field->RemoveFor(pdfium::form_fields::kV);
-    promoted_field->RemoveFor("I");
-  } else if (free_text) {
+    if (HasInheritedFieldAttribute(doc, field.Get(), pdfium::form_fields::kV)) {
+      if (!(flags & pdfium::form_flags::kChoiceCombo) &&
+          (flags & pdfium::form_flags::kChoiceMultiSelect)) {
+        promoted_field->SetNewFor<CPDF_Array>(pdfium::form_fields::kV);
+      } else {
+        promoted_field->SetNewFor<CPDF_String>(pdfium::form_fields::kV,
+                                               WideStringView());
+      }
+    } else {
+      promoted_field->RemoveFor(pdfium::form_fields::kV);
+    }
+    if (HasInheritedFieldAttribute(doc, field.Get(), "I")) {
+      promoted_field->SetNewFor<CPDF_Array>("I");
+    } else {
+      promoted_field->RemoveFor("I");
+    }
+  } else if (normalized->free_text) {
     promoted_field->SetNewFor<CPDF_String>(pdfium::form_fields::kV,
                                            new_values[0].AsStringView());
-    promoted_field->RemoveFor("I");
+    if (HasInheritedFieldAttribute(doc, field.Get(), "I")) {
+      promoted_field->SetNewFor<CPDF_Array>("I");
+    } else {
+      promoted_field->RemoveFor("I");
+    }
   } else {
-    std::sort(matched.begin(), matched.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-    matched.erase(std::unique(matched.begin(), matched.end(),
-                              [](const auto& a, const auto& b) {
-                                return a.first == b.first;
-                              }),
-                  matched.end());
-    if (matched.size() == 1) {
-      promoted_field->SetNewFor<CPDF_String>(pdfium::form_fields::kV,
-                                             matched[0].second.AsStringView());
+    if (normalized->matched.size() == 1) {
+      promoted_field->SetNewFor<CPDF_String>(
+          pdfium::form_fields::kV,
+          normalized->matched[0].second.AsStringView());
     } else {
       auto value_array =
           promoted_field->SetNewFor<CPDF_Array>(pdfium::form_fields::kV);
-      for (const auto& entry : matched) {
+      for (const auto& entry : normalized->matched) {
         value_array->AppendNew<CPDF_String>(entry.second.AsStringView());
       }
     }
     auto index_array = promoted_field->SetNewFor<CPDF_Array>("I");
-    for (const auto& entry : matched) {
+    for (const auto& entry : normalized->matched) {
       index_array->AppendNew<CPDF_Number>(
           pdfium::checked_cast<int>(entry.first));
     }
@@ -842,6 +1067,162 @@ bool ApplyChoiceValues(CPDF_Document* doc,
   return RegenerateControlAppearances(
       doc, controls, promoted_field, ChoiceFormType(flags),
       changed_widget_objnums, buffer_size, out_changed_count);
+}
+
+uint32_t DisplayFlags(uint32_t current_flags, int display) {
+  switch (display) {
+    case EPDF_FORM_DISPLAY_VISIBLE:
+      return (current_flags & ~(pdfium::annotation_flags::kInvisible |
+                                pdfium::annotation_flags::kHidden |
+                                pdfium::annotation_flags::kNoView)) |
+             pdfium::annotation_flags::kPrint;
+    case EPDF_FORM_DISPLAY_HIDDEN:
+      return (current_flags & ~(pdfium::annotation_flags::kInvisible |
+                                pdfium::annotation_flags::kNoView)) |
+             pdfium::annotation_flags::kHidden |
+             pdfium::annotation_flags::kPrint;
+    case EPDF_FORM_DISPLAY_NO_PRINT:
+      return current_flags & ~(pdfium::annotation_flags::kInvisible |
+                               pdfium::annotation_flags::kHidden |
+                               pdfium::annotation_flags::kPrint |
+                               pdfium::annotation_flags::kNoView);
+    case EPDF_FORM_DISPLAY_NO_VIEW:
+      return (current_flags & ~pdfium::annotation_flags::kHidden) |
+             pdfium::annotation_flags::kNoView |
+             pdfium::annotation_flags::kPrint;
+    default:
+      return current_flags;
+  }
+}
+
+bool ApplyFieldDisplay(CPDF_Document* doc,
+                       uint32_t field_objnum,
+                       int display,
+                       uint32_t* changed_widget_objnums,
+                       unsigned long buffer_size,
+                       unsigned long* out_changed_count) {
+  if (display < EPDF_FORM_DISPLAY_VISIBLE ||
+      display > EPDF_FORM_DISPLAY_NO_VIEW) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
+  if (!field) {
+    return false;
+  }
+  std::vector<TxnControl> controls;
+  if (!CollectTxnControls(doc, field.Get(), field_objnum,
+                          /*want_toggle_info=*/false, &controls)) {
+    return false;
+  }
+
+  struct Step {
+    size_t control_index;
+    uint32_t flags;
+  };
+  std::vector<Step> steps;
+  for (size_t i = 0; i < controls.size(); ++i) {
+    const uint32_t current_flags =
+        static_cast<uint32_t>(controls[i].dict->GetIntegerFor("F"));
+    const uint32_t new_flags = DisplayFlags(current_flags, display);
+    if (new_flags != current_flags) {
+      steps.push_back({i, new_flags});
+    }
+  }
+  if (steps.empty()) {
+    ReportChangedWidgets({}, 0, changed_widget_objnums, buffer_size,
+                         out_changed_count);
+    return true;
+  }
+
+  const bool needs_promoted_field =
+      std::any_of(steps.begin(), steps.end(), [&](const Step& step) {
+        const TxnControl& control = controls[step.control_index];
+        return control.merged || control.objnum == 0;
+      });
+  RetainPtr<CPDF_Dictionary> promoted_field;
+  if (needs_promoted_field) {
+    promoted_field = ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+    if (!promoted_field) {
+      return false;
+    }
+  }
+
+  std::vector<uint32_t> changed;
+  unsigned long total_changed = 0;
+  for (const Step& step : steps) {
+    const TxnControl& control = controls[step.control_index];
+    RetainPtr<CPDF_Dictionary> widget =
+        MutableControlDict(doc, control, promoted_field);
+    if (!widget) {
+      return false;
+    }
+    widget->SetNewFor<CPDF_Number>("F", static_cast<int>(step.flags));
+    ++total_changed;
+    if (control.objnum != 0) {
+      changed.push_back(control.objnum);
+    }
+  }
+  ReportChangedWidgets(changed, total_changed, changed_widget_objnums,
+                       buffer_size, out_changed_count);
+  return true;
+}
+
+bool ApplyFieldAppearanceText(CPDF_Document* doc,
+                              uint32_t field_objnum,
+                              const WideString& appearance_text,
+                              uint32_t* changed_widget_objnums,
+                              unsigned long buffer_size,
+                              unsigned long* out_changed_count) {
+  RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
+  if (!field) {
+    return false;
+  }
+  const ByteString field_type = InheritedFieldType(field.Get());
+  CPDF_GenerateAP::FormType appearance_type;
+  if (field_type == pdfium::form_fields::kTx) {
+    appearance_type = CPDF_GenerateAP::kTextField;
+  } else if (field_type == pdfium::form_fields::kCh &&
+             (InheritedFieldFlags(field.Get()) &
+              pdfium::form_flags::kChoiceCombo)) {
+    appearance_type = CPDF_GenerateAP::kComboBox;
+  } else {
+    return false;
+  }
+
+  std::vector<TxnControl> controls;
+  if (!CollectTxnControls(doc, field.Get(), field_objnum,
+                          /*want_toggle_info=*/false, &controls)) {
+    return false;
+  }
+  const bool needs_promoted_field = std::any_of(
+      controls.begin(), controls.end(), [](const TxnControl& control) {
+        return control.merged || control.objnum == 0;
+      });
+  RetainPtr<CPDF_Dictionary> promoted_field;
+  if (needs_promoted_field) {
+    promoted_field = ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+    if (!promoted_field) {
+      return false;
+    }
+  }
+
+  std::vector<uint32_t> changed;
+  unsigned long total_changed = 0;
+  for (const TxnControl& control : controls) {
+    RetainPtr<CPDF_Dictionary> widget =
+        MutableControlDict(doc, control, promoted_field);
+    if (!widget || !CPDF_GenerateAP::GenerateFormAPWithValueOverride(
+                       doc, widget.Get(), appearance_type, appearance_text)) {
+      return false;
+    }
+    ++total_changed;
+    if (control.objnum != 0) {
+      changed.push_back(control.objnum);
+    }
+  }
+  ReportChangedWidgets(changed, total_changed, changed_widget_objnums,
+                       buffer_size, out_changed_count);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -923,8 +1304,8 @@ void ApplyImportedValues(CPDF_Document* doc,
       break;
     case CPDF_FormField::kComboBox:
     case CPDF_FormField::kListBox:
-      applied = ApplyChoiceValues(doc, field_objnum, values, nullptr, 0,
-                                  &changed);
+      applied =
+          ApplyChoiceValues(doc, field_objnum, values, nullptr, 0, &changed);
       break;
     default:
       break;  // Push buttons, signatures, unknown: never written.
@@ -983,6 +1364,14 @@ struct XfdfNode {
   std::vector<WideString> values;
 };
 
+bool IsFieldValueEmpty(const CPDF_Object* value) {
+  if (!value || value->IsNull()) {
+    return true;
+  }
+  const CPDF_Array* array = value->AsArray();
+  return array ? array->IsEmpty() : value->GetString().IsEmpty();
+}
+
 // Assemble <field>/<value> elements into the document-owned DOM.
 void EmitXfdfFieldNodes(const std::map<WideString, XfdfNode>& nodes,
                         CFX_XMLDocument* xml,
@@ -992,8 +1381,7 @@ void EmitXfdfFieldNodes(const std::map<WideString, XfdfNode>& nodes,
     field->SetAttribute(L"name", it.first);
     parent->AppendLastChild(field);
     for (const WideString& value : it.second.values) {
-      CFX_XMLElement* value_element =
-          xml->CreateNode<CFX_XMLElement>(L"value");
+      CFX_XMLElement* value_element = xml->CreateNode<CFX_XMLElement>(L"value");
       value_element->AppendLastChild(xml->CreateNode<CFX_XMLText>(value));
       field->AppendLastChild(value_element);
     }
@@ -1012,8 +1400,7 @@ ByteString BuildXfdf(CPDF_InteractiveForm* form,
       continue;
     }
     const CPDF_FormField::Type type = field->GetType();
-    if (type == CPDF_FormField::kPushButton ||
-        type == CPDF_FormField::kSign) {
+    if (type == CPDF_FormField::kPushButton || type == CPDF_FormField::kSign) {
       continue;
     }
     const uint32_t flags = field->GetFieldFlags();
@@ -1023,7 +1410,7 @@ ByteString BuildXfdf(CPDF_InteractiveForm* form,
     RetainPtr<const CPDF_Object> value_object =
         field->GetFieldAttr(pdfium::form_fields::kV);
     if (skip_empty_required && (flags & pdfium::form_flags::kRequired) &&
-        (!value_object || value_object->GetString().IsEmpty())) {
+        IsFieldValueEmpty(value_object.Get())) {
       continue;
     }
     const WideString fqn = field->GetFullName();
@@ -1239,8 +1626,8 @@ EPDFForm_LoadModel(FPDF_DOCUMENT document) {
   RetainPtr<const CPDF_Dictionary> acro_form =
       root ? root->GetDictFor("AcroForm") : nullptr;
   if (acro_form) {
-    model->kind = acro_form->KeyExist("XFA") ? EPDF_FORMKIND_XFA
-                                             : EPDF_FORMKIND_ACROFORM;
+    model->kind =
+        acro_form->KeyExist("XFA") ? EPDF_FORMKIND_XFA : EPDF_FORMKIND_ACROFORM;
     model->need_appearances =
         acro_form->GetBooleanFor("NeedAppearances", false);
   }
@@ -1257,6 +1644,7 @@ EPDFForm_LoadModel(FPDF_DOCUMENT document) {
   // Phase 3: detach into a plain snapshot.
   const size_t field_count = CountFormFields(*form);
   model->fields.reserve(field_count);
+  std::map<const CPDF_Dictionary*, int> field_index_by_dict;
   for (size_t i = 0; i < field_count; ++i) {
     CPDF_FormField* field = form->GetField(i, WideString());
     if (!field) {
@@ -1264,6 +1652,7 @@ EPDFForm_LoadModel(FPDF_DOCUMENT document) {
     }
     FieldRecord record = SnapshotField(field, initial_fields, widget_pages);
     const int index = fxcrt::CollectionSize<int>(model->fields);
+    field_index_by_dict.try_emplace(field->GetFieldDict().Get(), index);
     if (record.objnum != 0) {
       model->field_index_by_objnum.try_emplace(record.objnum, index);
     }
@@ -1273,6 +1662,17 @@ EPDFForm_LoadModel(FPDF_DOCUMENT document) {
       }
     }
     model->fields.push_back(std::move(record));
+  }
+
+  const int calculation_count = form->CountFieldsInCalculationOrder();
+  model->calculation_order.reserve(calculation_count);
+  for (int i = 0; i < calculation_count; ++i) {
+    CPDF_FormField* field = form->GetFieldInCalculationOrder(i);
+    const auto it = field
+                        ? field_index_by_dict.find(field->GetFieldDict().Get())
+                        : field_index_by_dict.end();
+    model->calculation_order.push_back(
+        it != field_index_by_dict.end() ? it->second : -1);
   }
 
   return HandleFromFormModel(model.release());
@@ -1298,6 +1698,35 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFForm_CountFields(EPDF_FORM_MODEL model) {
   return form ? fxcrt::CollectionSize<int>(form->fields) : 0;
 }
 
+FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
+EPDFForm_GetFieldActionModel(EPDF_FORM_MODEL model,
+                             int field_index,
+                             int event) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  if (!field || event < EPDF_FORM_ACTION_KEYSTROKE ||
+      event > EPDF_FORM_ACTION_CALCULATE) {
+    return nullptr;
+  }
+  return epdf::MakeActionModelHandle(
+      field->actions[static_cast<size_t>(event)]);
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFForm_CountCalculationOrder(EPDF_FORM_MODEL model) {
+  FormModel* form = FormModelFromHandle(model);
+  return form ? fxcrt::CollectionSize<int>(form->calculation_order) : 0;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFForm_GetCalculationOrderFieldIndex(EPDF_FORM_MODEL model, int order_index) {
+  FormModel* form = FormModelFromHandle(model);
+  if (!form || order_index < 0 ||
+      order_index >= fxcrt::CollectionSize<int>(form->calculation_order)) {
+    return -1;
+  }
+  return form->calculation_order[order_index];
+}
+
 FPDF_EXPORT uint32_t FPDF_CALLCONV
 EPDFForm_GetFieldObjNum(EPDF_FORM_MODEL model, int field_index) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
@@ -1310,8 +1739,8 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFForm_GetFieldFamily(EPDF_FORM_MODEL model,
   return field ? field->family : EPDF_FORMFIELD_FAMILY_UNKNOWN;
 }
 
-FPDF_EXPORT uint32_t FPDF_CALLCONV
-EPDFForm_GetFieldFlags(EPDF_FORM_MODEL model, int field_index) {
+FPDF_EXPORT uint32_t FPDF_CALLCONV EPDFForm_GetFieldFlags(EPDF_FORM_MODEL model,
+                                                          int field_index) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
   return field ? field->flags : 0;
 }
@@ -1359,34 +1788,62 @@ EPDFForm_GetFieldMappingName(EPDF_FORM_MODEL model,
     return 0;
   }
   return Utf16EncodeMaybeCopyAndReturnLength(
-      field->mapping_name,
+      field->mapping_name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFForm_GetFieldValueKind(EPDF_FORM_MODEL model,
+                                                         int field_index) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  return field ? field->value.kind : EPDF_FORM_VALUE_NONE;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFForm_CountFieldValues(EPDF_FORM_MODEL model,
+                                                        int field_index) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  return field ? fxcrt::CollectionSize<int>(field->value.values) : 0;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFForm_GetFieldValueAt(EPDF_FORM_MODEL model,
+                         int field_index,
+                         int value_index,
+                         FPDF_WCHAR* buffer,
+                         unsigned long buflen) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  if (!field || value_index < 0 ||
+      value_index >= fxcrt::CollectionSize<int>(field->value.values)) {
+    return 0;
+  }
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      field->value.values[value_index],
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
-FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFForm_GetFieldValue(EPDF_FORM_MODEL model,
-                       int field_index,
-                       FPDF_WCHAR* buffer,
-                       unsigned long buflen) {
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFForm_GetFieldDefaultValueKind(EPDF_FORM_MODEL model, int field_index) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
-  if (!field) {
-    return 0;
-  }
-  return Utf16EncodeMaybeCopyAndReturnLength(
-      field->value, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+  return field ? field->default_value.kind : EPDF_FORM_VALUE_NONE;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFForm_CountFieldDefaultValues(EPDF_FORM_MODEL model, int field_index) {
+  const FieldRecord* field = GetFieldRecord(model, field_index);
+  return field ? fxcrt::CollectionSize<int>(field->default_value.values) : 0;
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFForm_GetFieldDefaultValue(EPDF_FORM_MODEL model,
-                              int field_index,
-                              FPDF_WCHAR* buffer,
-                              unsigned long buflen) {
+EPDFForm_GetFieldDefaultValueAt(EPDF_FORM_MODEL model,
+                                int field_index,
+                                int value_index,
+                                FPDF_WCHAR* buffer,
+                                unsigned long buflen) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
-  if (!field) {
+  if (!field || value_index < 0 ||
+      value_index >= fxcrt::CollectionSize<int>(field->default_value.values)) {
     return 0;
   }
   return Utf16EncodeMaybeCopyAndReturnLength(
-      field->default_value,
+      field->default_value.values[value_index],
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
@@ -1396,8 +1853,8 @@ FPDF_EXPORT int FPDF_CALLCONV EPDFForm_GetFieldMaxLen(EPDF_FORM_MODEL model,
   return field ? field->max_len : 0;
 }
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFForm_CountFieldOptions(EPDF_FORM_MODEL model, int field_index) {
+FPDF_EXPORT int FPDF_CALLCONV EPDFForm_CountFieldOptions(EPDF_FORM_MODEL model,
+                                                         int field_index) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
   return field ? fxcrt::CollectionSize<int>(field->options) : 0;
 }
@@ -1441,8 +1898,8 @@ EPDFForm_IsFieldOptionSelected(EPDF_FORM_MODEL model,
   return option && option->selected;
 }
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFForm_CountFieldWidgets(EPDF_FORM_MODEL model, int field_index) {
+FPDF_EXPORT int FPDF_CALLCONV EPDFForm_CountFieldWidgets(EPDF_FORM_MODEL model,
+                                                         int field_index) {
   const FieldRecord* field = GetFieldRecord(model, field_index);
   return field ? fxcrt::CollectionSize<int>(field->widgets) : 0;
 }
@@ -1516,8 +1973,7 @@ EPDFForm_GetFieldIndexByObjNum(EPDF_FORM_MODEL model, uint32_t field_objnum) {
 }
 
 FPDF_EXPORT int FPDF_CALLCONV
-EPDFForm_GetFieldIndexForWidget(EPDF_FORM_MODEL model,
-                                uint32_t widget_objnum) {
+EPDFForm_GetFieldIndexForWidget(EPDF_FORM_MODEL model, uint32_t widget_objnum) {
   FormModel* form = FormModelFromHandle(model);
   if (!form || widget_objnum == 0) {
     return -1;
@@ -1537,8 +1993,7 @@ EPDFForm_SetToggle(FPDF_DOCUMENT document,
   if (!doc) {
     return false;
   }
-  return ApplyToggle(doc, field_objnum,
-                     ByteString(on_state ? on_state : ""),
+  return ApplyToggle(doc, field_objnum, ByteString(on_state ? on_state : ""),
                      /*lenient_unknown_state=*/false, changed_widget_objnums,
                      buffer_size, out_changed_count);
 }
@@ -1554,11 +2009,10 @@ EPDFForm_SetTextValue(FPDF_DOCUMENT document,
   if (!doc) {
     return false;
   }
-  return ApplyTextValue(doc, field_objnum,
-                        value ? WideStringFromFPDFWideString(value)
-                              : WideString(),
-                        changed_widget_objnums, buffer_size,
-                        out_changed_count);
+  return ApplyTextValue(
+      doc, field_objnum,
+      value ? WideStringFromFPDFWideString(value) : WideString(),
+      changed_widget_objnums, buffer_size, out_changed_count);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1611,12 +2065,9 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
     if (flags & pdfium::form_flags::kButtonPushbutton) {
       return false;
     }
-    // Lenient: a /DV naming no widget state simply clears the group.
-    const ByteString default_state =
-        default_value ? default_value->GetString() : ByteString(kOffState);
-    return ApplyToggle(doc, field_objnum, default_state,
-                       /*lenient_unknown_state=*/true, changed_widget_objnums,
-                       buffer_size, out_changed_count);
+    return ApplyToggleDefault(doc, field_objnum, default_value.Get(),
+                              changed_widget_objnums, buffer_size,
+                              out_changed_count);
   }
 
   if (field_type != pdfium::form_fields::kTx &&
@@ -1624,34 +2075,98 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
     return false;  // Push buttons handled above; signatures are never reset.
   }
 
+  if (field_type == pdfium::form_fields::kCh) {
+    std::vector<WideString> defaults;
+    if (default_value && !default_value->IsNull()) {
+      if (default_value->IsString()) {
+        WideString value = default_value->GetUnicodeText();
+        // An empty choice default represents no selected option unless an
+        // option actually uses the empty export value (normalization below
+        // will retain it in that case).
+        defaults.push_back(std::move(value));
+      } else if (const CPDF_Array* array = default_value->AsArray()) {
+        defaults.reserve(array->size());
+        for (size_t i = 0; i < array->size(); ++i) {
+          RetainPtr<const CPDF_Object> element = array->GetDirectObjectAt(i);
+          if (!element || !element->IsString()) {
+            return false;
+          }
+          defaults.push_back(element->GetUnicodeText());
+        }
+      } else {
+        return false;
+      }
+    }
+    if (defaults.size() == 1 && defaults[0].IsEmpty()) {
+      std::optional<NormalizedChoiceValues> normalized =
+          NormalizeChoiceValues(field.Get(), flags, defaults);
+      if (!normalized.has_value()) {
+        defaults.clear();
+      }
+    }
+    return ApplyChoiceValues(doc, field_objnum, defaults,
+                             changed_widget_objnums, buffer_size,
+                             out_changed_count);
+  }
+
+  if (default_value && !default_value->IsNull() && !default_value->IsString()) {
+    return false;
+  }
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
                           /*want_toggle_info=*/false, &controls)) {
     return false;
   }
-
   RetainPtr<CPDF_Dictionary> promoted_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
   if (!promoted_field) {
     return false;
   }
-  if (default_value) {
-    promoted_field->SetFor(pdfium::form_fields::kV,
-                           default_value->CloneDirectObject());
+  if (default_value && !default_value->IsNull()) {
+    promoted_field->SetNewFor<CPDF_String>(
+        pdfium::form_fields::kV,
+        default_value->GetUnicodeText().AsStringView());
   } else {
-    promoted_field->RemoveFor(pdfium::form_fields::kV);
+    if (HasInheritedFieldAttribute(doc, field.Get(), pdfium::form_fields::kV)) {
+      promoted_field->SetNewFor<CPDF_String>(pdfium::form_fields::kV,
+                                             WideStringView());
+    } else {
+      promoted_field->RemoveFor(pdfium::form_fields::kV);
+    }
   }
   promoted_field->RemoveFor("RV");
-  if (field_type == pdfium::form_fields::kCh) {
-    promoted_field->RemoveFor("I");
-  }
+  return RegenerateControlAppearances(
+      doc, controls, promoted_field, CPDF_GenerateAP::kTextField,
+      changed_widget_objnums, buffer_size, out_changed_count);
+}
 
-  const CPDF_GenerateAP::FormType type =
-      field_type == pdfium::form_fields::kTx ? CPDF_GenerateAP::kTextField
-                                             : ChoiceFormType(flags);
-  return RegenerateControlAppearances(doc, controls, promoted_field, type,
-                                      changed_widget_objnums, buffer_size,
-                                      out_changed_count);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldDisplay(FPDF_DOCUMENT document,
+                         uint32_t field_objnum,
+                         int display,
+                         uint32_t* changed_widget_objnums,
+                         unsigned long buffer_size,
+                         unsigned long* out_changed_count) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  return doc &&
+         ApplyFieldDisplay(doc, field_objnum, display, changed_widget_objnums,
+                           buffer_size, out_changed_count);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldAppearanceText(FPDF_DOCUMENT document,
+                                uint32_t field_objnum,
+                                FPDF_WIDESTRING appearance_text,
+                                uint32_t* changed_widget_objnums,
+                                unsigned long buffer_size,
+                                unsigned long* out_changed_count) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || !appearance_text) {
+    return false;
+  }
+  return ApplyFieldAppearanceText(
+      doc, field_objnum, WideStringFromFPDFWideString(appearance_text),
+      changed_widget_objnums, buffer_size, out_changed_count);
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
@@ -1688,9 +2203,9 @@ EPDFForm_ExportXFDF(FPDF_DOCUMENT document,
   std::unique_ptr<CPDF_InteractiveForm> form = BuildReconciledForm(doc);
   const WideString path =
       pdf_path ? WideStringFromFPDFWideString(pdf_path) : WideString();
-  const ByteString payload = BuildXfdf(
-      form.get(), path,
-      !!(export_flags & EPDF_FORM_EXPORT_SKIP_EMPTY_REQUIRED));
+  const ByteString payload =
+      BuildXfdf(form.get(), path,
+                !!(export_flags & EPDF_FORM_EXPORT_SKIP_EMPTY_REQUIRED));
   return CopyPayloadToBuffer(payload, buffer, buflen);
 }
 
@@ -1974,9 +2489,9 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
 namespace {
 
 // Family-defining /Ff bits are immutable through EPDFForm_SetFieldFlags.
-constexpr uint32_t kFamilyDefiningFlags = pdfium::form_flags::kButtonRadio |
-                                          pdfium::form_flags::kButtonPushbutton |
-                                          pdfium::form_flags::kChoiceCombo;
+constexpr uint32_t kFamilyDefiningFlags =
+    pdfium::form_flags::kButtonRadio | pdfium::form_flags::kButtonPushbutton |
+    pdfium::form_flags::kChoiceCombo;
 
 // Widget-plane keys that move to the new kid when a legacy merged field is
 // split by EPDFForm_AttachWidget. Field-plane keys (/FT /T /Ff /V /DV /Opt
@@ -2001,10 +2516,12 @@ bool AuthorFamilyFromCode(int family, AuthorFamily* out) {
       *out = {pdfium::form_fields::kBtn, 0, true};
       return true;
     case 3 /* RADIO */:
-      *out = {pdfium::form_fields::kBtn, pdfium::form_flags::kButtonRadio, true};
+      *out = {pdfium::form_fields::kBtn, pdfium::form_flags::kButtonRadio,
+              true};
       return true;
     case 5 /* COMBOBOX */:
-      *out = {pdfium::form_fields::kCh, pdfium::form_flags::kChoiceCombo, false};
+      *out = {pdfium::form_fields::kCh, pdfium::form_flags::kChoiceCombo,
+              false};
       return true;
     case 6 /* LISTBOX */:
       *out = {pdfium::form_fields::kCh, 0, false};
@@ -2018,15 +2535,23 @@ int FamilyOfFieldDict(const CPDF_Dictionary* field_dict) {
   const ByteString field_type = InheritedFieldType(field_dict);
   const uint32_t flags = InheritedFieldFlags(field_dict);
   if (field_type == pdfium::form_fields::kBtn) {
-    if (flags & pdfium::form_flags::kButtonPushbutton) return 1;
-    if (flags & pdfium::form_flags::kButtonRadio) return 3;
+    if (flags & pdfium::form_flags::kButtonPushbutton) {
+      return 1;
+    }
+    if (flags & pdfium::form_flags::kButtonRadio) {
+      return 3;
+    }
     return 2;
   }
-  if (field_type == pdfium::form_fields::kTx) return 4;
+  if (field_type == pdfium::form_fields::kTx) {
+    return 4;
+  }
   if (field_type == pdfium::form_fields::kCh) {
     return (flags & pdfium::form_flags::kChoiceCombo) ? 5 : 6;
   }
-  if (field_type == pdfium::form_fields::kSig) return 7;
+  if (field_type == pdfium::form_fields::kSig) {
+    return 7;
+  }
   return 0;
 }
 
@@ -2036,9 +2561,13 @@ std::vector<WideString> SplitFqnSegments(const WideString& full_name) {
   while (start <= full_name.GetLength()) {
     std::optional<size_t> dot = full_name.Find(L'.', start);
     const size_t end = dot.value_or(full_name.GetLength());
-    if (end == start) return {};  // empty segment -> invalid
+    if (end == start) {
+      return {};  // empty segment -> invalid
+    }
     segments.push_back(full_name.Substr(start, end - start));
-    if (!dot.has_value()) break;
+    if (!dot.has_value()) {
+      break;
+    }
     start = dot.value() + 1;
   }
   return segments;
@@ -2046,13 +2575,18 @@ std::vector<WideString> SplitFqnSegments(const WideString& full_name) {
 
 // Find a direct child (of /Fields or a /Kids array) whose own /T equals
 // |segment|, resolving every entry through the document.
-RetainPtr<const CPDF_Dictionary> FindChildFieldByName(CPDF_Document* doc,
-                                                      const CPDF_Array* entries,
-                                                      const WideString& segment) {
-  if (!entries) return nullptr;
+RetainPtr<const CPDF_Dictionary> FindChildFieldByName(
+    CPDF_Document* doc,
+    const CPDF_Array* entries,
+    const WideString& segment) {
+  if (!entries) {
+    return nullptr;
+  }
   for (size_t i = 0; i < entries->size(); ++i) {
     RetainPtr<const CPDF_Object> element = entries->GetObjectAt(i);
-    if (!element) continue;
+    if (!element) {
+      continue;
+    }
     RetainPtr<const CPDF_Dictionary> child;
     if (const CPDF_Reference* ref = element->AsReference()) {
       child = ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
@@ -2067,7 +2601,9 @@ RetainPtr<const CPDF_Dictionary> FindChildFieldByName(CPDF_Document* doc,
 }
 
 bool RemoveObjNumFromMutableArray(CPDF_Array* array, uint32_t objnum) {
-  if (!array) return false;
+  if (!array) {
+    return false;
+  }
   for (size_t i = 0; i < array->size(); ++i) {
     RetainPtr<const CPDF_Object> element = array->GetObjectAt(i);
     const CPDF_Reference* ref = element ? element->AsReference() : nullptr;
@@ -2085,9 +2621,13 @@ uint32_t FindPageContainingAnnot(CPDF_Document* doc, uint32_t annot_objnum) {
   const int page_count = doc->GetPageCount();
   for (int i = 0; i < page_count; ++i) {
     RetainPtr<const CPDF_Dictionary> page = doc->GetPageDictionary(i);
-    if (!page) continue;
+    if (!page) {
+      continue;
+    }
     RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
-    if (!annots) continue;
+    if (!annots) {
+      continue;
+    }
     for (size_t j = 0; j < annots->size(); ++j) {
       RetainPtr<const CPDF_Object> element = annots->GetObjectAt(j);
       const CPDF_Reference* ref = element ? element->AsReference() : nullptr;
@@ -2101,11 +2641,16 @@ uint32_t FindPageContainingAnnot(CPDF_Document* doc, uint32_t annot_objnum) {
 
 // After toggle AP generation, make sure the /AP /N "on" state carries the
 // requested name so EPDFForm_SetToggle can address it.
-void NormalizeToggleOnState(CPDF_Dictionary* widget, const ByteString& on_state) {
+void NormalizeToggleOnState(CPDF_Dictionary* widget,
+                            const ByteString& on_state) {
   RetainPtr<CPDF_Dictionary> ap = widget->GetMutableDictFor("AP");
-  if (!ap) return;
+  if (!ap) {
+    return;
+  }
   RetainPtr<CPDF_Dictionary> normal = ap->GetMutableDictFor("N");
-  if (!normal) return;
+  if (!normal) {
+    return;
+  }
   ByteString current_on;
   {
     CPDF_DictionaryLocker locker(normal);
@@ -2116,9 +2661,14 @@ void NormalizeToggleOnState(CPDF_Dictionary* widget, const ByteString& on_state)
       }
     }
   }
-  if (current_on.IsEmpty() || current_on == on_state) return;
-  RetainPtr<CPDF_Object> stream = normal->GetMutableObjectFor(current_on.AsStringView());
-  if (!stream) return;
+  if (current_on.IsEmpty() || current_on == on_state) {
+    return;
+  }
+  RetainPtr<CPDF_Object> stream =
+      normal->GetMutableObjectFor(current_on.AsStringView());
+  if (!stream) {
+    return;
+  }
   normal->SetFor(on_state, stream->Clone());
   normal->RemoveFor(current_on.AsStringView());
 }
@@ -2154,7 +2704,9 @@ void BakeWidgetAppearance(CPDF_Document* doc,
 }  // namespace
 
 FPDF_EXPORT uint32_t FPDF_CALLCONV
-EPDFForm_CreateField(FPDF_DOCUMENT document, int family, FPDF_WIDESTRING full_name) {
+EPDFForm_CreateField(FPDF_DOCUMENT document,
+                     int family,
+                     FPDF_WIDESTRING full_name) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   AuthorFamily author;
   if (!doc || !doc->GetRoot() || !AuthorFamilyFromCode(family, &author)) {
@@ -2215,8 +2767,8 @@ EPDFForm_CreateField(FPDF_DOCUMENT document, int family, FPDF_WIDESTRING full_na
     if (!parent_field) {
       return 0;
     }
-    parent_array =
-        GetMutableArrayMember(doc, parent_field.Get(), pdfium::form_fields::kKids);
+    parent_array = GetMutableArrayMember(doc, parent_field.Get(),
+                                         pdfium::form_fields::kKids);
   }
   if (!parent_array) {
     return 0;
@@ -2243,8 +2795,8 @@ EPDFForm_CreateField(FPDF_DOCUMENT document, int family, FPDF_WIDESTRING full_na
       return node->GetObjNum();
     }
     parent_field = node;
-    parent_array =
-        GetMutableArrayMember(doc, parent_field.Get(), pdfium::form_fields::kKids);
+    parent_array = GetMutableArrayMember(doc, parent_field.Get(),
+                                         pdfium::form_fields::kKids);
     if (!parent_array) {
       return 0;
     }
@@ -2263,7 +2815,7 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     return false;
   }
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field || !field->KeyExist(pdfium::form_fields::kFT)) {
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
     return false;  // must address the terminal field dictionary itself
   }
   const int family = FamilyOfFieldDict(field.Get());
@@ -2298,7 +2850,9 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
     auto split_widget = doc->NewIndirect<CPDF_Dictionary>();
     for (const char* key : kWidgetPlaneKeys) {
       RetainPtr<CPDF_Object> value = mutable_field->GetMutableObjectFor(key);
-      if (!value) continue;
+      if (!value) {
+        continue;
+      }
       split_widget->SetFor(key, value->Clone());
       mutable_field->RemoveFor(key);
     }
@@ -2410,7 +2964,7 @@ EPDFForm_DeleteField(FPDF_DOCUMENT document,
     return false;
   }
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field || !field->KeyExist(pdfium::form_fields::kFT)) {
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
     return false;
   }
 
@@ -2522,9 +3076,13 @@ RetainPtr<const CPDF_Array> SiblingArrayOf(CPDF_Document* doc,
 // (options, flags, MaxLen). No-op for families without generated text APs.
 void RegenerateFieldAppearances(CPDF_Document* doc, uint32_t field_objnum) {
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field) return;
+  if (!field) {
+    return;
+  }
   const int family = FamilyOfFieldDict(field.Get());
-  if (family != 4 && family != 5 && family != 6) return;
+  if (family != 4 && family != 5 && family != 6) {
+    return;
+  }
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
                           /*want_toggle_info=*/false, &controls)) {
@@ -2533,8 +3091,11 @@ void RegenerateFieldAppearances(CPDF_Document* doc, uint32_t field_objnum) {
   RetainPtr<CPDF_Dictionary> promoted_field;
   for (const TxnControl& control : controls) {
     if (!promoted_field && (control.merged || control.objnum == 0)) {
-      promoted_field = ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-      if (!promoted_field) return;
+      promoted_field =
+          ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+      if (!promoted_field) {
+        return;
+      }
     }
     RetainPtr<CPDF_Dictionary> widget =
         MutableControlDict(doc, control, promoted_field);
@@ -2551,26 +3112,39 @@ EPDFForm_SetFieldName(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       FPDF_WIDESTRING partial_name) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || field_objnum == 0) return false;
+  if (!doc || field_objnum == 0) {
+    return false;
+  }
   const WideString name =
       partial_name ? WideStringFromFPDFWideString(partial_name) : WideString();
-  if (name.IsEmpty() || name.Find(L'.', 0).has_value()) return false;
+  if (name.IsEmpty() || name.Find(L'.', 0).has_value()) {
+    return false;
+  }
 
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field || !field->KeyExist(pdfium::form_fields::kT)) return false;
+  if (!field || !field->KeyExist(pdfium::form_fields::kT)) {
+    return false;
+  }
 
   RetainPtr<const CPDF_Array> siblings = SiblingArrayOf(doc, field.Get());
   if (siblings) {
     for (size_t i = 0; i < siblings->size(); ++i) {
       RetainPtr<const CPDF_Object> element = siblings->GetObjectAt(i);
-      if (!element) continue;
+      if (!element) {
+        continue;
+      }
       RetainPtr<const CPDF_Dictionary> sibling;
       if (const CPDF_Reference* ref = element->AsReference()) {
-        if (ref->GetRefObjNum() == field_objnum) continue;
-        sibling = ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
+        if (ref->GetRefObjNum() == field_objnum) {
+          continue;
+        }
+        sibling =
+            ToDictionary(doc->GetOrParseIndirectObject(ref->GetRefObjNum()));
       } else {
         sibling = ToDictionary(std::move(element));
-        if (sibling.Get() == field.Get()) continue;
+        if (sibling.Get() == field.Get()) {
+          continue;
+        }
       }
       if (sibling &&
           sibling->GetUnicodeTextFor(pdfium::form_fields::kT) == name) {
@@ -2581,7 +3155,9 @@ EPDFForm_SetFieldName(FPDF_DOCUMENT document,
 
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
+  if (!mutable_field) {
+    return false;
+  }
   mutable_field->SetNewFor<CPDF_String>(pdfium::form_fields::kT,
                                         name.AsStringView());
   return true;
@@ -2593,19 +3169,71 @@ EPDFForm_SetFieldFlags(FPDF_DOCUMENT document,
                        uint32_t set_bits,
                        uint32_t clear_bits) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || field_objnum == 0) return false;
-  if ((set_bits | clear_bits) & kFamilyDefiningFlags) return false;
+  if (!doc || field_objnum == 0) {
+    return false;
+  }
+  if ((set_bits | clear_bits) & kFamilyDefiningFlags) {
+    return false;
+  }
 
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field || !field->KeyExist(pdfium::form_fields::kFT)) return false;
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
+    return false;
+  }
 
   const uint32_t current = InheritedFieldFlags(field.Get());
   const uint32_t next = (current & ~clear_bits) | set_bits;
-  if (next == current) return true;
+  if (next == current) {
+    return true;
+  }
+  if (InheritedFieldType(field.Get()) == pdfium::form_fields::kCh &&
+      ((current ^ next) & (pdfium::form_flags::kChoiceEdit |
+                           pdfium::form_flags::kChoiceMultiSelect))) {
+    const bool is_combo = next & pdfium::form_flags::kChoiceCombo;
+    const bool is_edit = next & pdfium::form_flags::kChoiceEdit;
+    const bool is_multi = next & pdfium::form_flags::kChoiceMultiSelect;
+    if ((is_combo && is_multi) || (!is_combo && is_edit)) {
+      return false;
+    }
+    RetainPtr<const CPDF_Array> options =
+        ToArray(CPDF_FormField::GetFieldAttrForDict(field.Get(), "Opt"));
+    auto value_is_compatible = [&](ByteStringView key) {
+      RetainPtr<const CPDF_Object> value =
+          CPDF_FormField::GetFieldAttrForDict(field.Get(), key);
+      if (!value || value->IsNull()) {
+        return true;
+      }
+      if (value->IsArray()) {
+        return is_multi && !is_combo;
+      }
+      if (!value->IsString()) {
+        return false;
+      }
+      const WideString text = value->GetUnicodeText();
+      if (text.IsEmpty() || !is_combo || is_edit) {
+        return true;
+      }
+      if (!options) {
+        return false;
+      }
+      for (size_t i = 0; i < options->size(); ++i) {
+        if (OptExportAt(options.Get(), i) == text) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!value_is_compatible(pdfium::form_fields::kV) ||
+        !value_is_compatible(pdfium::form_fields::kDV)) {
+      return false;
+    }
+  }
 
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
+  if (!mutable_field) {
+    return false;
+  }
   mutable_field->SetNewFor<CPDF_Number>(pdfium::form_fields::kFf,
                                         static_cast<int>(next));
   // Rendering-relevant text/choice bits (multiline, comb, ...) changed.
@@ -2618,7 +3246,9 @@ EPDFForm_SetFieldMaxLen(FPDF_DOCUMENT document,
                         uint32_t field_objnum,
                         int max_len) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || field_objnum == 0 || max_len < 0) return false;
+  if (!doc || field_objnum == 0 || max_len < 0) {
+    return false;
+  }
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
   if (!field || InheritedFieldType(field.Get()) != pdfium::form_fields::kTx) {
     return false;
@@ -2631,42 +3261,152 @@ EPDFForm_SetFieldMaxLen(FPDF_DOCUMENT document,
       return false;  // never truncate an existing value implicitly
     }
   }
+  RetainPtr<const CPDF_Object> current_max_len =
+      CPDF_FormField::GetFieldAttrForDict(field.Get(), "MaxLen");
+  if ((!current_max_len && max_len == 0) ||
+      (current_max_len && current_max_len->IsNumber() &&
+       current_max_len->GetInteger() == max_len)) {
+    return true;
+  }
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
-  if (max_len == 0) {
-    mutable_field->RemoveFor("MaxLen");
-  } else {
-    mutable_field->SetNewFor<CPDF_Number>("MaxLen", max_len);
+  if (!mutable_field) {
+    return false;
   }
+  // Keep a local zero so clearing an inherited limit has an effective result
+  // without mutating the ancestor (and therefore its sibling fields).
+  mutable_field->SetNewFor<CPDF_Number>("MaxLen", max_len);
   RegenerateFieldAppearances(doc, field_objnum);  // comb cells follow MaxLen
   return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFForm_SetFieldDefaultValue(FPDF_DOCUMENT document,
-                              uint32_t field_objnum,
-                              FPDF_WIDESTRING value) {
+EPDFForm_SetFieldDefaultValues(FPDF_DOCUMENT document,
+                               uint32_t field_objnum,
+                               const FPDF_WIDESTRING* values,
+                               unsigned long value_count) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || field_objnum == 0) return false;
+  if (!doc || field_objnum == 0 || value_count == 0 || !values) {
+    return false;
+  }
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field) return false;
+  if (!field) {
+    return false;
+  }
   const ByteString field_type = InheritedFieldType(field.Get());
   if (field_type != pdfium::form_fields::kTx &&
       field_type != pdfium::form_fields::kCh) {
     return false;
   }
-  const WideString text =
-      value ? WideStringFromFPDFWideString(value) : WideString();
+  std::vector<WideString> defaults;
+  pdfium::span<const FPDF_WIDESTRING> values_span =
+      UNSAFE_BUFFERS(pdfium::span(values, static_cast<size_t>(value_count)));
+  defaults.reserve(values_span.size());
+  for (FPDF_WIDESTRING value : values_span) {
+    defaults.push_back(value ? WideStringFromFPDFWideString(value)
+                             : WideString());
+  }
+
+  std::optional<NormalizedChoiceValues> normalized;
+  if (field_type == pdfium::form_fields::kTx) {
+    if (defaults.size() != 1) {
+      return false;
+    }
+    RetainPtr<const CPDF_Object> current = CPDF_FormField::GetFieldAttrForDict(
+        field.Get(), pdfium::form_fields::kDV);
+    if (current && current->IsString() &&
+        current->GetUnicodeText() == defaults[0]) {
+      return true;
+    }
+  } else {
+    normalized = NormalizeChoiceValues(
+        field.Get(), InheritedFieldFlags(field.Get()), defaults);
+    if (!normalized.has_value()) {
+      return false;
+    }
+  }
+
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
-  if (text.IsEmpty()) {
-    mutable_field->RemoveFor(pdfium::form_fields::kDV);
-  } else {
-    mutable_field->SetNewFor<CPDF_String>(pdfium::form_fields::kDV,
-                                          text.AsStringView());
+  if (!mutable_field) {
+    return false;
   }
+  if (field_type == pdfium::form_fields::kTx) {
+    mutable_field->SetNewFor<CPDF_String>(pdfium::form_fields::kDV,
+                                          defaults[0].AsStringView());
+  } else {
+    WriteChoiceDefaultValues(mutable_field.Get(), defaults, normalized.value());
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_SetFieldDefaultToggle(FPDF_DOCUMENT document,
+                               uint32_t field_objnum,
+                               FPDF_BYTESTRING on_state) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || field_objnum == 0 || !on_state || on_state[0] == '\0') {
+    return false;
+  }
+  ToggleContext ctx;
+  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+    return false;
+  }
+
+  const ByteString requested(on_state);
+  ByteString stored_default;
+  if (requested == kOffState) {
+    stored_default = kOffState;
+  } else {
+    RetainPtr<const CPDF_Array> opt_array =
+        ToArray(CPDF_FormField::GetFieldAttrForDict(ctx.field.Get(), "Opt"));
+    for (size_t i = 0; i < ctx.controls.size(); ++i) {
+      if (ctx.controls[i].on_state == requested) {
+        stored_default =
+            opt_array ? ByteString::FormatInteger(pdfium::checked_cast<int>(i))
+                      : requested;
+        break;
+      }
+    }
+    if (stored_default.IsEmpty()) {
+      return false;
+    }
+  }
+
+  RetainPtr<const CPDF_Object> current = CPDF_FormField::GetFieldAttrForDict(
+      ctx.field.Get(), pdfium::form_fields::kDV);
+  if (current && current->IsName() && current->GetString() == stored_default) {
+    return true;
+  }
+  RetainPtr<CPDF_Dictionary> mutable_field =
+      ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+  if (!mutable_field) {
+    return false;
+  }
+  mutable_field->SetNewFor<CPDF_Name>(pdfium::form_fields::kDV, stored_default);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFForm_RemoveFieldDefaultValue(FPDF_DOCUMENT document,
+                                 uint32_t field_objnum) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || field_objnum == 0) {
+    return false;
+  }
+  RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
+    return false;
+  }
+  if (!field->KeyExist(pdfium::form_fields::kDV)) {
+    return true;
+  }
+  RetainPtr<CPDF_Dictionary> mutable_field =
+      ToDictionary(doc->GetMutableIndirectObject(field_objnum));
+  if (!mutable_field) {
+    return false;
+  }
+  mutable_field->RemoveFor(pdfium::form_fields::kDV);
   return true;
 }
 
@@ -2677,19 +3417,30 @@ FPDF_BOOL SetOptionalFieldText(FPDF_DOCUMENT document,
                                FPDF_WIDESTRING value,
                                const char* key) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc || field_objnum == 0) return false;
+  if (!doc || field_objnum == 0) {
+    return false;
+  }
   RetainPtr<const CPDF_Dictionary> field = ResolveFieldDict(doc, field_objnum);
-  if (!field || !field->KeyExist(pdfium::form_fields::kFT)) return false;
+  if (!field || InheritedFieldType(field.Get()).IsEmpty()) {
+    return false;
+  }
   const WideString text =
       value ? WideStringFromFPDFWideString(value) : WideString();
+  RetainPtr<const CPDF_Object> current =
+      CPDF_FormField::GetFieldAttrForDict(field.Get(), key);
+  if ((!current && text.IsEmpty()) ||
+      (current && current->IsString() && current->GetUnicodeText() == text)) {
+    return true;
+  }
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
-  if (text.IsEmpty()) {
-    mutable_field->RemoveFor(key);
-  } else {
-    mutable_field->SetNewFor<CPDF_String>(key, text.AsStringView());
+  if (!mutable_field) {
+    return false;
   }
+  // An empty local string shadows an inherited value. Removing the key would
+  // make the ancestor's value effective again and would not actually clear
+  // what EPDFForm_LoadModel reports.
+  mutable_field->SetNewFor<CPDF_String>(key, text.AsStringView());
   return true;
 }
 
@@ -2744,38 +3495,38 @@ EPDFForm_SetFieldOptions(FPDF_DOCUMENT document,
     }
   }
 
-  // Current selection, filtered against the new export values.
-  std::vector<WideString> kept;
-  {
-    RetainPtr<const CPDF_Object> value = CPDF_FormField::GetFieldAttrForDict(
-        field.Get(), pdfium::form_fields::kV);
-    std::vector<WideString> selected;
-    if (value) {
-      if (const CPDF_Array* array = value->AsArray()) {
-        for (size_t i = 0; i < array->size(); ++i) {
-          selected.push_back(array->GetUnicodeTextAt(i));
-        }
-      } else {
-        selected.push_back(value->GetUnicodeText());
-      }
-    }
-    for (const WideString& v : selected) {
-      if (pdfium::Contains(new_exports, v)) {
-        kept.push_back(v);
-      }
-    }
-    // An edit combo's free text is not an option; it survives verbatim.
-    if (kept.empty() && free_text_combo && !selected.empty()) {
-      kept = std::move(selected);
-    }
+  RetainPtr<const CPDF_Object> current_value =
+      CPDF_FormField::GetFieldAttrForDict(field.Get(), pdfium::form_fields::kV);
+  std::optional<std::vector<WideString>> selected =
+      ReadChoiceValues(current_value.Get());
+  RetainPtr<const CPDF_Object> current_default =
+      CPDF_FormField::GetFieldAttrForDict(field.Get(),
+                                          pdfium::form_fields::kDV);
+  std::optional<std::vector<WideString>> defaults =
+      ReadChoiceValues(current_default.Get());
+  if (!selected.has_value() || !defaults.has_value()) {
+    return false;
+  }
+  std::vector<WideString> kept =
+      FilterChoiceValues(selected.value(), new_exports, free_text_combo);
+  std::vector<WideString> kept_defaults =
+      FilterChoiceValues(defaults.value(), new_exports, free_text_combo);
+  if (kept_defaults.size() > 1 &&
+      ((flags & pdfium::form_flags::kChoiceCombo) ||
+       !(flags & pdfium::form_flags::kChoiceMultiSelect))) {
+    return false;
   }
 
   // ---- Apply: rewrite /Opt, then re-sync selection + appearances. ----
   RetainPtr<CPDF_Dictionary> mutable_field =
       ToDictionary(doc->GetMutableIndirectObject(field_objnum));
-  if (!mutable_field) return false;
+  if (!mutable_field) {
+    return false;
+  }
   if (count == 0) {
-    mutable_field->RemoveFor("Opt");
+    // An empty local array also shadows an inherited /Opt, so count=0 has the
+    // same effective meaning for hierarchical and non-hierarchical fields.
+    mutable_field->SetNewFor<CPDF_Array>("Opt");
   } else {
     auto opt = mutable_field->SetNewFor<CPDF_Array>("Opt");
     for (unsigned long i = 0; i < count; ++i) {
@@ -2792,9 +3543,34 @@ EPDFForm_SetFieldOptions(FPDF_DOCUMENT document,
   if (free_text_combo && !kept.empty() &&
       !pdfium::Contains(new_exports, kept.front())) {
     // Free text survives; only the index hint is stale now.
-    mutable_field->RemoveFor("I");
+    if (HasInheritedFieldAttribute(doc, field.Get(), "I")) {
+      mutable_field->SetNewFor<CPDF_Array>("I");
+    } else {
+      mutable_field->RemoveFor("I");
+    }
     RegenerateFieldAppearances(doc, field_objnum);
-    return true;
+  } else if (!ApplyChoiceValues(doc, field_objnum, kept, nullptr, 0, nullptr)) {
+    return false;
   }
-  return ApplyChoiceValues(doc, field_objnum, kept, nullptr, 0, nullptr);
+
+  if (current_default && !current_default->IsNull()) {
+    if (kept_defaults.empty()) {
+      if (!(flags & pdfium::form_flags::kChoiceCombo) &&
+          (flags & pdfium::form_flags::kChoiceMultiSelect)) {
+        mutable_field->SetNewFor<CPDF_Array>(pdfium::form_fields::kDV);
+      } else {
+        mutable_field->SetNewFor<CPDF_String>(pdfium::form_fields::kDV,
+                                              WideStringView());
+      }
+    } else {
+      std::optional<NormalizedChoiceValues> normalized_defaults =
+          NormalizeChoiceValues(mutable_field.Get(), flags, kept_defaults);
+      if (!normalized_defaults.has_value()) {
+        return false;
+      }
+      WriteChoiceDefaultValues(mutable_field.Get(), kept_defaults,
+                               normalized_defaults.value());
+    }
+  }
+  return true;
 }

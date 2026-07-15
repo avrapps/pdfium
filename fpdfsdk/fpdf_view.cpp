@@ -1691,7 +1691,10 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   }
 #endif  // PDF_ENABLE_XFA
 
-  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      doc->GetPageDictionary(page_index);
+  RetainPtr<CPDF_Dictionary> dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
   if (!dict) {
     return false;
   }
