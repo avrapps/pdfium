@@ -2218,13 +2218,13 @@ bool GenerateInkAP(APGenerationTarget* target,
 
   app_stream << GetDashPatternString(annot_dict);
 
-  // Set inflated rect as a new rect because paths near the border with large
-  // width should not be clipped to the original rect.
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Inflate(border_width / 2, border_width / 2);
-  if (target->IsPersistent()) {
-    annot_dict->SetRectFor(pdfium::annotation::kRect, rect);
-  }
+  // Track the stroked ink's true bounds while writing the path: the union of
+  // every /InkList point, inflated by half the border width below (the round
+  // caps/joins set above — `1 J 1 j` — extend exactly border_width / 2 past a
+  // point). This is what the appearance actually PAINTS, independent of what
+  // /Rect currently claims.
+  CFX_FloatRect ink_bounds;
+  bool has_ink_point = false;
 
   for (size_t i = 0; i < ink_list->size(); i++) {
     RetainPtr<const CPDF_Array> coordinates_array = ink_list->GetArrayAt(i);
@@ -2233,17 +2233,45 @@ bool GenerateInkAP(APGenerationTarget* target,
       continue;
     }
 
-    app_stream << coordinates_array->GetFloatAt(0) << " "
-               << coordinates_array->GetFloatAt(1) << " m ";
+    const float x0 = coordinates_array->GetFloatAt(0);
+    const float y0 = coordinates_array->GetFloatAt(1);
+    app_stream << x0 << " " << y0 << " m ";
+    if (has_ink_point) {
+      ink_bounds.UpdateRect(CFX_PointF(x0, y0));
+    } else {
+      ink_bounds = CFX_FloatRect(x0, y0, x0, y0);
+      has_ink_point = true;
+    }
 
     // Start loop at the second point (index 2) ---
     // The 'm' command already moves to the first point.
     for (size_t j = 2; j < coordinates_array->size(); j += 2) {
-      app_stream << coordinates_array->GetFloatAt(j) << " "
-                 << coordinates_array->GetFloatAt(j + 1) << " l ";
+      const float x = coordinates_array->GetFloatAt(j);
+      const float y = coordinates_array->GetFloatAt(j + 1);
+      app_stream << x << " " << y << " l ";
+      ink_bounds.UpdateRect(CFX_PointF(x, y));
     }
 
     app_stream << "S\n";
+  }
+
+  // ENSURE-FIT, never blind-inflate. The caller owns /Rect (EmbedPDF's
+  // writers author it as the stroked visual bounds already); grow it only
+  // when the painted ink would actually be clipped, by the minimal union —
+  // so regeneration is IDEMPOTENT. Upstream PDFium instead inflated /Rect by
+  // border_width / 2 unconditionally on every call: harmless on its one-shot
+  // "synthesize a missing /AP at load" path, but unbounded growth once the
+  // appearance is re-baked after each edit.
+  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  rect.Normalize();
+  if (has_ink_point) {
+    ink_bounds.Inflate(border_width / 2, border_width / 2);
+    if (!rect.Contains(ink_bounds)) {
+      rect.Union(ink_bounds);
+      if (target->IsPersistent()) {
+        annot_dict->SetRectFor(pdfium::annotation::kRect, rect);
+      }
+    }
   }
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
