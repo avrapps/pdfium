@@ -843,6 +843,48 @@ DataAndBytesConsumed FlateModule::FlateOrLZWDecode(
 }
 
 // static
+FlateModule::SinkDecodeStatus FlateModule::FlateDecodeToSink(
+    pdfium::span<const uint8_t> src_span,
+    uint64_t max_decoded_bytes,
+    const std::function<bool(pdfium::span<const uint8_t>)>& sink,
+    uint64_t* total_out) {
+  *total_out = 0;
+  std::unique_ptr<z_stream, FlateDeleter> context(FlateInit());
+  if (!context) {
+    return SinkDecodeStatus::kSinkError;
+  }
+
+  FlateInput(context.get(), src_span);
+
+  // One reusable chunk keeps peak memory bounded no matter how large the
+  // decoded output is.
+  static constexpr uint32_t kChunkSize = 1 << 20;  // 1 MiB
+  DataVector<uint8_t> chunk(kChunkSize);
+  uint64_t total = 0;
+  while (true) {
+    const bool ret = FlateOutput(context.get(), chunk);
+    const uint32_t avail_buf_size = FlateGetAvailOut(context.get());
+    const uint32_t produced = kChunkSize - avail_buf_size;
+    if (produced > 0) {
+      total += produced;
+      if (max_decoded_bytes && total > max_decoded_bytes) {
+        *total_out = total - produced;
+        return SinkDecodeStatus::kLimitExceeded;
+      }
+      if (!sink(pdfium::span(chunk).first(produced))) {
+        *total_out = total - produced;
+        return SinkDecodeStatus::kSinkError;
+      }
+    }
+    if (!ret || avail_buf_size != 0) {
+      break;
+    }
+  }
+  *total_out = total;
+  return SinkDecodeStatus::kSuccess;
+}
+
+// static
 DataVector<uint8_t> FlateModule::Encode(pdfium::span<const uint8_t> src_span) {
   FX_SAFE_SIZE_T safe_dest_size = src_span.size();
   safe_dest_size += src_span.size() / 1000;

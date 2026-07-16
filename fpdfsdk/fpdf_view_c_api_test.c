@@ -118,6 +118,14 @@ int CheckPDFiumCApi() {
     CHK(EPDFFont_RegisterMemFont64);
 
     // fpdf_attachment.h
+    CHK(EPDFAttachment_ExtractFile);
+    CHK(EPDFAttachment_ExtractFileToOwnedBuffer);
+    CHK(EPDFAttachment_GetDescription);
+    CHK(EPDFAttachment_GetIntegerValue);
+    CHK(EPDFAttachment_SetDescription);
+    CHK(EPDFAttachment_SetSubtype);
+    CHK(EPDFDoc_GetAttachmentIndexByKey);
+    CHK(EPDFDoc_GetAttachmentKey);
     CHK(FPDFAttachment_GetFile);
     CHK(FPDFAttachment_GetName);
     CHK(FPDFAttachment_GetStringValue);

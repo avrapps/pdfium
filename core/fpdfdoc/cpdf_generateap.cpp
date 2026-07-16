@@ -114,8 +114,12 @@ void EmitEndingWithAngle(fxcrt::ostringstream& out,
   const float cos_a = cos(final_angle_rad);
   const float sin_a = sin(final_angle_rad);
 
-  out << "q " << cos_a << " " << sin_a << " " << -sin_a << " " << cos_a << " "
-      << pos.x << " " << pos.y << " cm\n";
+  // WriteMatrix, never raw `<<`: an axis-aligned segment has cos ≈ ±4.4e-8
+  // and default ostream float formatting would emit it in scientific
+  // notation — not legal PDF number syntax (Acrobat rejects the file).
+  out << "q ";
+  WriteMatrix(out, CFX_Matrix(cos_a, sin_a, -sin_a, cos_a, pos.x, pos.y))
+      << " cm\n";
   emitter();
   out << "Q\n";
 }
@@ -502,8 +506,23 @@ ShapeRotationInfo GetShapeRotationInfo(const CPDF_Dictionary* annot_dict) {
   info.bbox = unrotated;
 
   const float theta = rotate_deg * 3.14159265358979323846f / 180.0f;
-  const float cos_t = cosf(theta);
-  const float sin_t = sinf(theta);
+  // Snap the trig to exact 0/±1 near quarter turns (the values `upright`
+  // authoring produces): float cos(90°) is ~-4.4e-8, which would otherwise
+  // leak near-zero noise into the emitted matrix numbers.
+  auto snap = [](float v) {
+    if (fabsf(v) < 1e-6f) {
+      return 0.0f;
+    }
+    if (fabsf(v - 1.0f) < 1e-6f) {
+      return 1.0f;
+    }
+    if (fabsf(v + 1.0f) < 1e-6f) {
+      return -1.0f;
+    }
+    return v;
+  };
+  const float cos_t = snap(cosf(theta));
+  const float sin_t = snap(sinf(theta));
   const float cx = (unrotated.left + unrotated.right) / 2.0f;
   const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
 
@@ -1146,6 +1165,153 @@ ByteString GenerateTextSymbolAP(const CFX_FloatRect& rect,
   return ByteString(app_stream);
 }
 
+// Appends a closed ellipse path inscribed in |bounds| (same four-bezier
+// construction as GenerateCircleAP).
+void AppendEllipsePath(fxcrt::ostringstream& app_stream,
+                       const CFX_FloatRect& bounds) {
+  const float middle_x = (bounds.left + bounds.right) / 2;
+  const float middle_y = (bounds.top + bounds.bottom) / 2;
+
+  static constexpr float kL = 0.5523f;
+  const float delta_x = kL * bounds.Width() / 2.0f;
+  const float delta_y = kL * bounds.Height() / 2.0f;
+
+  app_stream << middle_x << " " << bounds.top << " m\n";
+  app_stream << middle_x + delta_x << " " << bounds.top << " " << bounds.right
+             << " " << middle_y + delta_y << " " << bounds.right << " "
+             << middle_y << " c\n";
+  app_stream << bounds.right << " " << middle_y - delta_y << " "
+             << middle_x + delta_x << " " << bounds.bottom << " " << middle_x
+             << " " << bounds.bottom << " c\n";
+  app_stream << middle_x - delta_x << " " << bounds.bottom << " "
+             << bounds.left << " " << middle_y - delta_y << " " << bounds.left
+             << " " << middle_y << " c\n";
+  app_stream << bounds.left << " " << middle_y + delta_y << " "
+             << middle_x - delta_x << " " << bounds.top << " " << middle_x
+             << " " << bounds.top << " c\nh\n";
+}
+
+ByteString GenerateFileAttachmentSymbolAP(const CFX_FloatRect& rect,
+                                          const CPDF_Dictionary& annot_dict) {
+  fxcrt::ostringstream app_stream;
+
+  // Read fill color from /C array; default to yellow (the note-icon
+  // default in GenerateTextSymbolAP).
+  CFX_Color fill_color(CFX_Color::Type::kRGB, 1, 1, 0);
+  RetainPtr<const CPDF_Array> color_array =
+      annot_dict.GetArrayFor(pdfium::annotation::kC);
+  if (color_array) {
+    fill_color = fpdfdoc::CFXColorFromArray(*color_array);
+  }
+
+  // Same luminance-based contrast stroke as GenerateTextSymbolAP.
+  float luminance = 0.299f * fill_color.fColor1 + 0.587f * fill_color.fColor2 +
+                    0.114f * fill_color.fColor3;
+  CFX_Color stroke_color = luminance < 0.45f
+                               ? CFX_Color(CFX_Color::Type::kRGB, 1, 1, 1)
+                               : CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0);
+
+  // /Name picks the glyph. Absent or foreign names mean PushPin, the
+  // ISO 32000 default icon for file attachment annotations.
+  CPDF_Annot::Icon icon =
+      CPDF_Annot::StringToIcon(annot_dict.GetNameFor("Name"));
+  if (icon != CPDF_Annot::Icon::kFile_Graph &&
+      icon != CPDF_Annot::Icon::kFile_Paperclip &&
+      icon != CPDF_Annot::Icon::kFile_Tag) {
+    icon = CPDF_Annot::Icon::kFile_PushPin;
+  }
+
+  static constexpr int kBorderWidth = 1;
+  static constexpr float kHalfWidth = kBorderWidth / 2.0f;
+  CFX_FloatRect box = rect;
+  box.Deflate(kHalfWidth, kHalfWidth);
+  const float w = box.Width();
+  const float h = box.Height();
+  // Glyph coordinates below are fractions of the icon box.
+  auto px = [&](float fx) { return box.left + fx * w; };
+  auto py = [&](float fy) { return box.bottom + fy * h; };
+
+  if (icon == CPDF_Annot::Icon::kFile_Paperclip) {
+    // A paperclip is a wire, not a closed region, so /C colours the
+    // stroked wire itself; a wider contrast pass underneath is the wire
+    // counterpart of the note icon's contrast border.
+    fxcrt::ostringstream path;
+    WritePoint(path, {px(0.32f), py(0.28f)}) << " m\n";
+    WritePoint(path, {px(0.32f), py(0.72f)}) << " l\n";
+    path << px(0.32f) << " " << py(0.85f) << " " << px(0.68f) << " "
+         << py(0.85f) << " " << px(0.68f) << " " << py(0.72f) << " c\n";
+    WritePoint(path, {px(0.68f), py(0.20f)}) << " l\n";
+    path << px(0.68f) << " " << py(0.10f) << " " << px(0.50f) << " "
+         << py(0.10f) << " " << px(0.50f) << " " << py(0.20f) << " c\n";
+    WritePoint(path, {px(0.50f), py(0.65f)}) << " l\n";
+    path << px(0.50f) << " " << py(0.72f) << " " << px(0.41f) << " "
+         << py(0.72f) << " " << px(0.41f) << " " << py(0.65f) << " c\n";
+    WritePoint(path, {px(0.41f), py(0.30f)}) << " l\n";
+    const ByteString wire(path);
+
+    app_stream << "1 J\n1 j\n";
+    app_stream << GenerateColorAP(stroke_color, PaintOperation::kStroke);
+    WriteFloat(app_stream, 2.6f) << " w\n" << wire << "S\n";
+    app_stream << GenerateColorAP(fill_color, PaintOperation::kStroke);
+    WriteFloat(app_stream, 1.4f) << " w\n" << wire << "S\n";
+    return ByteString(app_stream);
+  }
+
+  app_stream << GenerateColorAP(fill_color, PaintOperation::kFill);
+  app_stream << GenerateColorAP(stroke_color, PaintOperation::kStroke);
+  app_stream << kBorderWidth << " w\n";
+
+  switch (icon) {
+    case CPDF_Annot::Icon::kFile_PushPin: {
+      // Round head, collar, and a tapering needle. Painted with the
+      // nonzero rule (`B`) so touching subpaths merge instead of
+      // punching even-odd holes.
+      AppendEllipsePath(app_stream, CFX_FloatRect(px(0.33f), py(0.53f),
+                                                  px(0.67f), py(0.87f)));
+      app_stream << px(0.37f) << " " << py(0.46f) << " " << px(0.63f) - px(0.37f)
+                 << " " << py(0.525f) - py(0.46f) << " re\n";
+      WritePoint(app_stream, {px(0.47f), py(0.455f)}) << " m\n";
+      WritePoint(app_stream, {px(0.53f), py(0.455f)}) << " l\n";
+      WritePoint(app_stream, {px(0.50f), py(0.10f)}) << " l\nh\n";
+      app_stream << "B\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kFile_Graph: {
+      // Even-odd turns the outer+inner rectangles into a frame ring; the
+      // three bars sit inside the ring on its bottom edge.
+      app_stream << px(0.10f) << " " << py(0.10f) << " " << px(0.90f) - px(0.10f)
+                 << " " << py(0.90f) - py(0.10f) << " re\n";
+      app_stream << px(0.16f) << " " << py(0.16f) << " " << px(0.84f) - px(0.16f)
+                 << " " << py(0.84f) - py(0.16f) << " re\n";
+      app_stream << px(0.22f) << " " << py(0.16f) << " " << px(0.36f) - px(0.22f)
+                 << " " << py(0.40f) - py(0.16f) << " re\n";
+      app_stream << px(0.43f) << " " << py(0.16f) << " " << px(0.57f) - px(0.43f)
+                 << " " << py(0.56f) - py(0.16f) << " re\n";
+      app_stream << px(0.64f) << " " << py(0.16f) << " " << px(0.78f) - px(0.64f)
+                 << " " << py(0.76f) - py(0.16f) << " re\n";
+      app_stream << "B*\n";
+      break;
+    }
+    case CPDF_Annot::Icon::kFile_Tag: {
+      // Label pentagon pointing left; even-odd punches the eyelet hole.
+      WritePoint(app_stream, {px(0.10f), py(0.50f)}) << " m\n";
+      WritePoint(app_stream, {px(0.34f), py(0.80f)}) << " l\n";
+      WritePoint(app_stream, {px(0.90f), py(0.80f)}) << " l\n";
+      WritePoint(app_stream, {px(0.90f), py(0.20f)}) << " l\n";
+      WritePoint(app_stream, {px(0.34f), py(0.20f)}) << " l\nh\n";
+      AppendEllipsePath(app_stream, CFX_FloatRect(px(0.305f), py(0.445f),
+                                                  px(0.415f), py(0.555f)));
+      app_stream << "B*\n";
+      break;
+    }
+    default: {
+      NOTREACHED();
+    }
+  }
+
+  return ByteString(app_stream);
+}
+
 RetainPtr<CPDF_Dictionary> GenerateExtGStateDict(
     const CPDF_Dictionary& annot_dict,
     const ByteString& blend_mode) {
@@ -1740,6 +1906,18 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     CFX_FloatRect text_box(rect.left + rd.left, rect.bottom + rd.bottom,
                            rect.right - rd.right, rect.top - rd.top);
 
+    // (b') EmbedPDF upright tilt: for a callout the /EMBD_Metadata pair means
+    // the TEXT BOX only — `UnrotatedRect` is the logical text box, `Rotation`
+    // its tilt about the box centre. The /CL leader stays page-space, so the
+    // rotation is baked INLINE (a `q cm … Q` around the box + text below),
+    // never as the form /Matrix — /Rect keeps placing the whole appearance
+    // (RD then recovers the rotated box's AABB, the best axis-aligned box a
+    // viewer regenerating this AP can draw).
+    const ShapeRotationInfo box_rot = GetShapeRotationInfo(annot_dict);
+    if (box_rot.is_rotated) {
+      text_box = box_rot.bbox;
+    }
+
     // (c) Border width and colors.
     const float border_w = GetBorderWidth(annot_dict);
 
@@ -1831,6 +2009,16 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
     // (g) Draw text box rectangle. Pick the paint operator dynamically so a
     // missing /C means "no fill" (stroke-only) rather than falling back to
     // PDF's default black fill. Mirrors GenerateCircleAP / GenerateSquareAP.
+    // An upright-tilted box (see (b')) authors in the logical box frame and
+    // spins it about its centre via an inline `cm` — box + text only; the
+    // leader/arrow above already drew in page space. WriteMatrix, never raw
+    // `<<`: default ostream float formatting uses scientific notation for tiny
+    // magnitudes (cos of a right angle ≈ -4.4e-8), which is not legal PDF
+    // number syntax — Acrobat rejects the whole file as corrupt.
+    if (box_rot.is_rotated) {
+      appearance_stream << "q ";
+      WriteMatrix(appearance_stream, box_rot.matrix) << " cm\n";
+    }
     const bool is_fill_rect = color_array != nullptr;
     const bool is_stroke_rect = border_w > 0;
     CFX_FloatRect text_box_stroke = text_box;
@@ -1894,6 +2082,9 @@ bool GenerateFreeTextAP(APGenerationTarget* target,
                         << GenerateColorAP(actual_text_color,
                                            PaintOperation::kFill)
                         << body << "ET\nQ\n";
+    }
+    if (box_rot.is_rotated) {
+      appearance_stream << "Q\n";  // close the (g) inline box rotation
     }
 
     // Finalize AP dict.
@@ -2301,6 +2492,29 @@ bool GenerateTextAP(CPDF_Document* doc,
   annot_dict->SetRectFor(pdfium::annotation::kRect, note_rect);
 
   app_stream << GenerateTextSymbolAP(note_rect, *annot_dict);
+
+  auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
+  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
+  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
+                       false /*IsTextMarkupAnnotation*/);
+  return true;
+}
+
+bool GenerateFileAttachmentAP(CPDF_Document* doc,
+                              CPDF_Dictionary* annot_dict,
+                              const ByteString& blend_name) {
+  fxcrt::ostringstream app_stream;
+  app_stream << "/" << kGSDictName << " gs ";
+
+  // Like the note icon, a file attachment renders at a fixed icon size
+  // anchored at the /Rect's bottom-left corner.
+  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  const float icon_length = 20;
+  CFX_FloatRect icon_rect(rect.left, rect.bottom, rect.left + icon_length,
+                          rect.bottom + icon_length);
+  annot_dict->SetRectFor(pdfium::annotation::kRect, icon_rect);
+
+  app_stream << GenerateFileAttachmentSymbolAP(icon_rect, *annot_dict);
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
@@ -3522,6 +3736,8 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
       return GeneratePopupAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::TEXT:
       return GenerateTextAP(doc, annot_dict, blend_name);
+    case CPDF_Annot::Subtype::FILEATTACHMENT:
+      return GenerateFileAttachmentAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::LINK:
       return GenerateLinkAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::REDACT:
