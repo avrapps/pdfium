@@ -38,6 +38,11 @@ struct ActionNodeRecord {
   int type = EPDF_ACTION_TYPE_UNKNOWN;
   std::optional<WideString> javascript;
   std::vector<EPDF_ACTION_NODE_ID> next;
+  // Keeps the node's action dictionary alive for the model's lifetime so
+  // the EPDFAction_GetNode{Dest,URI,FilePath,Name} payload getters can
+  // rehydrate a CPDF_Action on demand. Nothing is extracted eagerly:
+  // building a model costs the same as before this field existed.
+  RetainPtr<const CPDF_Dictionary> dict;
 };
 
 int NormalizeActionType(CPDF_Action::Type type) {
@@ -112,6 +117,7 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
   ActionNodeRecord node;
   node.subtype = dict->GetNameFor("S");
   node.type = NormalizeActionType(action.GetType());
+  node.dict = pdfium::WrapRetain(dict);
   if (node.type == EPDF_ACTION_TYPE_JAVASCRIPT ||
       node.type == EPDF_ACTION_TYPE_RENDITION) {
     node.javascript = action.MaybeGetJavaScript();
@@ -294,6 +300,82 @@ EPDFAction_GetNodeJavaScript(EPDF_ACTION_MODEL model,
   return Utf16EncodeMaybeCopyAndReturnLength(
       record->javascript.value(),
       UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFAction_GetNodeDest(FPDF_DOCUMENT document,
+                       EPDF_ACTION_MODEL model,
+                       EPDF_ACTION_NODE_ID node) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!doc || !record || !record->dict) {
+    return nullptr;
+  }
+  // Same type gate as FPDFAction_GetDest.
+  if (record->type != EPDF_ACTION_TYPE_GOTO &&
+      record->type != EPDF_ACTION_TYPE_GOTO_REMOTE &&
+      record->type != EPDF_ACTION_TYPE_GOTO_EMBEDDED) {
+    return nullptr;
+  }
+  CPDF_Action cAction(record->dict);
+  return FPDFDestFromCPDFArray(cAction.GetDest(doc).GetArray());
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeURI(FPDF_DOCUMENT document,
+                      EPDF_ACTION_MODEL model,
+                      EPDF_ACTION_NODE_ID node,
+                      void* buffer,
+                      unsigned long buflen) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!doc || !record || !record->dict ||
+      record->type != EPDF_ACTION_TYPE_URI) {
+    return 0;
+  }
+  CPDF_Action cAction(record->dict);
+  ByteString uri = cAction.GetURI(doc);
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      uri, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeFilePath(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           void* buffer,
+                           unsigned long buflen) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || !record->dict) {
+    return 0;
+  }
+  // Same type gate as FPDFAction_GetFilePath.
+  if (record->type != EPDF_ACTION_TYPE_GOTO_REMOTE &&
+      record->type != EPDF_ACTION_TYPE_GOTO_EMBEDDED &&
+      record->type != EPDF_ACTION_TYPE_LAUNCH) {
+    return 0;
+  }
+  CPDF_Action cAction(record->dict);
+  ByteString path = cAction.GetFilePath().ToUTF8();
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      path, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeName(EPDF_ACTION_MODEL model,
+                       EPDF_ACTION_NODE_ID node,
+                       void* buffer,
+                       unsigned long buflen) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || !record->dict ||
+      record->type != EPDF_ACTION_TYPE_NAMED) {
+    return 0;
+  }
+  ByteString name = record->dict->GetNameFor("N");
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT int FPDF_CALLCONV

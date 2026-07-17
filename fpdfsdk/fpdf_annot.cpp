@@ -2703,9 +2703,42 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetAction(FPDF_ANNOTATION annot,
 
   CPDF_Document* pDoc = pAnnotContext->GetPage()->GetDocument();
 
-  // Set /A as an indirect reference to the action.
+  // Set /A as an indirect reference to the action. A link dictionary must
+  // not carry both /A and /Dest (ISO 32000-1 Table 173), so drop any
+  // pre-existing direct destination while we are at it.
   annot_dict->SetNewFor<CPDF_Reference>("A", pDoc, act_dict->GetObjNum());
+  annot_dict->RemoveFor("Dest");
   return true;
+}
+
+namespace {
+
+// Shared body of the two link-entry removers: single-purpose, idempotent.
+FPDF_BOOL RemoveLinkDictEntry(FPDF_ANNOTATION annot, const char* key) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINK) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(key);
+  return true;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveAction(FPDF_ANNOTATION annot) {
+  return RemoveLinkDictEntry(annot, "A");
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot) {
+  return RemoveLinkDictEntry(annot, "Dest");
 }
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV

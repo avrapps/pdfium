@@ -1710,9 +1710,41 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
 // Notes:
 //  * Only valid for FPDF_ANNOT_LINK annotations.
 //  * The action must be an indirect object.
-//  * Any existing /A entry will be replaced.
+//  * Any existing /A entry will be replaced, and any direct /Dest entry is
+//    removed — ISO 32000-1 Table 173 forbids a link dictionary carrying
+//    both, so setting an action leaves the dictionary spec-clean.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetAction(FPDF_ANNOTATION annot,
                                                         FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
+// Remove the /A action entry of a Link annotation.
+//
+//   annot - handle to a link annotation.
+//
+// Returns true when the entry is absent afterwards, including when there
+// was none to begin with (idempotent). False for non-link annotations.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * Removes ONLY /A. A link may also carry a direct /Dest — remove it
+//    with EPDFAnnot_RemoveDest() when the intent is a target-less link,
+//    otherwise the /Dest becomes the link's effective target again.
+//  * The removed action dictionary itself is not garbage-collected; like
+//    every unreferenced indirect object it is dropped by a full save.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveAction(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Remove the direct /Dest destination entry of a Link annotation.
+//
+//   annot - handle to a link annotation.
+//
+// Returns true when the entry is absent afterwards, including when there
+// was none to begin with (idempotent). False for non-link annotations.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * Removes ONLY /Dest; an /A action entry is left untouched.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation count.

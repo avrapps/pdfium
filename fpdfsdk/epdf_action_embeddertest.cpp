@@ -22,6 +22,7 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/epdf_form.h"
 #include "public/fpdf_annot.h"
+#include "public/fpdf_doc.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_javascript.h"
 #include "testing/embedder_test.h"
@@ -387,4 +388,136 @@ TEST_F(EPDFActionEmbedderTest,
   EXPECT_EQ(L"calculate();", GetActionJavaScript(calculate.get(), 0));
   EXPECT_EQ(L"focus();", GetActionJavaScript(focus.get(), 0));
   EXPECT_EQ(L"enter();", GetActionJavaScript(enter.get(), 0));
+}
+
+TEST_F(EPDFActionEmbedderTest, NodeUriPayloadFromRealDocument) {
+  ASSERT_TRUE(OpenDocument("annots_action_handling.pdf"));
+  FPDF_PAGE page = LoadPage(0);
+  ASSERT_TRUE(page);
+
+  bool checked_link = false;
+  const int annotation_count = FPDFPage_GetAnnotCount(page);
+  for (int i = 0; i < annotation_count; ++i) {
+    ScopedFPDFAnnotation annotation(FPDFPage_GetAnnot(page, i));
+    ASSERT_TRUE(annotation);
+    if (FPDFAnnot_GetSubtype(annotation.get()) != FPDF_ANNOT_LINK) {
+      continue;
+    }
+    ScopedEPDFActionModel model(
+        EPDFAnnot_GetActionModel(annotation.get(), EPDF_ANNOT_ACTION_ACTIVATE));
+    ASSERT_TRUE(model);
+    const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+    ASSERT_NE(EPDF_ACTION_NODE_INVALID, root);
+    ASSERT_EQ(EPDF_ACTION_TYPE_URI, EPDFAction_GetNodeType(model.get(), root));
+
+    const unsigned long len =
+        EPDFAction_GetNodeURI(document(), model.get(), root, nullptr, 0);
+    ASSERT_GT(len, 1ul);
+    std::vector<char> buffer(len);
+    ASSERT_EQ(len, EPDFAction_GetNodeURI(document(), model.get(), root,
+                                         buffer.data(), len));
+    const ByteString uri(buffer.data());
+    EXPECT_EQ(0u, uri.Find("https://").value_or(1u));
+
+    // Wrong-type payload getters answer empty rather than lying.
+    EXPECT_FALSE(EPDFAction_GetNodeDest(document(), model.get(), root));
+    EXPECT_EQ(0ul, EPDFAction_GetNodeFilePath(model.get(), root, nullptr, 0));
+    EXPECT_EQ(0ul, EPDFAction_GetNodeName(model.get(), root, nullptr, 0));
+    checked_link = true;
+  }
+  EXPECT_TRUE(checked_link);
+  UnloadPage(page);
+}
+
+TEST_F(EPDFActionEmbedderTest, NodeDestPayloadFromCreatedGoTo) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
+  ASSERT_TRUE(page);
+
+  FPDF_DEST dest = EPDFDest_CreateXYZ(page.get(), /*has_left=*/true, 30.0f,
+                                      /*has_top=*/true, 500.0f,
+                                      /*has_zoom=*/false, 0.0f);
+  ASSERT_TRUE(dest);
+  FPDF_ACTION action = EPDFAction_CreateGoTo(document.get(), dest);
+  ASSERT_TRUE(action);
+
+  ScopedEPDFActionModel model(EPDFAction_LoadModel(action));
+  ASSERT_TRUE(model);
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+  ASSERT_NE(EPDF_ACTION_NODE_INVALID, root);
+  ASSERT_EQ(EPDF_ACTION_TYPE_GOTO, EPDFAction_GetNodeType(model.get(), root));
+
+  FPDF_DEST node_dest =
+      EPDFAction_GetNodeDest(document.get(), model.get(), root);
+  ASSERT_TRUE(node_dest);
+  FPDF_BOOL has_x = false;
+  FPDF_BOOL has_y = false;
+  FPDF_BOOL has_zoom = false;
+  FS_FLOAT x = 0;
+  FS_FLOAT y = 0;
+  FS_FLOAT zoom = 0;
+  ASSERT_TRUE(FPDFDest_GetLocationInPage(node_dest, &has_x, &has_y, &has_zoom,
+                                         &x, &y, &zoom));
+  EXPECT_TRUE(has_x);
+  EXPECT_TRUE(has_y);
+  EXPECT_FALSE(has_zoom);
+  EXPECT_FLOAT_EQ(30.0f, x);
+  EXPECT_FLOAT_EQ(500.0f, y);
+
+  // A goto node has no URI/file/name payload.
+  EXPECT_EQ(0ul, EPDFAction_GetNodeURI(document.get(), model.get(), root,
+                                       nullptr, 0));
+  EXPECT_EQ(0ul, EPDFAction_GetNodeName(model.get(), root, nullptr, 0));
+}
+
+TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  ASSERT_TRUE(doc);
+
+  RetainPtr<CPDF_Dictionary> launch = doc->NewIndirect<CPDF_Dictionary>();
+  launch->SetNewFor<CPDF_Name>("S", "Launch");
+  launch->SetNewFor<CPDF_String>("F", "app.exe");
+  ScopedEPDFActionModel launch_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(launch.Get())));
+  ASSERT_TRUE(launch_model);
+  const EPDF_ACTION_NODE_ID launch_root =
+      EPDFAction_GetRootNode(launch_model.get());
+  ASSERT_EQ(EPDF_ACTION_TYPE_LAUNCH,
+            EPDFAction_GetNodeType(launch_model.get(), launch_root));
+  unsigned long len =
+      EPDFAction_GetNodeFilePath(launch_model.get(), launch_root, nullptr, 0);
+  ASSERT_GT(len, 1ul);
+  std::vector<char> path(len);
+  ASSERT_EQ(len, EPDFAction_GetNodeFilePath(launch_model.get(), launch_root,
+                                            path.data(), len));
+  EXPECT_STREQ("app.exe", path.data());
+
+  RetainPtr<CPDF_Dictionary> named = doc->NewIndirect<CPDF_Dictionary>();
+  named->SetNewFor<CPDF_Name>("S", "Named");
+  named->SetNewFor<CPDF_Name>("N", "NextPage");
+  ScopedEPDFActionModel named_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(named.Get())));
+  ASSERT_TRUE(named_model);
+  const EPDF_ACTION_NODE_ID named_root =
+      EPDFAction_GetRootNode(named_model.get());
+  ASSERT_EQ(EPDF_ACTION_TYPE_NAMED,
+            EPDFAction_GetNodeType(named_model.get(), named_root));
+  len = EPDFAction_GetNodeName(named_model.get(), named_root, nullptr, 0);
+  ASSERT_GT(len, 1ul);
+  std::vector<char> name(len);
+  ASSERT_EQ(len, EPDFAction_GetNodeName(named_model.get(), named_root,
+                                        name.data(), len));
+  EXPECT_STREQ("NextPage", name.data());
+
+  // Cross-type checks: a launch node answers nothing for uri/name and a
+  // named node nothing for file paths.
+  EXPECT_EQ(0ul, EPDFAction_GetNodeURI(document.get(), launch_model.get(),
+                                       launch_root, nullptr, 0));
+  EXPECT_EQ(0ul, EPDFAction_GetNodeName(launch_model.get(), launch_root,
+                                        nullptr, 0));
+  EXPECT_EQ(0ul, EPDFAction_GetNodeFilePath(named_model.get(), named_root,
+                                            nullptr, 0));
 }

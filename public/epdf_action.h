@@ -16,10 +16,15 @@ extern "C" {
 
 // Experimental EmbedPDF Extension API.
 //
-// Detached, immutable PDF action model. A model contains one root action and
-// its normalized /Next descendants. It owns all copied strings and holds no
-// pointers into the PDF document, so it remains valid after the document or
-// originating owner is closed or mutated.
+// Detached PDF action model. A model contains one root action and its
+// normalized /Next descendants. The structural fields (type, subtype,
+// script, chain) are copied at build time and stay valid after the
+// document is closed or mutated. Each node additionally RETAINS its action
+// dictionary so the EPDFAction_GetNode{Dest,URI,FilePath,Name} payload
+// getters can read payloads on demand: those getters read the CURRENT
+// dictionary state, and the ones taking a FPDF_DOCUMENT require the
+// originating document to still be open (they resolve named destinations
+// and URI normalization through it).
 //
 // The API extracts action data only. It never executes JavaScript.
 typedef struct epdf_action_model_t__* EPDF_ACTION_MODEL;
@@ -97,6 +102,45 @@ EPDFAction_GetNodeJavaScript(EPDF_ACTION_MODEL model,
                              EPDF_ACTION_NODE_ID node,
                              FPDF_WCHAR* buffer,
                              unsigned long buflen);
+
+// Get the destination of a goto / goto-remote / goto-embedded |node| as an
+// explicit FPDF_DEST. Named destinations resolve through |document|'s
+// catalog — same normalization as FPDFLink_GetDest. Returns NULL when the
+// node carries no destination, has a different type, or |document| is
+// invalid. |document| must be the document the model was built from.
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFAction_GetNodeDest(FPDF_DOCUMENT document,
+                       EPDF_ACTION_MODEL model,
+                       EPDF_ACTION_NODE_ID node);
+
+// Copy the /URI of a uri-type |node| as a NUL-terminated byte string.
+// Returns the required byte length including the NUL, or 0 when the node
+// is not a uri action. |buffer| may be NULL to query the length.
+// |document| must be the document the model was built from.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeURI(FPDF_DOCUMENT document,
+                      EPDF_ACTION_MODEL model,
+                      EPDF_ACTION_NODE_ID node,
+                      void* buffer,
+                      unsigned long buflen);
+
+// Copy the file spec of a goto-remote / goto-embedded / launch |node| as
+// UTF-8, including the trailing NUL. Returns the required byte length, or
+// 0 for other node types. |buffer| may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeFilePath(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           void* buffer,
+                           unsigned long buflen);
+
+// Copy the /N name of a named-type |node| (NextPage, PrevPage, ...) as
+// UTF-8, including the trailing NUL. Returns the required byte length, or
+// 0 for other node types. |buffer| may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeName(EPDF_ACTION_MODEL model,
+                       EPDF_ACTION_NODE_ID node,
+                       void* buffer,
+                       unsigned long buflen);
 
 FPDF_EXPORT int FPDF_CALLCONV EPDFAction_GetNextCount(EPDF_ACTION_MODEL model,
                                                       EPDF_ACTION_NODE_ID node);
