@@ -48,10 +48,10 @@ typedef enum {
 // The trapped status of the document. See section 14.10.2.4 "Trapped" of the
 // ISO 32000-1:2008 spec.
 typedef enum FPDF_TRAPPED_STATUS {
-  PDFTRAPPED_NOTSET = 0,   // No /Trapped key
-  PDFTRAPPED_TRUE = 1,     // Explicitly /Trapped /True
-  PDFTRAPPED_FALSE = 2,    // Explicitly /Trapped /False
-  PDFTRAPPED_UNKNOWN = 3   // Explicitly /Trapped /Unknown or invalid
+  PDFTRAPPED_NOTSET = 0,  // No /Trapped key
+  PDFTRAPPED_TRUE = 1,    // Explicitly /Trapped /True
+  PDFTRAPPED_FALSE = 2,   // Explicitly /Trapped /False
+  PDFTRAPPED_UNKNOWN = 3  // Explicitly /Trapped /Unknown or invalid
 } FPDF_TRAPPED_STATUS;
 
 // Get the first child of |bookmark|, or the first top-level bookmark item.
@@ -226,6 +226,21 @@ FPDFAction_GetURIPath(FPDF_DOCUMENT document,
 // Returns the 0-based page index containing |dest|. Returns -1 on error.
 FPDF_EXPORT int FPDF_CALLCONV FPDFDest_GetDestPageIndex(FPDF_DOCUMENT document,
                                                         FPDF_DEST dest);
+
+// Experimental EmbedPDF Extension API.
+// Get the PDF indirect object number of the page targeted by |dest|.
+//
+//   document - handle to the document containing the destination page.
+//   dest     - handle to the destination.
+//
+// Returns the page dictionary object number (> 0) on success, or 0 if the
+// document/destination is invalid, the target is not a visible page in the
+// document, the page dictionary is a direct object, or the page is an XFA
+// page. If the destination contains a numeric page index, it is resolved
+// against |document|, matching FPDFDest_GetDestPageIndex() compatibility
+// behavior.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDest_GetPageObjectNumber(FPDF_DOCUMENT document, FPDF_DEST dest);
 
 // Experimental API.
 // Get the view (fit type) specified by |dest|.
@@ -448,10 +463,9 @@ FPDF_GetPageLabel(FPDF_DOCUMENT document,
 //   value    - the value to set.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_SetMetaText(FPDF_DOCUMENT document,
-                  FPDF_BYTESTRING tag,
-                  FPDF_WIDESTRING value);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_SetMetaText(FPDF_DOCUMENT document,
+                                                     FPDF_BYTESTRING tag,
+                                                     FPDF_WIDESTRING value);
 
 // Experimental EmbedPDF Extension API.
 // Check if meta-data |tag| exists in |document|.
@@ -460,8 +474,8 @@ EPDF_SetMetaText(FPDF_DOCUMENT document,
 //   tag      - the tag to check.
 //
 // Returns true if |tag| exists in |document|.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_HasMetaText(FPDF_DOCUMENT document, FPDF_BYTESTRING tag);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_HasMetaText(FPDF_DOCUMENT document,
+                                                     FPDF_BYTESTRING tag);
 
 // Experimental EmbedPDF Extension API.
 // Get the trapped status of |document|.
@@ -490,8 +504,8 @@ EPDF_SetMetaTrapped(FPDF_DOCUMENT document, FPDF_TRAPPED_STATUS status);
 //                 count all keys.
 //
 // Returns the number of keys (possibly 0). On error, returns 0.
-FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetMetaKeyCount(FPDF_DOCUMENT document, FPDF_BOOL custom_only);
+FPDF_EXPORT int FPDF_CALLCONV EPDF_GetMetaKeyCount(FPDF_DOCUMENT document,
+                                                   FPDF_BOOL custom_only);
 
 // Experimental EmbedPDF Extension API.
 // Get the name of the Info dictionary key at |index|.
@@ -500,8 +514,8 @@ EPDF_GetMetaKeyCount(FPDF_DOCUMENT document, FPDF_BOOL custom_only);
 //   index       - 0-based key index in the order returned by PDFium.
 //   custom_only - if true, indexes only over non-reserved (custom) keys; if
 //                 false, indexes over all keys.
-//   buffer      - a buffer for the key name in UTF-8 with trailing NUL. May be NULL.
-//   buflen      - the length of the buffer, in bytes. May be 0.
+//   buffer      - a buffer for the key name in UTF-8 with trailing NUL. May be
+//   NULL. buflen      - the length of the buffer, in bytes. May be 0.
 //
 // Returns the number of bytes in the key name including the trailing NUL, or 0
 // on error (bad |document|, |index| out of range, etc.). If |buflen| is less
@@ -521,38 +535,44 @@ EPDF_GetMetaKeyName(FPDF_DOCUMENT document,
 // Create a new destination array of the form [page /XYZ left top zoom].
 //
 //   page     - handle to the destination page.
-//   has_left - whether |left| is specified; if false, |left| is encoded as null.
-//   left     - the left coordinate, in page coordinates.
-//   has_top  - whether |top| is specified; if false, |top| is encoded as null.
-//   top      - the top coordinate, in page coordinates.
-//   has_zoom - whether |zoom| is specified; if false or |zoom|==0, encoded as null.
-//   zoom     - the zoom factor (must be non-zero to be considered specified).
+//   has_left - whether |left| is specified; if false, |left| is encoded as
+//   null. left     - the left coordinate, in page coordinates. has_top  -
+//   whether |top| is specified; if false, |top| is encoded as null. top      -
+//   the top coordinate, in page coordinates. has_zoom - whether |zoom| is
+//   specified; if false or |zoom|==0, encoded as null. zoom     - the zoom
+//   factor (must be non-zero to be considered specified).
 //
-// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on
+// error.
 //
 // Notes:
 //  * The returned object is an INDIRECT array suitable for use by
 //    EPDFBookmark_SetDest() or EPDFAction_CreateGoTo().
 //  * Unspecified fields are encoded as PDF nulls.
-FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
-EPDFDest_CreateXYZ(FPDF_PAGE page,
-                   FPDF_BOOL has_left, FS_FLOAT left,
-                   FPDF_BOOL has_top,  FS_FLOAT top,
-                   FPDF_BOOL has_zoom, FS_FLOAT zoom);
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV EPDFDest_CreateXYZ(FPDF_PAGE page,
+                                                       FPDF_BOOL has_left,
+                                                       FS_FLOAT left,
+                                                       FPDF_BOOL has_top,
+                                                       FS_FLOAT top,
+                                                       FPDF_BOOL has_zoom,
+                                                       FS_FLOAT zoom);
 
 // Experimental EmbedPDF Extension API.
 // Create a new destination array of the form [page /<View> params…].
 //
 //   page        - handle to the destination page.
 //   view        - one of the PDFDEST_VIEW_* constants EXCEPT PDFDEST_VIEW_XYZ.
-//                 Valid: PDFDEST_VIEW_FIT, FITH, FITV, FITR, FITB, FITBH, FITBV.
+//                 Valid: PDFDEST_VIEW_FIT, FITH, FITV, FITR, FITB, FITBH,
+//                 FITBV.
 //   params      - pointer to an array of float parameters (may be NULL).
 //   num_params  - number of entries in |params|.
 //
-// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on
+// error.
 //
 // Notes:
-//  * The required parameter count depends on |view| and matches FPDFDest_GetView().
+//  * The required parameter count depends on |view| and matches
+//  FPDFDest_GetView().
 //    Excess parameters are ignored; missing parameters default to 0.
 //  * Use EPDFDest_CreateXYZ() for /XYZ destinations.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
@@ -562,7 +582,8 @@ EPDFDest_CreateView(FPDF_PAGE page,
                     unsigned long num_params);
 
 // Experimental EmbedPDF Extension API.
-// Create a new *remote* destination array of the form [pageIndex /<View> params…].
+// Create a new *remote* destination array of the form [pageIndex /<View>
+// params…].
 //
 //   document    - handle to the owning document.
 //   page_index  - 0-based page index in the *remote* file (must be >= 0).
@@ -570,7 +591,8 @@ EPDFDest_CreateView(FPDF_PAGE page,
 //   params      - pointer to float parameters (may be NULL).
 //   num_params  - number of parameters.
 //
-// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on
+// error.
 //
 // Notes:
 //  * This is an explicit *remote* dest (first element is a number).
@@ -589,16 +611,20 @@ EPDFDest_CreateRemoteView(FPDF_DOCUMENT document,
 //   page_index  - 0-based page index in the *remote* file (must be >= 0).
 //   has_left,left,has_top,top,has_zoom,zoom - as in EPDFDest_CreateXYZ().
 //
-// Returns a handle to the created (INDIRECT) destination array, or NULL on error.
+// Returns a handle to the created (INDIRECT) destination array, or NULL on
+// error.
 //
 // Notes:
 //  * The left/top/zoom fields are encoded as number-or-null as in local /XYZ.
 FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 EPDFDest_CreateRemoteXYZ(FPDF_DOCUMENT document,
                          int page_index,
-                         FPDF_BOOL has_left, FS_FLOAT left,
-                         FPDF_BOOL has_top,  FS_FLOAT top,
-                         FPDF_BOOL has_zoom, FS_FLOAT zoom);
+                         FPDF_BOOL has_left,
+                         FS_FLOAT left,
+                         FPDF_BOOL has_top,
+                         FS_FLOAT top,
+                         FPDF_BOOL has_zoom,
+                         FS_FLOAT zoom);
 
 // -----------------------------------------------------------------------------
 // Named destinations
@@ -609,7 +635,8 @@ EPDFDest_CreateRemoteXYZ(FPDF_DOCUMENT document,
 //
 //   document - handle to the document owning both the name tree and |dest|.
 //   name     - UTF-8 zero-terminated name key.
-//   dest     - handle to an INDIRECT destination array that belongs to |document|.
+//   dest     - handle to an INDIRECT destination array that belongs to
+//   |document|.
 //
 // Returns true on success.
 //
@@ -628,8 +655,8 @@ EPDFNamedDest_SetDest(FPDF_DOCUMENT document,
 //   name     - UTF-8 zero-terminated name key.
 //
 // Returns true on success (or if the name did not exist).
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFNamedDest_Remove(FPDF_DOCUMENT document, FPDF_BYTESTRING name);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFNamedDest_Remove(FPDF_DOCUMENT document,
+                                                         FPDF_BYTESTRING name);
 
 // -----------------------------------------------------------------------------
 // Actions
@@ -759,8 +786,8 @@ EPDFBookmark_Create(FPDF_DOCUMENT document, FPDF_WIDESTRING title);
 //  * Removes the node from its parent's list and deletes the entire subtree,
 //    fixing /First, /Last, /Prev, /Next as needed.
 //  * Fails if |bookmark| does not belong to |document|.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_Delete(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_Delete(FPDF_DOCUMENT document,
+                                                        FPDF_BOOKMARK bookmark);
 
 // Experimental EmbedPDF Outline API.
 // Create and append a new child bookmark under |parent|.
@@ -823,11 +850,11 @@ EPDFBookmark_SetTitle(FPDF_BOOKMARK bookmark, FPDF_WIDESTRING title);
 // Notes:
 //  * On success, /Dest is set to an indirect reference to |dest| and any /A is
 //    removed.
-//  * |dest| must belong to |document| and be indirect; otherwise the call fails.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_SetDest(FPDF_DOCUMENT document,
-                     FPDF_BOOKMARK bookmark,
-                     FPDF_DEST dest);
+//  * |dest| must belong to |document| and be indirect; otherwise the call
+//  fails.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_SetDest(FPDF_DOCUMENT document,
+                                                         FPDF_BOOKMARK bookmark,
+                                                         FPDF_DEST dest);
 
 // Experimental EmbedPDF Extension API.
 // Set the target of |bookmark| to |action| (clears any existing destination).
@@ -841,7 +868,8 @@ EPDFBookmark_SetDest(FPDF_DOCUMENT document,
 // Notes:
 //  * On success, /A is set to an indirect reference to |action| and any /Dest
 //    is removed.
-//  * |action| must belong to |document| and be indirect; otherwise the call fails.
+//  * |action| must belong to |document| and be indirect; otherwise the call
+//  fails.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_SetAction(FPDF_DOCUMENT document,
                        FPDF_BOOKMARK bookmark,
@@ -862,8 +890,7 @@ EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark);
 //   document - handle to the document.
 //
 // Returns true on success.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFBookmark_Clear(FPDF_DOCUMENT document);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFBookmark_Clear(FPDF_DOCUMENT document);
 
 #ifdef __cplusplus
 }  // extern "C"
