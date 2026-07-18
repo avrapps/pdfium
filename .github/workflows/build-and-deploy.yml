@@ -1,0 +1,195 @@
+name: Build PDFium & Deploy to falcon-pdfium-binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (default: default branch)'
+        required: false
+        default: default
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    name: Build Android (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: arm64-v8a, output_dir: android-arm64 }
+          - { target: armeabi-v7a, output_dir: android-arm }
+          - { target: x86, output_dir: android-x86 }
+          - { target: x86_64, output_dir: android-x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Install Linux base deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang lld curl g++ pkg-config tar
+
+      - name: Build target
+        run: scripts/embedpdf-runtime/build-target.sh "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-android-${{ matrix.target }}
+          path: out/embedpdf-runtime/${{ matrix.output_dir }}/libpdfium.so
+
+  build-ios:
+    name: Build iOS (${{ matrix.target }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: ios-arm64, output_dir: ios-arm64, ext: a }
+          - { target: ios-simulator-arm64, output_dir: ios-simulator-arm64, ext: a }
+          - { target: ios-simulator-x64, output_dir: ios-simulator-x64, ext: a }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Build target
+        run: scripts/embedpdf-runtime/build-target.sh "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-${{ matrix.target }}
+          path: out/embedpdf-runtime/${{ matrix.output_dir }}/libpdfium.${{ matrix.ext }}
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-arm64, runner: macos-15, output_dir: darwin-arm64, ext: dylib }
+          - { target: darwin-x64, runner: macos-15, output_dir: darwin-x64, ext: dylib }
+          - { target: linux-x64, runner: ubuntu-24.04, output_dir: linux-x64, ext: so }
+          - { target: linux-arm64, runner: ubuntu-24.04, output_dir: linux-arm64, ext: so }
+          - { target: win32-x64, runner: windows-2022, output_dir: win32-x64, ext: dll }
+          - { target: win32-arm64, runner: windows-2022, output_dir: win32-arm64, ext: dll }
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Install Linux base deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang lld curl g++ pkg-config tar
+
+      - name: Find MSVC rc.exe (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $rcPath = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\rc.exe" -Recurse | Sort-Object -Descending | Select-Object -First 1 | Split-Path -Parent
+          if (-not $rcPath) { throw "rc.exe not found" }
+          $rcPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build target
+        shell: bash
+        run: scripts/embedpdf-runtime/build-target.sh "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-${{ matrix.target }}
+          path: out/embedpdf-runtime/${{ matrix.output_dir }}/libpdfium.${{ matrix.ext }}
+
+  deploy:
+    name: Deploy binaries to falcon-pdfium-binaries
+    needs: [build-android, build-ios, build-desktop]
+    runs-on: macos-15
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Checkout falcon-pdfium-binaries
+        uses: actions/checkout@v4
+        with:
+          repository: avrapps/falcon-pdfium-binaries
+          token: ${{ secrets.PDFIUM_BINARIES_PAT }}
+          path: falcon-pdfium-binaries
+
+      - name: Copy Android binaries
+        run: |
+          cp artifacts/pdfium-android-arm64-v8a/libpdfium.so falcon-pdfium-binaries/binaries/android/arm64-v8a/libpdfium.so
+          cp artifacts/pdfium-android-armeabi-v7a/libpdfium.so falcon-pdfium-binaries/binaries/android/armeabi-v7a/libpdfium.so
+          cp artifacts/pdfium-android-x86/libpdfium.so falcon-pdfium-binaries/binaries/android/x86/libpdfium.so
+          cp artifacts/pdfium-android-x86_64/libpdfium.so falcon-pdfium-binaries/binaries/android/x86_64/libpdfium.so
+
+      - name: Copy Desktop binaries
+        run: |
+          cp artifacts/pdfium-darwin-arm64/libpdfium.dylib falcon-pdfium-binaries/binaries/macosArm64/libpdfium.dylib
+          cp artifacts/pdfium-darwin-x64/libpdfium.dylib falcon-pdfium-binaries/binaries/macosX64/libpdfium.dylib
+          cp artifacts/pdfium-linux-x64/libpdfium.so falcon-pdfium-binaries/binaries/linuxX64/libpdfium.so
+          cp artifacts/pdfium-linux-arm64/libpdfium.so falcon-pdfium-binaries/binaries/linuxArm64/libpdfium.so
+          cp artifacts/pdfium-win32-x64/libpdfium.dll falcon-pdfium-binaries/binaries/mingwX64/pdfium.dll
+          cp artifacts/pdfium-win32-arm64/libpdfium.dll falcon-pdfium-binaries/binaries/mingwArm64/pdfium.dll
+
+      - name: Build iOS xcframework
+        run: |
+          mkdir -p staging/ios-arm64 staging/ios-simulator
+
+          cp artifacts/pdfium-ios-arm64/libpdfium.a staging/ios-arm64/libpdfium.a
+
+          # Combine simulator architectures with lipo
+          lipo -create \
+            artifacts/pdfium-ios-simulator-arm64/libpdfium.a \
+            artifacts/pdfium-ios-simulator-x64/libpdfium.a \
+            -output staging/ios-simulator/libpdfium.a
+
+          # Remove existing xcframework and rebuild
+          rm -rf falcon-pdfium-binaries/binaries/ios-framework/pdfium.xcframework
+          xcodebuild -create-xcframework \
+            -library staging/ios-arm64/libpdfium.a \
+            -library staging/ios-simulator/libpdfium.a \
+            -output falcon-pdfium-binaries/binaries/ios-framework/pdfium.xcframework
+
+      - name: Commit and push
+        working-directory: falcon-pdfium-binaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            git commit -m "chore: update pdfium binaries from avrapps/pdfium@${SHORT_SHA}
+
+            Built from: https://github.com/avrapps/pdfium/actions/runs/${{ github.run_id }}"
+            git push
+          fi
