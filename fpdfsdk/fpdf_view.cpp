@@ -708,6 +708,25 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
+    return 0;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match
+  // EPDFPage_GetObjectNumber()'s documented XFA behavior and return 0.
+  if (doc->GetExtension()) {
+    return 0;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  RetainPtr<const CPDF_Dictionary> dict = doc->GetPageDictionary(page_index);
+  return dict ? dict->GetObjNum() : 0;
+}
+
+FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page) {
   // Note: CPDFPageFromFPDFPage() returns null for XFA pages, so this function
   // returns 0 for XFA pages (documented in the header).
@@ -1550,6 +1569,90 @@ static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* pPageDict,
     pDict = pDict->GetDictFor(pdfium::page_object::kParent).Get();
   }
   return CFX_FloatRect();
+}
+
+static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
+    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
+    int page_index) {
+  if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
+    return nullptr;
+  }
+  return doc->GetPageDictionary(page_index);
+}
+
+static ByteStringView GetPageBoxKey(EPDF_PAGE_BOX_TYPE box_type) {
+  switch (box_type) {
+    case EPDF_PAGE_BOX_MEDIA:
+      return pdfium::page_object::kMediaBox;
+    case EPDF_PAGE_BOX_CROP:
+      return pdfium::page_object::kCropBox;
+    case EPDF_PAGE_BOX_BLEED:
+      return pdfium::page_object::kBleedBox;
+    case EPDF_PAGE_BOX_TRIM:
+      return pdfium::page_object::kTrimBox;
+    case EPDF_PAGE_BOX_ART:
+      return pdfium::page_object::kArtBox;
+  }
+  return ByteStringView();
+}
+
+static CFX_FloatRect GetEffectiveMediaBox(const CPDF_Dictionary* page_dict) {
+  CFX_FloatRect media_box =
+      GetInheritedRect(page_dict, pdfium::page_object::kMediaBox);
+  if (media_box.IsEmpty()) {
+    media_box = CFX_FloatRect(0, 0, 612, 792);
+  }
+  return media_box;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
+                       int page_index,
+                       EPDF_PAGE_BOX_TYPE box_type,
+                       FS_RECTF* box) {
+  if (!box) {
+    return false;
+  }
+
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
+    return false;
+  }
+
+  CFX_FloatRect rect;
+  switch (box_type) {
+    case EPDF_PAGE_BOX_MEDIA:
+      rect = GetEffectiveMediaBox(dict.Get());
+      break;
+    case EPDF_PAGE_BOX_CROP:
+      rect = GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
+      if (rect.IsEmpty()) {
+        rect = GetEffectiveMediaBox(dict.Get());
+      }
+      break;
+    case EPDF_PAGE_BOX_BLEED:
+    case EPDF_PAGE_BOX_TRIM:
+    case EPDF_PAGE_BOX_ART:
+      rect = GetInheritedRect(dict.Get(), GetPageBoxKey(box_type));
+      if (rect.IsEmpty()) {
+        return false;
+      }
+      break;
+  }
+
+  if (rect.IsEmpty()) {
+    return false;
+  }
+
+  *box = FSRectFFromCFXFloatRect(rect);
+  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

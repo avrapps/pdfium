@@ -372,6 +372,14 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
 CPDF_PageContentGenerator::~CPDF_PageContentGenerator() = default;
 
 void CPDF_PageContentGenerator::GenerateContent() {
+  std::optional<fxcrt::ostringstream> canonical_stream =
+      GenerateCanonicalPageStream();
+  if (canonical_stream.has_value()) {
+    ReplaceContentStreamsWithSingleStream(std::move(canonical_stream.value()));
+    UpdateResourcesDict();
+    return;
+  }
+
   std::map<int32_t, fxcrt::ostringstream> new_stream_data =
       GenerateModifiedStreams();
   // If no streams were regenerated or removed, nothing to do here.
@@ -381,6 +389,51 @@ void CPDF_PageContentGenerator::GenerateContent() {
 
   UpdateContentStreams(std::move(new_stream_data));
   UpdateResourcesDict();
+}
+
+std::optional<fxcrt::ostringstream>
+CPDF_PageContentGenerator::GenerateCanonicalPageStream() {
+  if (!obj_holder_->IsPage()) {
+    return std::nullopt;
+  }
+
+  bool has_dirty_page_objects = false;
+  for (auto& pPageObj : page_objects_) {
+    // Must include dirty inactive page objects: replacing the whole content
+    // stream is how their original bytes disappear from this page.
+    if (pPageObj->IsDirty()) {
+      has_dirty_page_objects = true;
+      break;
+    }
+  }
+
+  if (!has_dirty_page_objects && !obj_holder_->HasDirtyStreams()) {
+    return std::nullopt;
+  }
+
+  obj_holder_->TakeDirtyStreams();
+
+  fxcrt::ostringstream buf;
+  buf << "q\n";
+  ProcessDefaultGraphics(&buf);
+
+  std::unique_ptr<const CPDF_ContentMarks> empty_content_marks =
+      std::make_unique<CPDF_ContentMarks>();
+  const CPDF_ContentMarks* content_marks = empty_content_marks.get();
+
+  for (auto& pPageObj : page_objects_) {
+    if (!pPageObj->IsActive()) {
+      pPageObj->SetDirty(false);
+      continue;
+    }
+
+    content_marks = ProcessContentMarks(&buf, pPageObj, content_marks);
+    ProcessPageObject(&buf, pPageObj);
+  }
+
+  FinishMarks(&buf, content_marks);
+  buf << "Q\n";
+  return buf;
 }
 
 std::map<int32_t, fxcrt::ostringstream>
@@ -511,6 +564,13 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   }
 
   return streams;
+}
+
+void CPDF_PageContentGenerator::ReplaceContentStreamsWithSingleStream(
+    fxcrt::ostringstream&& stream_data) {
+  default_graphics_name_ = GetOrCreateDefaultGraphics();
+  CPDF_PageContentManager page_content_manager(obj_holder_, document_);
+  page_content_manager.ReplaceWithSingleStream(&stream_data);
 }
 
 void CPDF_PageContentGenerator::UpdateContentStreams(

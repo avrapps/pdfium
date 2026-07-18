@@ -1539,12 +1539,14 @@ bool GenerateFreeTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const B
     // (c) Border width and colors.
     const float border_w = GetBorderWidth(annot_dict);
 
-    // (d) Set fill (from /C), stroke (from DA), and line width.
+    // (d) Set fill (from /C, default transparent), stroke (from DA), and line
+    // width. When /C is absent we emit nothing for the fill and pick a
+    // stroke-only paint operator below, so the text box doesn't fall back to
+    // PDF's default black fill. Mirrors GenerateCircleAP / GenerateSquareAP.
     auto color_array = annot_dict->GetArrayFor(pdfium::annotation::kC);
-    if (color_array) {
-      CFX_Color fill = fpdfdoc::CFXColorFromArray(*color_array);
-      appearance_stream << GenerateColorAP(fill, PaintOperation::kFill);
-    }
+    appearance_stream << GetColorStringWithDefault(
+        color_array.Get(), CFX_Color(CFX_Color::Type::kTransparent),
+        PaintOperation::kFill);
     appearance_stream << GenerateColorAP(da_color, PaintOperation::kStroke);
     if (border_w > 0)
       appearance_stream << border_w << " w\n";
@@ -1621,10 +1623,16 @@ bool GenerateFreeTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict, const B
       });
     }
 
-    // (g) Draw text box rectangle (fill + stroke).
+    // (g) Draw text box rectangle. Pick the paint operator dynamically so a
+    // missing /C means "no fill" (stroke-only) rather than falling back to
+    // PDF's default black fill. Mirrors GenerateCircleAP / GenerateSquareAP.
+    const bool is_fill_rect = color_array != nullptr;
+    const bool is_stroke_rect = border_w > 0;
     CFX_FloatRect text_box_stroke = text_box;
     text_box_stroke.Deflate(half_bw, half_bw);
-    WriteRect(appearance_stream, text_box_stroke) << " re B\n";
+    WriteRect(appearance_stream, text_box_stroke)
+        << " re " << GetPaintOperatorString(is_stroke_rect, is_fill_rect)
+        << "\n";
 
     // (h) Draw text inside the text box.
     static constexpr float kCalloutTextPadding = 2.0f;

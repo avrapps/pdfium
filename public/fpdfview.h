@@ -888,6 +888,35 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
                                    int page_index,
                                    FS_SIZEF* size);
 
+// Page box type used by EPDF_GetPageBoxByIndex().
+typedef enum EPDF_PAGE_BOX_TYPE {
+  EPDF_PAGE_BOX_MEDIA = 0,
+  EPDF_PAGE_BOX_CROP = 1,
+  EPDF_PAGE_BOX_BLEED = 2,
+  EPDF_PAGE_BOX_TRIM = 3,
+  EPDF_PAGE_BOX_ART = 4,
+} EPDF_PAGE_BOX_TYPE;
+
+// Experimental EmbedPDF API.
+// Function: EPDF_GetPageBoxByIndex
+//          Get a page box at the given index without loading or parsing the page.
+// Parameters:
+//          document    -   Handle to document. Returned by FPDF_LoadDocument().
+//          page_index  -   Page index, zero for the first page.
+//          box_type    -   The page box to query.
+//          box         -   Pointer to a FS_RECTF to receive the box (in points).
+// Return value:
+//          Non-zero for success. 0 for error or absent optional box.
+// Comments:
+//          MediaBox is resolved through page-tree inheritance and falls back to
+//          PDFium's default page size when absent. CropBox falls back to
+//          MediaBox. BleedBox, TrimBox, and ArtBox return false when absent.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
+                       int page_index,
+                       EPDF_PAGE_BOX_TYPE box_type,
+                       FS_RECTF* box);
+
 // Experimental EmbedPDF API.
 // Function: EPDF_LoadPageNormalized
 //          Load a page with rotation normalized to 0 degrees.
@@ -1660,6 +1689,20 @@ FPDF_EXPORT FPDF_RESULT FPDF_CALLCONV FPDF_BStr_Clear(FPDF_BSTR* bstr);
 // handle with FPDF_ClosePage().
 FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
 EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num);
+
+// Experimental EmbedPDF Extension API.
+// Get the PDF indirect object number of a page's dictionary by page index.
+// Unlike FPDF_LoadPage(), this does not construct a page object or parse page
+// content.
+//
+//   document   - handle to the document.
+//   page_index - zero-based page index.
+//
+// Returns the page dictionary object number (> 0) on success, or 0 if the
+// document/index is invalid, the page dictionary is a direct object, or the
+// page is an XFA page.
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index);
 
 // Experimental EmbedPDF Extension API.
 // Get the PDF indirect object number of a page's dictionary.
