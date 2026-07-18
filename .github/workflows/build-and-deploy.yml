@@ -77,7 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdfium-${{ matrix.target }}
-          path: out/embedpdf-runtime/${{ matrix.target }}/libpdfium.a
+          path: out/embedpdf-runtime/${{ matrix.target }}/obj/libpdfium.a
 
   build-desktop:
     name: Build Desktop (${{ matrix.target }})
@@ -86,12 +86,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: darwin-arm64, runner: macos-15, ext: dylib }
-          - { target: darwin-x64, runner: macos-15, ext: dylib }
-          - { target: linux-x64, runner: ubuntu-24.04, ext: so }
-          - { target: linux-arm64, runner: ubuntu-24.04, ext: so }
-          - { target: win32-x64, runner: windows-2022, ext: dll }
-          - { target: win32-arm64, runner: windows-2022, ext: dll }
+          - { target: darwin-arm64, runner: macos-15, file: libpdfium.dylib }
+          - { target: darwin-x64, runner: macos-15, file: libpdfium.dylib }
+          - { target: linux-x64, runner: ubuntu-24.04, file: libpdfium.so }
+          - { target: linux-arm64, runner: ubuntu-24.04, file: libpdfium.so }
+          - { target: win32-x64, runner: windows-2022, file: pdfium.dll }
+          - { target: win32-arm64, runner: windows-2022, file: pdfium.dll }
     env:
       DEPOT_TOOLS_WIN_TOOLCHAIN: 0
     steps:
@@ -132,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdfium-${{ matrix.target }}
-          path: out/embedpdf-runtime/${{ matrix.target }}/libpdfium.${{ matrix.ext }}
+          path: out/embedpdf-runtime/${{ matrix.target }}/${{ matrix.file }}
 
   deploy:
     name: Deploy binaries to falcon-pdfium-binaries
@@ -164,8 +164,8 @@ jobs:
           cp artifacts/pdfium-darwin-x64/libpdfium.dylib falcon-pdfium-binaries/binaries/macosX64/libpdfium.dylib
           cp artifacts/pdfium-linux-x64/libpdfium.so falcon-pdfium-binaries/binaries/linuxX64/libpdfium.so
           cp artifacts/pdfium-linux-arm64/libpdfium.so falcon-pdfium-binaries/binaries/linuxArm64/libpdfium.so
-          cp artifacts/pdfium-win32-x64/libpdfium.dll falcon-pdfium-binaries/binaries/mingwX64/pdfium.dll
-          cp artifacts/pdfium-win32-arm64/libpdfium.dll falcon-pdfium-binaries/binaries/mingwArm64/pdfium.dll
+          cp artifacts/pdfium-win32-x64/pdfium.dll falcon-pdfium-binaries/binaries/mingwX64/pdfium.dll
+          cp artifacts/pdfium-win32-arm64/pdfium.dll falcon-pdfium-binaries/binaries/mingwArm64/pdfium.dll
 
       - name: Build iOS xcframework
         run: |
