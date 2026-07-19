@@ -266,6 +266,18 @@ std::map<const CPDF_Dictionary*, uint32_t> SweepPageWidgets(
   return widget_pages;
 }
 
+// The reconciled view of the form: the /AcroForm tree merged by fully
+// qualified name and reconciled with the page sweep, so recovered fields
+// participate and promoted values win. This is the ONE lens both reads
+// (model snapshot, interchange export) and write transactions look through;
+// a write planned against the raw field dictionary alone would miss
+// same-FQN twin widgets that only the reconciliation knows about.
+std::unique_ptr<CPDF_InteractiveForm> BuildReconciledForm(CPDF_Document* doc) {
+  auto form = std::make_unique<CPDF_InteractiveForm>(doc);
+  SweepPageWidgets(doc, form.get());
+  return form;
+}
+
 uint32_t PageObjNumForWidget(
     const std::map<const CPDF_Dictionary*, uint32_t>& widget_pages,
     const CPDF_Dictionary* widget_dict) {
@@ -456,37 +468,42 @@ WideString OptExportAt(const CPDF_Array* opt, size_t index) {
   return pair ? pair->GetUnicodeTextAt(0) : element->GetUnicodeText();
 }
 
-// Resolve the widgets of a terminal field, each through the document so
-// layer promotions win. Fails when a kid carries /T: the target is a
-// non-terminal field and value transactions must address terminal fields.
-bool CollectTxnControls(CPDF_Document* doc,
-                        const CPDF_Dictionary* field_dict,
-                        uint32_t field_objnum,
-                        bool want_toggle_info,
-                        std::vector<TxnControl>* out) {
+// Populate the planning info of one resolved control and append it.
+// Mirrors CPDF_FormControl::GetExportValue(): toggle /Opt entries are
+// plain strings indexed by control ordinal, with a "Yes" fallback.
+void FinishTxnControl(const CPDF_Array* opt_array,
+                      bool want_toggle_info,
+                      std::vector<TxnControl>* out,
+                      TxnControl control) {
+  if (want_toggle_info && control.dict) {
+    control.on_state = ReadWidgetOnState(control.dict.Get());
+    control.current_as = control.dict->GetNameFor("AS");
+    const size_t ordinal = out->size();
+    ByteString export_bytes = control.on_state;
+    if (opt_array && ordinal < opt_array->size()) {
+      export_bytes = opt_array->GetByteStringAt(ordinal);
+    }
+    if (export_bytes.IsEmpty()) {
+      export_bytes = "Yes";
+    }
+    control.export_value = PDF_DecodeText(export_bytes.unsigned_span());
+  }
+  out->push_back(std::move(control));
+}
+
+// Resolve the widgets of a terminal field from its own dictionary, each
+// through the document so layer promotions win. Fails when a kid carries
+// /T: the target is a non-terminal field and value transactions must
+// address terminal fields.
+bool CollectRawTxnControls(CPDF_Document* doc,
+                           const CPDF_Dictionary* field_dict,
+                           uint32_t field_objnum,
+                           bool want_toggle_info,
+                           std::vector<TxnControl>* out) {
   RetainPtr<const CPDF_Array> opt_array;
   if (want_toggle_info) {
     opt_array = ToArray(CPDF_FormField::GetFieldAttrForDict(field_dict, "Opt"));
   }
-
-  auto finish_control = [&](TxnControl control) {
-    if (want_toggle_info && control.dict) {
-      control.on_state = ReadWidgetOnState(control.dict.Get());
-      control.current_as = control.dict->GetNameFor("AS");
-      // Mirrors CPDF_FormControl::GetExportValue(): toggle /Opt entries are
-      // plain strings indexed by control ordinal, with a "Yes" fallback.
-      const size_t ordinal = out->size();
-      ByteString export_bytes = control.on_state;
-      if (opt_array && ordinal < opt_array->size()) {
-        export_bytes = opt_array->GetByteStringAt(ordinal);
-      }
-      if (export_bytes.IsEmpty()) {
-        export_bytes = "Yes";
-      }
-      control.export_value = PDF_DecodeText(export_bytes.unsigned_span());
-    }
-    out->push_back(std::move(control));
-  };
 
   RetainPtr<const CPDF_Array> kids =
       field_dict->GetArrayFor(pdfium::form_fields::kKids);
@@ -495,7 +512,8 @@ bool CollectTxnControls(CPDF_Document* doc,
     control.merged = true;
     control.objnum = field_objnum;
     control.dict = pdfium::WrapRetain(field_dict);
-    finish_control(std::move(control));
+    FinishTxnControl(opt_array.Get(), want_toggle_info, out,
+                     std::move(control));
     return true;
   }
 
@@ -519,9 +537,129 @@ bool CollectTxnControls(CPDF_Document* doc,
     if (control.dict->KeyExist(pdfium::form_fields::kT)) {
       return false;  // Child field: |field_dict| is not terminal.
     }
-    finish_control(std::move(control));
+    FinishTxnControl(opt_array.Get(), want_toggle_info, out,
+                     std::move(control));
   }
   return !out->empty();
+}
+
+// Locate the reconciled field owning |field_objnum|: the merged
+// CPDF_FormField whose storage dictionary carries that object number.
+CPDF_FormField* ReconciledFieldByObjNum(const CPDF_InteractiveForm* form,
+                                        uint32_t field_objnum) {
+  const size_t count = form->CountFields(WideString());
+  for (size_t i = 0; i < count; ++i) {
+    CPDF_FormField* field = form->GetField(i, WideString());
+    if (field && field->GetFieldDict() &&
+        field->GetFieldDict()->GetObjNum() == field_objnum) {
+      return field;
+    }
+  }
+  return nullptr;
+}
+
+// Resolve the widgets of a terminal field from the reconciled form view.
+// Two-plane documents (the IRS f1040 class: an orphaned /AcroForm twin plus
+// a standalone page-annot twin sharing one fully qualified name) fill
+// correctly only when a write covers every twin — the raw /Kids walk cannot
+// see across planes, but the reconciled control list is exactly the widget
+// set the model snapshot reported to the caller. This mirrors what stock
+// CPDF_FormField::CheckControl gets for free from its in-memory state.
+bool CollectReconciledTxnControls(CPDF_Document* doc,
+                                  const CPDF_InteractiveForm* form,
+                                  const CPDF_Dictionary* field_dict,
+                                  uint32_t field_objnum,
+                                  bool want_toggle_info,
+                                  std::vector<TxnControl>* out) {
+  const CPDF_FormField* field = ReconciledFieldByObjNum(form, field_objnum);
+  if (!field) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Array> opt_array;
+  if (want_toggle_info) {
+    opt_array = ToArray(CPDF_FormField::GetFieldAttrForDict(field_dict, "Opt"));
+  }
+
+  const CPDF_Dictionary* storage_dict = field->GetFieldDict().Get();
+  const int count = field->CountControls();
+  for (int i = 0; i < count; ++i) {
+    const CPDF_FormControl* form_control = field->GetControl(i);
+    if (!form_control) {
+      continue;
+    }
+    RetainPtr<const CPDF_Dictionary> control_dict =
+        form_control->GetWidgetDict();
+    if (!control_dict) {
+      continue;
+    }
+
+    TxnControl control;
+    const uint32_t objnum = control_dict->GetObjNum();
+    if (objnum == field_objnum || control_dict.Get() == storage_dict) {
+      // The merged control: the field dictionary itself is the widget.
+      control.merged = true;
+      control.objnum = field_objnum;
+      control.dict = pdfium::WrapRetain(field_dict);
+    } else if (objnum != 0) {
+      control.objnum = objnum;
+      // Re-resolve through the document so layer promotions win over the
+      // instance the form captured at build time.
+      control.dict = ToDictionary(doc->GetOrParseIndirectObject(objnum));
+    } else {
+      // Direct (spec-violating) kid: recover its /Kids index from the
+      // form-held storage dictionary, then plan against the current view.
+      RetainPtr<const CPDF_Array> storage_kids =
+          storage_dict->GetArrayFor(pdfium::form_fields::kKids);
+      RetainPtr<const CPDF_Array> current_kids =
+          field_dict->GetArrayFor(pdfium::form_fields::kKids);
+      if (!storage_kids || !current_kids) {
+        continue;
+      }
+      for (size_t k = 0; k < storage_kids->size(); ++k) {
+        if (storage_kids->GetDictAt(k).Get() == control_dict.Get()) {
+          control.kids_index = k;
+          control.dict = current_kids->GetDictAt(k);
+          break;
+        }
+      }
+      if (!control.dict) {
+        continue;
+      }
+    }
+    if (!control.dict) {
+      continue;
+    }
+    FinishTxnControl(opt_array.Get(), want_toggle_info, out,
+                     std::move(control));
+  }
+  return !out->empty();
+}
+
+// Resolve the widgets of a terminal field for a transaction. The reconciled
+// view is authoritative — reads and writes must see the SAME widget set.
+// Falls back to the raw /Kids walk for fields the interactive form cannot
+// represent (unnamed, type-less, or unplaced authoring drafts). |reconciled|
+// may be null; batch callers (interchange import) pass their own so the
+// form is built once per batch instead of once per field.
+bool CollectTxnControls(CPDF_Document* doc,
+                        const CPDF_Dictionary* field_dict,
+                        uint32_t field_objnum,
+                        bool want_toggle_info,
+                        const CPDF_InteractiveForm* reconciled,
+                        std::vector<TxnControl>* out) {
+  std::unique_ptr<CPDF_InteractiveForm> owned_form;
+  if (!reconciled) {
+    owned_form = BuildReconciledForm(doc);
+    reconciled = owned_form.get();
+  }
+  if (CollectReconciledTxnControls(doc, reconciled, field_dict, field_objnum,
+                                   want_toggle_info, out)) {
+    return true;
+  }
+  out->clear();
+  return CollectRawTxnControls(doc, field_dict, field_objnum, want_toggle_info,
+                               out);
 }
 
 // Resolve a control for mutation. Everything routes through promotion:
@@ -683,6 +821,7 @@ struct ToggleContext {
 };
 
 bool PrepareToggle(CPDF_Document* doc,
+                   const CPDF_InteractiveForm* reconciled,
                    uint32_t field_objnum,
                    ToggleContext* ctx) {
   ctx->field = ResolveFieldDict(doc, field_objnum);
@@ -696,7 +835,8 @@ bool PrepareToggle(CPDF_Document* doc,
   }
   ctx->is_radio = ctx->flags & pdfium::form_flags::kButtonRadio;
   return CollectTxnControls(doc, ctx->field.Get(), field_objnum,
-                            /*want_toggle_info=*/true, &ctx->controls);
+                            /*want_toggle_info=*/true, reconciled,
+                            &ctx->controls);
 }
 
 bool RejectClearForNoToggleToOff(const ToggleContext& ctx) {
@@ -791,6 +931,7 @@ bool ExecuteToggle(CPDF_Document* doc,
 
 // Select the target widget by appearance state name ("Off"/empty clears).
 bool ApplyToggle(CPDF_Document* doc,
+                 const CPDF_InteractiveForm* reconciled,
                  uint32_t field_objnum,
                  const ByteString& requested_state,
                  bool lenient_unknown_state,
@@ -798,7 +939,7 @@ bool ApplyToggle(CPDF_Document* doc,
                  unsigned long buffer_size,
                  unsigned long* out_changed_count) {
   ToggleContext ctx;
-  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+  if (!PrepareToggle(doc, reconciled, field_objnum, &ctx)) {
     return false;
   }
   const bool clearing =
@@ -826,13 +967,14 @@ bool ApplyToggle(CPDF_Document* doc,
 
 // Select the target widget by export value - the identity FDF/XFDF carry.
 bool ApplyToggleByExport(CPDF_Document* doc,
+                         const CPDF_InteractiveForm* reconciled,
                          uint32_t field_objnum,
                          const WideString& export_value,
                          uint32_t* changed_widget_objnums,
                          unsigned long buffer_size,
                          unsigned long* out_changed_count) {
   ToggleContext ctx;
-  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+  if (!PrepareToggle(doc, reconciled, field_objnum, &ctx)) {
     return false;
   }
   const bool clearing = export_value.IsEmpty() || export_value == L"Off";
@@ -896,7 +1038,7 @@ bool ApplyToggleDefault(CPDF_Document* doc,
                         unsigned long buffer_size,
                         unsigned long* out_changed_count) {
   ToggleContext ctx;
-  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+  if (!PrepareToggle(doc, /*reconciled=*/nullptr, field_objnum, &ctx)) {
     return false;
   }
   const TxnControl* target = nullptr;
@@ -940,6 +1082,7 @@ bool RegenerateControlAppearances(
 
 // Internal text transaction; the public wrapper converts the wire string.
 bool ApplyTextValue(CPDF_Document* doc,
+                    const CPDF_InteractiveForm* reconciled,
                     uint32_t field_objnum,
                     const WideString& new_value,
                     uint32_t* changed_widget_objnums,
@@ -960,7 +1103,7 @@ bool ApplyTextValue(CPDF_Document* doc,
 
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, reconciled, &controls)) {
     return false;
   }
 
@@ -991,6 +1134,7 @@ bool ApplyTextValue(CPDF_Document* doc,
 
 // Internal choice transaction; the public wrapper converts the wire strings.
 bool ApplyChoiceValues(CPDF_Document* doc,
+                       const CPDF_InteractiveForm* reconciled,
                        uint32_t field_objnum,
                        const std::vector<WideString>& new_values,
                        uint32_t* changed_widget_objnums,
@@ -1009,7 +1153,7 @@ bool ApplyChoiceValues(CPDF_Document* doc,
 
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, reconciled, &controls)) {
     return false;
   }
 
@@ -1111,7 +1255,8 @@ bool ApplyFieldDisplay(CPDF_Document* doc,
   }
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, /*reconciled=*/nullptr,
+                          &controls)) {
     return false;
   }
 
@@ -1191,7 +1336,8 @@ bool ApplyFieldAppearanceText(CPDF_Document* doc,
 
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, /*reconciled=*/nullptr,
+                          &controls)) {
     return false;
   }
   const bool needs_promoted_field = std::any_of(
@@ -1228,14 +1374,6 @@ bool ApplyFieldAppearanceText(CPDF_Document* doc,
 // ---------------------------------------------------------------------------
 // FDF / XFDF interchange helpers.
 // ---------------------------------------------------------------------------
-
-// The interchange view of the form: the /AcroForm tree reconciled with the
-// page sweep, so recovered fields participate and promoted values win.
-std::unique_ptr<CPDF_InteractiveForm> BuildReconciledForm(CPDF_Document* doc) {
-  auto form = std::make_unique<CPDF_InteractiveForm>(doc);
-  SweepPageWidgets(doc, form.get());
-  return form;
-}
 
 unsigned long CopyPayloadToBuffer(const ByteString& payload,
                                   void* buffer,
@@ -1292,20 +1430,20 @@ void ApplyImportedValues(CPDF_Document* doc,
     case CPDF_FormField::kCheckBox:
     case CPDF_FormField::kRadioButton:
       applied = values.size() == 1 &&
-                ApplyToggleByExport(doc, field_objnum, values[0], nullptr, 0,
-                                    &changed);
+                ApplyToggleByExport(doc, form, field_objnum, values[0], nullptr,
+                                    0, &changed);
       break;
     case CPDF_FormField::kText:
     case CPDF_FormField::kRichText:
     case CPDF_FormField::kFile:
       applied = values.size() == 1 &&
-                ApplyTextValue(doc, field_objnum, values[0], nullptr, 0,
+                ApplyTextValue(doc, form, field_objnum, values[0], nullptr, 0,
                                &changed);
       break;
     case CPDF_FormField::kComboBox:
     case CPDF_FormField::kListBox:
-      applied =
-          ApplyChoiceValues(doc, field_objnum, values, nullptr, 0, &changed);
+      applied = ApplyChoiceValues(doc, form, field_objnum, values, nullptr, 0,
+                                  &changed);
       break;
     default:
       break;  // Push buttons, signatures, unknown: never written.
@@ -1993,7 +2131,8 @@ EPDFForm_SetToggle(FPDF_DOCUMENT document,
   if (!doc) {
     return false;
   }
-  return ApplyToggle(doc, field_objnum, ByteString(on_state ? on_state : ""),
+  return ApplyToggle(doc, /*reconciled=*/nullptr, field_objnum,
+                     ByteString(on_state ? on_state : ""),
                      /*lenient_unknown_state=*/false, changed_widget_objnums,
                      buffer_size, out_changed_count);
 }
@@ -2010,7 +2149,7 @@ EPDFForm_SetTextValue(FPDF_DOCUMENT document,
     return false;
   }
   return ApplyTextValue(
-      doc, field_objnum,
+      doc, /*reconciled=*/nullptr, field_objnum,
       value ? WideStringFromFPDFWideString(value) : WideString(),
       changed_widget_objnums, buffer_size, out_changed_count);
 }
@@ -2036,8 +2175,8 @@ EPDFForm_SetChoiceValues(FPDF_DOCUMENT document,
                                       : WideString());
     }
   }
-  return ApplyChoiceValues(doc, field_objnum, new_values,
-                           changed_widget_objnums, buffer_size,
+  return ApplyChoiceValues(doc, /*reconciled=*/nullptr, field_objnum,
+                           new_values, changed_widget_objnums, buffer_size,
                            out_changed_count);
 }
 
@@ -2104,8 +2243,8 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
         defaults.clear();
       }
     }
-    return ApplyChoiceValues(doc, field_objnum, defaults,
-                             changed_widget_objnums, buffer_size,
+    return ApplyChoiceValues(doc, /*reconciled=*/nullptr, field_objnum,
+                             defaults, changed_widget_objnums, buffer_size,
                              out_changed_count);
   }
 
@@ -2114,7 +2253,8 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
   }
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, /*reconciled=*/nullptr,
+                          &controls)) {
     return false;
   }
   RetainPtr<CPDF_Dictionary> promoted_field =
@@ -2411,6 +2551,12 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
     ++report.widgets_linked;
   }
 
+  // The structural phase above may have linked fields and widgets; bake
+  // against a FRESH reconciled view so just-linked widgets participate.
+  std::unique_ptr<CPDF_InteractiveForm> bake_form;
+  if (!bake_fields.empty()) {
+    bake_form = BuildReconciledForm(doc);
+  }
   for (const BakeStep& step : bake_fields) {
     RetainPtr<const CPDF_Dictionary> field_dict =
         ResolveFieldDict(doc, step.field_objnum);
@@ -2419,7 +2565,8 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
     }
     std::vector<TxnControl> controls;
     if (!CollectTxnControls(doc, field_dict.Get(), step.field_objnum,
-                            /*want_toggle_info=*/false, &controls)) {
+                            /*want_toggle_info=*/false, bake_form.get(),
+                            &controls)) {
       continue;
     }
     RetainPtr<CPDF_Dictionary> promoted_field;
@@ -3085,7 +3232,8 @@ void RegenerateFieldAppearances(CPDF_Document* doc, uint32_t field_objnum) {
   }
   std::vector<TxnControl> controls;
   if (!CollectTxnControls(doc, field.Get(), field_objnum,
-                          /*want_toggle_info=*/false, &controls)) {
+                          /*want_toggle_info=*/false, /*reconciled=*/nullptr,
+                          &controls)) {
     return;
   }
   RetainPtr<CPDF_Dictionary> promoted_field;
@@ -3349,7 +3497,7 @@ EPDFForm_SetFieldDefaultToggle(FPDF_DOCUMENT document,
     return false;
   }
   ToggleContext ctx;
-  if (!PrepareToggle(doc, field_objnum, &ctx)) {
+  if (!PrepareToggle(doc, /*reconciled=*/nullptr, field_objnum, &ctx)) {
     return false;
   }
 
@@ -3549,7 +3697,8 @@ EPDFForm_SetFieldOptions(FPDF_DOCUMENT document,
       mutable_field->RemoveFor("I");
     }
     RegenerateFieldAppearances(doc, field_objnum);
-  } else if (!ApplyChoiceValues(doc, field_objnum, kept, nullptr, 0, nullptr)) {
+  } else if (!ApplyChoiceValues(doc, /*reconciled=*/nullptr, field_objnum, kept,
+                                nullptr, 0, nullptr)) {
     return false;
   }
 

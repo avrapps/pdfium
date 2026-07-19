@@ -3340,8 +3340,15 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
 
   RetainPtr<const CPDF_Dictionary> form_dict =
       root_dict->GetDictFor("AcroForm");
+  RetainPtr<CPDF_Dictionary> ephemeral_form_dict;
   if (!form_dict) {
-    return false;
+    if (target->IsPersistent()) {
+      form_dict = CPDF_InteractiveForm::InitAcroFormDict(doc);
+      CHECK(form_dict);
+    } else {
+      ephemeral_form_dict = GenerateEphemeralDefaultAcroFormDict();
+      form_dict = ephemeral_form_dict;
+    }
   }
 
   std::optional<DefaultAppearanceInfo> default_appearance_info =
@@ -3350,26 +3357,43 @@ bool GenerateFormAPToTarget(APGenerationTarget* target,
     return false;
   }
 
+  // A missing or font-less /DR must not veto appearance generation — the
+  // widget's own /DA names the font it wants, and DR-less AcroForms are
+  // common in flattened government forms (the IRS f1040 class). Persistent
+  // targets seed /DR/Font with a fallback the same way redaction overlays
+  // do; ephemeral targets fall back without mutating the document.
   RetainPtr<const CPDF_Dictionary> dr_dict = form_dict->GetDictFor("DR");
-  if (!dr_dict) {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Dictionary> dr_font_dict = dr_dict->GetDictFor("Font");
+  RetainPtr<const CPDF_Dictionary> dr_font_dict =
+      dr_dict ? dr_dict->GetDictFor("Font") : nullptr;
   if (!ValidateFontResourceDict(dr_font_dict.Get())) {
-    return false;
+    dr_font_dict.Reset();
   }
 
   const ByteString& font_name = default_appearance_info.value().font_name;
   RetainPtr<CPDF_Dictionary> font_dict;
   if (target->IsPersistent()) {
+    RetainPtr<CPDF_Dictionary> mutable_dr_font_dict;
+    if (dr_font_dict) {
+      mutable_dr_font_dict =
+          pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dr_font_dict.Get()));
+    } else {
+      RetainPtr<CPDF_Dictionary> mutable_root = doc->GetMutableRoot();
+      RetainPtr<CPDF_Dictionary> mutable_form_dict =
+          mutable_root ? mutable_root->GetMutableDictFor("AcroForm") : nullptr;
+      if (!mutable_form_dict) {
+        return false;
+      }
+      mutable_dr_font_dict =
+          mutable_form_dict->GetOrCreateDictFor("DR")->GetOrCreateDictFor(
+              "Font");
+      dr_dict = mutable_form_dict->GetDictFor("DR");
+    }
     font_dict = GetFontFromDrFontDictOrGenerateFallback(
-        doc,
-        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(dr_font_dict.Get())),
-        font_name);
+        doc, mutable_dr_font_dict.Get(), font_name);
   } else {
-    font_dict =
-        GetFontFromDrFontDictOrDirectFallback(dr_font_dict.Get(), font_name);
+    font_dict = dr_font_dict ? GetFontFromDrFontDictOrDirectFallback(
+                                   dr_font_dict.Get(), font_name)
+                             : GenerateDirectFallbackFontDict();
   }
   auto* doc_page_data = CPDF_DocPageData::FromDocument(doc);
   RetainPtr<CPDF_Font> default_font = doc_page_data->GetFont(font_dict);
