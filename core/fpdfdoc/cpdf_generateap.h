@@ -15,6 +15,7 @@
 
 class CPDF_Dictionary;
 class CPDF_Document;
+class CPDF_Stream;
 struct CFX_Color;
 enum class BlendMode;
 
@@ -71,6 +72,17 @@ class CPDF_GenerateAP {
       FormType type);
 
   static bool CanGenerateEphemeralAnnotAP(CPDF_Annot::Subtype subtype);
+
+  // EmbedPDF: build the final redaction overlay for a /Redact annotation as
+  // an indirect Form XObject: opaque /IC fill plus the /OverlayText label per
+  // /DA, /Q and /Repeat. The single source of truth for what an applied
+  // redaction looks like — marking-stage AP generation bakes it as the R/D
+  // and /RO streams, and the apply path synthesizes it when a file carries no
+  // pre-baked /RO. Returns null when the annotation defines neither fill nor
+  // label.
+  static RetainPtr<CPDF_Stream> BuildRedactOverlayForm(
+      CPDF_Document* doc,
+      const CPDF_Dictionary* annot_dict);
 
   static bool GenerateDefaultAppearanceWithColor(CPDF_Document* doc,
                                                  CPDF_Dictionary* annot_dict,

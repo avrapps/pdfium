@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -21,6 +20,7 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_generateap.h"
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/containers/contains.h"
@@ -71,18 +71,7 @@ std::vector<CFX_FloatRect> GetRedactRectsFromAnnotDict(
 struct RemovedAnnotCandidate {
   size_t index = 0;
   uint32_t object_number = 0;
-  ByteString nm_utf8;
   RetainPtr<CPDF_Dictionary> dict;
-};
-
-struct RedactionReportBuffers {
-  EPDF_RemovedAnnotInfo* removed = nullptr;
-  uint32_t removed_capacity = 0;
-  char* nm_utf8_pool = nullptr;
-  uint32_t nm_utf8_pool_capacity = 0;
-  uint32_t* written_count = nullptr;
-  uint32_t* total_count = nullptr;
-  uint32_t* nm_utf8_bytes_used = nullptr;
 };
 
 uint32_t GetAnnotObjectNumber(const CPDF_Object* entry,
@@ -91,13 +80,6 @@ uint32_t GetAnnotObjectNumber(const CPDF_Object* entry,
     return entry->AsReference()->GetRefObjNum();
   }
   return dict ? dict->GetObjNum() : 0;
-}
-
-ByteString GetAnnotNMUtf8(const CPDF_Dictionary* dict) {
-  if (!dict || !dict->KeyExist("NM")) {
-    return ByteString();
-  }
-  return dict->GetUnicodeTextFor("NM").ToUTF8();
 }
 
 bool RectsIntersectWithPositiveArea(CFX_FloatRect a, CFX_FloatRect b) {
@@ -152,7 +134,6 @@ bool AddRemovalCandidate(CPDF_Page* page,
   RemovedAnnotCandidate candidate;
   candidate.index = index;
   candidate.object_number = GetAnnotObjectNumber(entry.Get(), dict.Get());
-  candidate.nm_utf8 = GetAnnotNMUtf8(dict.Get());
   candidate.dict = std::move(dict);
   candidates->push_back(std::move(candidate));
   return true;
@@ -301,55 +282,20 @@ void DetachWidgetsFromAcroForm(
   }
 }
 
-void WriteRemovalReport(const std::vector<RemovedAnnotCandidate>& candidates,
-                        const RedactionReportBuffers* report) {
-  if (!report) {
-    return;
-  }
-
-  const uint32_t total =
-      pdfium::checked_cast<uint32_t>(candidates.size());
-  uint32_t written = 0;
-  uint32_t nm_bytes_used = 0;
-  const uint32_t capacity = report->removed ? report->removed_capacity : 0;
-  const uint32_t limit = std::min(total, capacity);
-
-  for (; written < limit; ++written) {
-    const RemovedAnnotCandidate& candidate = candidates[written];
-    EPDF_RemovedAnnotInfo& out = report->removed[written];
-    out.object_number = candidate.object_number;
-    out.index_at_removal =
-        pdfium::checked_cast<uint32_t>(candidate.index);
-    out.nm_utf8_offset = 0;
-    out.nm_utf8_len = 0;
-
-    const uint32_t nm_len =
-        pdfium::checked_cast<uint32_t>(candidate.nm_utf8.GetLength());
-    if (nm_len == 0) {
-      continue;
+// The count deliberately excludes REDACT annotations: they are the removal
+// instructions (the applied one, and every sibling consumed by a page-wide
+// apply), not collateral. Callers use this to warn that a redaction also
+// destroyed annotations the user never explicitly marked.
+uint32_t CountRemovedNonRedactAnnots(
+    const std::vector<RemovedAnnotCandidate>& candidates) {
+  uint32_t count = 0;
+  for (const RemovedAnnotCandidate& candidate : candidates) {
+    if (candidate.dict && candidate.dict->GetNameFor(
+                              pdfium::annotation::kSubtype) != "Redact") {
+      ++count;
     }
-    if (!report->nm_utf8_pool ||
-        nm_len > report->nm_utf8_pool_capacity - nm_bytes_used) {
-      out.nm_utf8_len = EPDF_REMOVED_ANNOT_NM_UTF8_OVERFLOW;
-      continue;
-    }
-
-    out.nm_utf8_offset = nm_bytes_used;
-    out.nm_utf8_len = nm_len;
-    memcpy(report->nm_utf8_pool + nm_bytes_used, candidate.nm_utf8.c_str(),
-           nm_len);
-    nm_bytes_used += nm_len;
   }
-
-  if (report->written_count) {
-    *report->written_count = written;
-  }
-  if (report->total_count) {
-    *report->total_count = total;
-  }
-  if (report->nm_utf8_bytes_used) {
-    *report->nm_utf8_bytes_used = nm_bytes_used;
-  }
+  return count;
 }
 
 void RemoveCandidatesFromPage(
@@ -381,12 +327,32 @@ void SortCandidatesByOriginalIndex(
                const RemovedAnnotCandidate& b) { return a.index < b.index; });
 }
 
+// Resolve the overlay to flatten for one redact annotation: a pre-baked /RO
+// always wins (ISO 32000-2); without one (e.g. the file was marked by another
+// processor) the overlay is synthesized from the declarative entries. Returns
+// null when there is nothing to paint.
+RetainPtr<const CPDF_Stream> ResolveRedactOverlay(
+    CPDF_Document* doc,
+    const CPDF_Dictionary* redact_dict) {
+  RetainPtr<const CPDF_Stream> overlay = redact_dict->GetStreamFor("RO");
+  if (overlay) {
+    return overlay;
+  }
+  return CPDF_GenerateAP::BuildRedactOverlayForm(doc, redact_dict);
+}
+
 bool ApplySingleRedactionCore(CPDF_Page* page,
                               const CPDF_Dictionary* redact_dict,
-                              const RedactionReportBuffers* report) {
+                              uint32_t* out_removed_annot_count) {
   if (!page || !redact_dict) {
     return false;
   }
+
+  // The caller may hand us a never-rendered page. Redaction MUST see the full
+  // object model: an unparsed page would silently remove nothing (a security
+  // failure, not a cosmetic one) and would let content regeneration reason
+  // from an empty object list.
+  page->ParseContent();
 
   std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(redact_dict);
   if (rects.empty()) {
@@ -426,25 +392,32 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
                     /*recurse_forms=*/true,
                     /*draw_black_boxes=*/false);
 
-  RetainPtr<const CPDF_Stream> ro_stream = redact_dict->GetStreamFor("RO");
-  if (ro_stream) {
+  RetainPtr<const CPDF_Stream> overlay =
+      ResolveRedactOverlay(page->GetDocument(), redact_dict);
+  if (overlay) {
     CFX_FloatRect annot_rect =
         redact_dict->GetRectFor(pdfium::annotation::kRect);
     annot_rect.Normalize();
-    EpdfAppendFormXObjectToPage(page, ro_stream, annot_rect);
+    EpdfAppendFormXObjectToPage(page, overlay, annot_rect);
   }
 
   DetachWidgetsFromAcroForm(page, removals);
-  WriteRemovalReport(removals, report);
+  if (out_removed_annot_count) {
+    *out_removed_annot_count = CountRemovedNonRedactAnnots(removals);
+  }
   RemoveCandidatesFromPage(page, removals);
   return true;
 }
 
 bool ApplyAllRedactionsCore(CPDF_Page* page,
-                            const RedactionReportBuffers* report) {
+                            uint32_t* out_removed_annot_count) {
   if (!page) {
     return false;
   }
+
+  // See ApplySingleRedactionCore: redaction must never run on an unparsed
+  // object model.
+  page->ParseContent();
 
   RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
   if (!annots || annots->IsEmpty()) {
@@ -453,7 +426,7 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
 
   std::vector<CFX_FloatRect> all_rects;
   std::vector<std::pair<RetainPtr<const CPDF_Stream>, CFX_FloatRect>>
-      ro_streams;
+      overlays;
   std::vector<RemovedAnnotCandidate> removals;
 
   for (size_t i = 0; i < annots->size(); ++i) {
@@ -473,12 +446,13 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
       all_rects.push_back(rect);
     }
 
-    RetainPtr<const CPDF_Stream> ro_stream = annot_dict->GetStreamFor("RO");
-    if (ro_stream) {
+    RetainPtr<const CPDF_Stream> overlay =
+        ResolveRedactOverlay(page->GetDocument(), annot_dict.Get());
+    if (overlay) {
       CFX_FloatRect annot_rect =
           annot_dict->GetRectFor(pdfium::annotation::kRect);
       annot_rect.Normalize();
-      ro_streams.push_back({ro_stream, annot_rect});
+      overlays.push_back({std::move(overlay), annot_rect});
     }
   }
 
@@ -508,12 +482,14 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
                     /*recurse_forms=*/true,
                     /*draw_black_boxes=*/false);
 
-  for (const auto& [ro_stream, annot_rect] : ro_streams) {
-    EpdfAppendFormXObjectToPage(page, ro_stream, annot_rect);
+  for (const auto& [overlay, annot_rect] : overlays) {
+    EpdfAppendFormXObjectToPage(page, overlay, annot_rect);
   }
 
   DetachWidgetsFromAcroForm(page, removals);
-  WriteRemovalReport(removals, report);
+  if (out_removed_annot_count) {
+    *out_removed_annot_count = CountRemovedNonRedactAnnots(removals);
+  }
   RemoveCandidatesFromPage(page, removals);
   return true;
 }
@@ -521,30 +497,11 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
 }  // namespace
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot) {
-  return EPDFAnnot_ApplyRedactionWithReport(
-      page, annot, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr);
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ApplyRedactionWithReport(
-    FPDF_PAGE page,
-    FPDF_ANNOTATION annot,
-    EPDF_RemovedAnnotInfo* out_removed,
-    uint32_t out_removed_capacity,
-    char* nm_utf8_pool,
-    uint32_t nm_utf8_pool_capacity,
-    uint32_t* out_written_count,
-    uint32_t* out_total_count,
-    uint32_t* out_nm_utf8_bytes_used) {
-  if (out_written_count) {
-    *out_written_count = 0;
-  }
-  if (out_total_count) {
-    *out_total_count = 0;
-  }
-  if (out_nm_utf8_bytes_used) {
-    *out_nm_utf8_bytes_used = 0;
+EPDFAnnot_ApplyRedaction(FPDF_PAGE page,
+                         FPDF_ANNOTATION annot,
+                         uint32_t* out_removed_annot_count) {
+  if (out_removed_annot_count) {
+    *out_removed_annot_count = 0;
   }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
@@ -558,41 +515,13 @@ EPDFAnnot_ApplyRedactionWithReport(
     return false;
   }
 
-  RedactionReportBuffers report = {
-      out_removed,
-      out_removed_capacity,
-      nm_utf8_pool,
-      nm_utf8_pool_capacity,
-      out_written_count,
-      out_total_count,
-      out_nm_utf8_bytes_used,
-  };
-  return ApplySingleRedactionCore(pPage, annot_dict, &report);
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_ApplyRedactions(FPDF_PAGE page) {
-  return EPDFPage_ApplyRedactionsWithReport(page, nullptr, 0, nullptr, 0,
-                                            nullptr, nullptr, nullptr);
+  return ApplySingleRedactionCore(pPage, annot_dict, out_removed_annot_count);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_ApplyRedactionsWithReport(
-    FPDF_PAGE page,
-    EPDF_RemovedAnnotInfo* out_removed,
-    uint32_t out_removed_capacity,
-    char* nm_utf8_pool,
-    uint32_t nm_utf8_pool_capacity,
-    uint32_t* out_written_count,
-    uint32_t* out_total_count,
-    uint32_t* out_nm_utf8_bytes_used) {
-  if (out_written_count) {
-    *out_written_count = 0;
-  }
-  if (out_total_count) {
-    *out_total_count = 0;
-  }
-  if (out_nm_utf8_bytes_used) {
-    *out_nm_utf8_bytes_used = 0;
+EPDFPage_ApplyRedactions(FPDF_PAGE page, uint32_t* out_removed_annot_count) {
+  if (out_removed_annot_count) {
+    *out_removed_annot_count = 0;
   }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
@@ -600,14 +529,5 @@ EPDFPage_ApplyRedactionsWithReport(
     return false;
   }
 
-  RedactionReportBuffers report = {
-      out_removed,
-      out_removed_capacity,
-      nm_utf8_pool,
-      nm_utf8_pool_capacity,
-      out_written_count,
-      out_total_count,
-      out_nm_utf8_bytes_used,
-  };
-  return ApplyAllRedactionsCore(pPage, &report);
+  return ApplyAllRedactionsCore(pPage, out_removed_annot_count);
 }
