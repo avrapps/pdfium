@@ -56,6 +56,7 @@
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphcache.h"
 #include "core/fxge/cfx_renderdevice.h"
@@ -280,6 +281,9 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary() {
   CFX_GlyphCache::DestroyGlobals();
 #endif
 
+  // EmbedPDF: registered runtime fonts are global/TLS-backed PDFium state, so
+  // tear them down with the rest of the library singletons.
+  CFX_FontRegistry::DestroyGlobals();
   pdfium::DestroyPageModule();
   CFX_GEModule::Destroy();
   CFX_Timer::DestroyGlobals();
@@ -1687,7 +1691,10 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   }
 #endif  // PDF_ENABLE_XFA
 
-  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      doc->GetPageDictionary(page_index);
+  RetainPtr<CPDF_Dictionary> dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
   if (!dict) {
     return false;
   }

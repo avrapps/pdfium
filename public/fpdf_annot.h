@@ -6,12 +6,14 @@
 #define PUBLIC_FPDF_ANNOT_H_
 
 #include <stddef.h>
-
 // NOLINTNEXTLINE(build/include)
 #include "fpdfview.h"
 
 // NOLINTNEXTLINE(build/include)
 #include "fpdf_formfill.h"
+
+// NOLINTNEXTLINE(build/include)
+#include "epdf_font.h"
 
 // NOLINTNEXTLINE(build/include)
 #include "epdf_redact.h"
@@ -1612,6 +1614,24 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
                                unsigned int B);
 
 // Experimental EmbedPDF Extension API.
+// Set the default appearance of a FreeText annotation using a registered font.
+//
+//   annot     - handle to an annotation.
+//   font_id   - font id returned by EPDFFont_RegisterFont() or
+//               EPDFFont_RegisterMemFont64().
+//   font_size - the font size to be set.
+//   R, G, B   - the color to be set.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
+                                             EPDF_FONT_ID font_id,
+                                             float font_size,
+                                             unsigned int R,
+                                             unsigned int G,
+                                             unsigned int B);
+
+// Experimental EmbedPDF Extension API.
 // Get the default appearance of a FreeText annotation.
 //
 //   annot    - handle to an annotation.
@@ -1690,9 +1710,41 @@ EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
 // Notes:
 //  * Only valid for FPDF_ANNOT_LINK annotations.
 //  * The action must be an indirect object.
-//  * Any existing /A entry will be replaced.
+//  * Any existing /A entry will be replaced, and any direct /Dest entry is
+//    removed — ISO 32000-1 Table 173 forbids a link dictionary carrying
+//    both, so setting an action leaves the dictionary spec-clean.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetAction(FPDF_ANNOTATION annot,
                                                         FPDF_ACTION action);
+
+// Experimental EmbedPDF Extension API.
+// Remove the /A action entry of a Link annotation.
+//
+//   annot - handle to a link annotation.
+//
+// Returns true when the entry is absent afterwards, including when there
+// was none to begin with (idempotent). False for non-link annotations.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * Removes ONLY /A. A link may also carry a direct /Dest — remove it
+//    with EPDFAnnot_RemoveDest() when the intent is a target-less link,
+//    otherwise the /Dest becomes the link's effective target again.
+//  * The removed action dictionary itself is not garbage-collected; like
+//    every unreferenced indirect object it is dropped by a full save.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveAction(FPDF_ANNOTATION annot);
+
+// Experimental EmbedPDF Extension API.
+// Remove the direct /Dest destination entry of a Link annotation.
+//
+//   annot - handle to a link annotation.
+//
+// Returns true when the entry is absent afterwards, including when there
+// was none to begin with (idempotent). False for non-link annotations.
+//
+// Notes:
+//  * Only valid for FPDF_ANNOT_LINK annotations.
+//  * Removes ONLY /Dest; an /A action entry is left untouched.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Get the annotation count.
@@ -1859,22 +1911,6 @@ EPDFAnnot_SetOverlayTextRepeat(FPDF_ANNOTATION annot, FPDF_BOOL repeat);
 // Returns true if the overlay text repeats, false otherwise or if not a Redact.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Flatten an annotation's normal appearance (AP/N) to page content.
-// The annotation's appearance becomes part of the page itself.
-// The annotation is automatically removed from the page after flattening.
-//
-// The caller is responsible for:
-//   1. Closing the annotation handle with FPDFPage_CloseAnnot after this call
-//   2. Calling FPDFPage_GenerateContent to persist changes
-//
-//   page  - handle to the page containing the annotation
-//   annot - handle to an annotation with an appearance stream
-//
-// Returns TRUE on success, FALSE if no appearance stream or error.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_Flatten(FPDF_PAGE page,
-                                                      FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Set an annotation's normal appearance (AP/N) from a page of another document.
@@ -2044,103 +2080,6 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type);
 
 // Experimental EmbedPDF Extension API.
-// Create a form field widget annotation on a page.  This is the form-field
-// counterpart of FPDFPage_CreateAnnot -- it creates the /Widget annotation,
-// a parent field dictionary with /FT and base /Ff, wires /Parent//Kids,
-// registers the field in /AcroForm/Fields, and notifies the interactive form
-// model so that subsequent FPDFAnnot_SetFormFieldFlags etc. calls work.
-//
-//   page       - handle to the page.
-//   handle     - handle to the form fill module
-//   (FPDFDOC_InitFormFillEnvironment). field_type - one of
-//   FPDF_FORMFIELD_TEXTFIELD, FPDF_FORMFIELD_CHECKBOX,
-//                FPDF_FORMFIELD_RADIOBUTTON, FPDF_FORMFIELD_COMBOBOX,
-//                FPDF_FORMFIELD_LISTBOX, FPDF_FORMFIELD_PUSHBUTTON.
-//   field_name - the partial field name (/T).  May be NULL for unnamed fields.
-//
-// Returns a handle to the new annotation, or NULL on failure.
-// Caller must call FPDFPage_CloseAnnot() when done.
-FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
-EPDFPage_CreateFormField(FPDF_PAGE page,
-                         FPDF_FORMHANDLE handle,
-                         int field_type,
-                         FPDF_WIDESTRING field_name);
-
-// Experimental EmbedPDF Extension API.
-// Set the value (/V) of a form field associated with a widget annotation.
-//
-//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
-//   annot  - handle to a widget annotation.
-//   value  - the new value as a UTF-16LE string.
-//
-// Returns true on success, false if the annotation is not a form field
-// or the value could not be set.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
-                            FPDF_ANNOTATION annot,
-                            FPDF_WIDESTRING value);
-
-// Experimental EmbedPDF Extension API.
-// Set the partial field name (/T) of a form field associated with a widget
-// annotation.
-//
-//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
-//   annot  - handle to a widget annotation.
-//   name   - the new partial field name as a UTF-16LE string.
-//
-// Returns true on success, false if the annotation is not a form field.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
-                           FPDF_ANNOTATION annot,
-                           FPDF_WIDESTRING name);
-
-// Experimental EmbedPDF Extension API.
-// Returns the object number of the logical form field dictionary associated
-// with a widget annotation.
-//
-//   handle - handle to the form fill module (FPDFDOC_InitFormFillEnvironment).
-//   annot  - handle to a widget annotation.
-//
-// Returns the field dictionary object number on success, or 0 if the
-// annotation is not a form field or has no indirect field dictionary.
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle,
-                                   FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Re-parent the source widget field into the target widget field so both
-// widgets share the same logical AcroForm field.
-//
-//   handle       - handle to the form fill module
-//   (FPDFDOC_InitFormFillEnvironment). source_annot - handle to the widget
-//   annotation whose field should be merged. target_annot - handle to the
-//   widget annotation whose field should be reused.
-//
-// Returns true on success, false if the annotations are not compatible form
-// fields or the share operation could not be completed.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
-                         FPDF_ANNOTATION source_annot,
-                         FPDF_ANNOTATION target_annot);
-
-// Experimental EmbedPDF Extension API.
-// Set the options (/Opt array) for a Choice form field (ComboBox or ListBox).
-// Replaces any existing options with the provided labels.
-//
-//   handle - handle to the form fill environment.
-//   annot  - handle to a widget annotation backed by a Choice field.
-//   labels - array of |count| UTF-16LE option label strings.
-//   count  - number of entries in |labels|.  Pass 0 to clear all options.
-//
-// Returns true on success, false if the annotation is not a form field
-// or if |labels| is NULL when |count| > 0.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
-                              FPDF_ANNOTATION annot,
-                              const FPDF_WIDESTRING* labels,
-                              int count);
-
-// Experimental EmbedPDF Extension API.
 // Generate the appearance stream for a form field widget annotation.
 // The standard EPDFAnnot_GenerateAppearance does NOT handle Widget subtypes.
 // This function reads /FT (from the annotation dict or its /Parent) and
@@ -2154,42 +2093,6 @@ EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
 // Returns true on success, false if the annotation is not a form field.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot);
-
-// Experimental EmbedPDF Extension API.
-// Get the "export value" of a checkbox or radio button widget — the
-// non-"Off" key in its /AP/N (Normal Appearance) dictionary.
-//
-//   annot  - handle to a widget annotation.
-//   buffer - buffer for holding the value string, encoded in UTF-16LE.
-//   buflen - length of the buffer in bytes.
-//
-// Returns the length of the string value in bytes (including the trailing
-// NUL pair), or 0 when the annotation has no /AP/N dictionary or contains
-// only an "Off" entry.
-FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
-                               FPDF_WCHAR* buffer,
-                               unsigned long buflen);
-
-// Experimental EmbedPDF Extension API.
-// Get the raw /V value of a form field without Opt-array translation.
-// For checkbox/radio fields, FPDFAnnot_GetFormFieldValue translates /V
-// through the Opt array; this function returns the raw Name/String instead.
-// For other field types, behaves identically to FPDFAnnot_GetFormFieldValue.
-//
-//   hHandle - handle to the form fill module, returned by
-//             FPDFDOC_InitFormFillEnvironment().
-//   annot   - handle to a widget annotation.
-//   buffer  - buffer for holding the value string, encoded in UTF-16LE.
-//   buflen  - length of the buffer in bytes.
-//
-// Returns the length of the string value in bytes (including the trailing
-// NUL pair), or 0 on error.
-FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
-                               FPDF_ANNOTATION annot,
-                               FPDF_WCHAR* buffer,
-                               unsigned long buflen);
 
 // Experimental EmbedPDF Extension API.
 // Get the number of callout line points (/CL array) on a FreeText annotation.

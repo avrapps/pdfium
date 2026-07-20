@@ -16,7 +16,7 @@
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_codepage.h"
-#include "core/fxcrt/notreached.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 
 CPVT_FontMap::CPVT_FontMap(CPDF_Document* doc,
                            RetainPtr<CPDF_Dictionary> pResDict,
@@ -81,14 +81,48 @@ ByteString CPVT_FontMap::GetPDFFontAlias(int32_t nFontIndex) {
 int32_t CPVT_FontMap::GetWordFontIndex(uint16_t word,
                                        FX_Charset charset,
                                        int32_t nFontIndex) {
-  NOTREACHED();
+  // EmbedPDF: preserve upstream shared AP behavior for the default form/popup
+  // font map: choose the DA font first, then PDFium's native annotation font,
+  // based only on CharCodeFromUnicode(). Stricter glyph checks live in
+  // CPDF_AnnotFontMap, which is used only by registered FreeText fonts.
+  if (RetainPtr<CPDF_Font> pDefFont = GetPDFFont(0)) {
+    if (pDefFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
+      return 0;
+    }
+  }
+  if (RetainPtr<CPDF_Font> pSysFont = GetPDFFont(1)) {
+    if (pSysFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
+      return 1;
+    }
+  }
+  return -1;
 }
 
 int32_t CPVT_FontMap::CharCodeFromUnicode(int32_t nFontIndex, uint16_t word) {
-  NOTREACHED();
+  // EmbedPDF: default implementation is equivalent to the old shared AP path's
+  // direct pdf_font->CharCodeFromUnicode() call. The hook exists so specialized
+  // font maps can return registered-font subset glyph ids.
+  RetainPtr<CPDF_Font> font = GetPDFFont(nFontIndex);
+  if (!font) {
+    return -1;
+  }
+  uint32_t charcode = font->CharCodeFromUnicode(word);
+  if (charcode == CPDF_Font::kInvalidCharCode ||
+      !pdfium::IsValueInRangeForNumericType<int32_t>(charcode)) {
+    return -1;
+  }
+  return static_cast<int32_t>(charcode);
 }
 
 FX_Charset CPVT_FontMap::CharSetFromUnicode(uint16_t word,
                                             FX_Charset nOldCharset) {
-  NOTREACHED();
+  // EmbedPDF: provide a conservative default implementation for the PVT
+  // provider hook; registered annotation maps may override as needed.
+  if (word < 0x7F) {
+    return FX_Charset::kANSI;
+  }
+  if (nOldCharset != FX_Charset::kDefault) {
+    return nOldCharset;
+  }
+  return CFX_Font::GetCharSetFromUnicode(word);
 }

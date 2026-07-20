@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
@@ -70,6 +71,37 @@ int CPDF_Dest::GetDestPageIndex(CPDF_Document* doc) const {
   }
 
   return doc->GetPageIndex(pPage->GetObjNum());
+}
+
+uint32_t CPDF_Dest::GetPageObjectNumber(CPDF_Document* doc) const {
+  if (!doc || !array_) {
+    return 0;
+  }
+
+  RetainPtr<const CPDF_Object> pPage = array_->GetDirectObjectAt(0);
+  if (!pPage) {
+    return 0;
+  }
+
+  if (pPage->IsNumber()) {
+    const int page_index = pPage->GetInteger();
+    if (page_index < 0 || page_index >= doc->GetPageCount()) {
+      return 0;
+    }
+
+    RetainPtr<const CPDF_Dictionary> page = doc->GetPageDictionary(page_index);
+    return page ? page->GetObjNum() : 0;
+  }
+
+  if (!pPage->IsDictionary()) {
+    return 0;
+  }
+
+  const uint32_t page_object_number = pPage->GetObjNum();
+  if (page_object_number == 0 || doc->GetPageIndex(page_object_number) < 0) {
+    return 0;
+  }
+  return page_object_number;
 }
 
 std::vector<float> CPDF_Dest::GetScrollPositionArray() const {

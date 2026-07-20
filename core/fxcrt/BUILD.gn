@@ -179,12 +179,13 @@ source_set("fxcrt") {
       "win/win_util.h",
     ]
   }
-  if (pdf_enable_xfa) {
-    sources += [
-      "cfx_memorystream.cpp",
-      "cfx_memorystream.h",
-    ]
-  }
+  # EmbedPDF: CFX_MemoryStream was XFA-gated upstream because XFA was its
+  # only consumer; the EPDFForm_* XFDF serializer (fpdfsdk/epdf_form.cpp)
+  # uses it as the in-memory write target, so build it unconditionally.
+  sources += [
+    "cfx_memorystream.cpp",
+    "cfx_memorystream.h",
+  ]
 }
 
 source_set("test_support") {

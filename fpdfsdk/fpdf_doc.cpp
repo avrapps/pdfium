@@ -336,6 +336,23 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFDest_GetDestPageIndex(FPDF_DOCUMENT document,
   return destination.GetDestPageIndex(doc);
 }
 
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDest_GetPageObjectNumber(FPDF_DOCUMENT document, FPDF_DEST dest) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || !dest) {
+    return 0;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  if (doc->GetExtension()) {
+    return 0;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  CPDF_Dest destination(pdfium::WrapRetain(CPDFArrayFromFPDFDest(dest)));
+  return destination.GetPageObjectNumber(doc);
+}
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 FPDFDest_GetView(FPDF_DEST dest, unsigned long* pNumParams, FS_FLOAT* pParams) {
   if (!dest) {

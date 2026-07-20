@@ -189,5 +189,7 @@ TEST_F(CPDFAnnotWithPageModuleTest,
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
   EXPECT_EQ(CFX_FloatRect(0, 0, 10, 10),
             annot_dict->GetRectFor(pdfium::annotation::kRect));
-  EXPECT_EQ(CFX_FloatRect(-2, -2, 12, 12), annot.GetRect());
+  // The drawing rect is the minimal union of the authored /Rect and the
+  // stroked ink bounds: points 1..9 inflated by half the width (2).
+  EXPECT_EQ(CFX_FloatRect(-1, -1, 11, 11), annot.GetRect());
 }

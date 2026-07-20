@@ -142,6 +142,42 @@ TEST_F(FPDFDocEmbedderTest, DestGetPageIndex) {
   EXPECT_EQ(-1, FPDFDest_GetDestPageIndex(document(), dest));
 }
 
+TEST_F(FPDFDocEmbedderTest, DestGetPageObjectNumber) {
+  ASSERT_TRUE(OpenDocument("named_dests.pdf"));
+
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(nullptr, nullptr));
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), nullptr));
+
+  const unsigned int page_1_object_number =
+      EPDFDoc_GetPageObjectNumberByIndex(document(), 1);
+  ASSERT_GT(page_1_object_number, 0u);
+
+  // Numeric page index in the Dests NameTree.
+  FPDF_DEST dest = FPDF_GetNamedDestByName(document(), "First");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(nullptr, dest));
+  EXPECT_EQ(page_1_object_number,
+            EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Page dictionary reference in the Dests NameTree.
+  dest = FPDF_GetNamedDestByName(document(), "Next");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(page_1_object_number,
+            EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Out-of-range numeric page index in the legacy Dests dictionary. The
+  // compatibility index API reports the stored 11, but there is no visible
+  // page object at that index in this two-page fixture.
+  dest = FPDF_GetNamedDestByName(document(), "FirstAlternate");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Invalid object reference in the Dests NameTree.
+  dest = FPDF_GetNamedDestByName(document(), "LastAlternate");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), dest));
+}
+
 TEST_F(FPDFDocEmbedderTest, DestGetView) {
   ASSERT_TRUE(OpenDocument("named_dests.pdf"));
 

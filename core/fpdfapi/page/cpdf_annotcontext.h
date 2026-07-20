@@ -35,6 +35,10 @@ class CPDF_AnnotContext {
   // Never nullptr.
   IPDF_Page* GetPage() const { return page_; }
 
+  // Index at the time the annotation handle was created, or -1 when the
+  // handle was not created from a page annotation lookup.
+  int GetAnnotIndex() const { return annot_index_; }
+
  private:
   void EnsureMutableBackingForAnnotDict();
 

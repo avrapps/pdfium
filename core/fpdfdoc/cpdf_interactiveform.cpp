@@ -856,6 +856,20 @@ CPDF_InteractiveForm::GetControlsForField(const CPDF_FormField* field) {
   return control_lists_[pdfium::WrapUnowned(field)];
 }
 
+// EmbedPDF: layer documents resolve references held by frozen base objects
+// through the base holder, which returns stale instances once an object has
+// been promoted into the layer. Rebinding by object number restores the
+// document's current view. Identity on plain documents. See header.
+RetainPtr<const CPDF_Dictionary> CPDF_InteractiveForm::ResolveCurrentDict(
+    RetainPtr<const CPDF_Dictionary> dict) const {
+  if (!dict || dict->GetObjNum() == 0) {
+    return dict;
+  }
+  RetainPtr<const CPDF_Dictionary> current =
+      ToDictionary(document_->GetIndirectObject(dict->GetObjNum()));
+  return current ? current : dict;
+}
+
 void CPDF_InteractiveForm::LoadField(
     RetainPtr<const CPDF_Dictionary> field_dict,
     int nLevel) {
@@ -865,6 +879,9 @@ void CPDF_InteractiveForm::LoadField(
   if (!field_dict) {
     return;
   }
+  // EmbedPDF: bind to the document's current view so layer promotions win
+  // over frozen base instances reached through base-held references.
+  field_dict = ResolveCurrentDict(std::move(field_dict));
 
   uint32_t dwParentObjNum = field_dict->GetObjNum();
   RetainPtr<const CPDF_Array> kids =
@@ -907,6 +924,51 @@ void CPDF_InteractiveForm::FixPageFields(CPDF_Page* page) {
   }
 }
 
+// EmbedPDF: recover form fields that are reachable from a page's /Annots
+// array but missing from the /AcroForm /Fields tree (a common producer
+// bug); used by the EPDFForm_* model build instead of the page-load hook
+// FixPageFields(), which requires an expensive CPDF_Page. See header.
+void CPDF_InteractiveForm::ReconcileWidget(
+    RetainPtr<const CPDF_Dictionary> widget_dict) {
+  widget_dict = ResolveCurrentDict(std::move(widget_dict));
+  if (!widget_dict) {
+    return;
+  }
+  if (GetControlByDict(widget_dict.Get())) {
+    return;
+  }
+
+  // A widget that carries no field type anywhere on its /Parent chain is
+  // not a form control; leave it alone.
+  if (!CPDF_FormField::GetFieldAttrForDict(widget_dict.Get(),
+                                           pdfium::form_fields::kFT)) {
+    return;
+  }
+
+  // Climb to the field root, cycle-guarded, so every sibling widget of the
+  // same field lands on one logical field.
+  RetainPtr<const CPDF_Dictionary> root = widget_dict;
+  std::vector<const CPDF_Dictionary*> visited = {root.Get()};
+  for (int i = 0; i < kMaxRecursion; ++i) {
+    RetainPtr<const CPDF_Dictionary> parent =
+        ResolveCurrentDict(root->GetDictFor(pdfium::form_fields::kParent));
+    if (!parent || pdfium::Contains(visited, parent.Get())) {
+      break;
+    }
+    visited.push_back(parent.Get());
+    root = std::move(parent);
+  }
+  LoadField(root, 0);
+
+  // If the widget is still unlinked (e.g. its parent does not list it in
+  // /Kids), load it directly. AddTerminalField() resolves the owning field
+  // through the inheritance-aware attribute lookup, so the control still
+  // attaches to the field with the correct fully qualified name.
+  if (!GetControlByDict(widget_dict.Get())) {
+    LoadField(std::move(widget_dict), 0);
+  }
+}
+
 void CPDF_InteractiveForm::AddTerminalField(
     RetainPtr<const CPDF_Dictionary> field_dict) {
   RetainPtr<const CPDF_Dictionary> field_storage_dict = field_dict;
@@ -917,7 +979,10 @@ void CPDF_InteractiveForm::AddTerminalField(
     field_storage_dict.Reset();
     if (kids) {
       for (size_t i = 0; i < kids->size(); ++i) {
-        RetainPtr<const CPDF_Dictionary> kid = kids->GetDictAt(i);
+        // EmbedPDF: rebind to the layer's current view (see
+        // ResolveCurrentDict).
+        RetainPtr<const CPDF_Dictionary> kid =
+            ResolveCurrentDict(kids->GetDictAt(i));
         if (CPDF_FormField::GetFieldAttrForDict(kid.Get(),
                                                 pdfium::form_fields::kFT)) {
           field_storage_dict = std::move(kid);
@@ -957,7 +1022,9 @@ void CPDF_InteractiveForm::AddTerminalField(
     return;
   }
   for (size_t i = 0; i < kids->size(); i++) {
-    RetainPtr<const CPDF_Dictionary> kid = kids->GetDictAt(i);
+    // EmbedPDF: rebind to the layer's current view (see ResolveCurrentDict).
+    RetainPtr<const CPDF_Dictionary> kid =
+        ResolveCurrentDict(kids->GetDictAt(i));
     if (kid && kid->GetNameFor("Subtype") == "Widget") {
       AddControl(field,
                  pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(kid.Get())));
@@ -1019,20 +1086,22 @@ bool CPDF_InteractiveForm::CheckRequiredFields(
 }
 
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
-    const WideString& pdf_path) const {
+    const WideString& pdf_path,
+    bool skip_empty_required) const {
   std::vector<CPDF_FormField*> fields;
   CFieldTree::Node* pRoot = field_tree_->GetRoot();
   const size_t nCount = pRoot->CountFields();
   for (size_t i = 0; i < nCount; ++i) {
     fields.push_back(pRoot->GetFieldAtIndex(i));
   }
-  return ExportToFDF(pdf_path, fields, true);
+  return ExportToFDF(pdf_path, fields, true, skip_empty_required);
 }
 
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
     const WideString& pdf_path,
     const std::vector<CPDF_FormField*>& fields,
-    bool bIncludeOrExclude) const {
+    bool bIncludeOrExclude,
+    bool skip_empty_required) const {
   std::unique_ptr<CFDF_Document> doc = CFDF_Document::CreateNewDoc();
   if (!doc) {
     return nullptr;
@@ -1067,11 +1136,16 @@ std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
       continue;
     }
 
-    if ((dwFlags & pdfium::form_flags::kRequired) != 0 &&
-        field->GetFieldDict()
-            ->GetByteStringFor(pdfium::form_fields::kV)
-            .IsEmpty()) {
-      continue;
+    // EmbedPDF: |skip_empty_required| makes the historic omit-empty-required
+    // submission behavior optional so interchange exports stay faithful.
+    if (skip_empty_required && (dwFlags & pdfium::form_flags::kRequired) != 0) {
+      RetainPtr<const CPDF_Object> value =
+          field->GetFieldAttr(pdfium::form_fields::kV);
+      if (!value || value->IsNull() ||
+          (value->IsArray() ? value->AsArray()->IsEmpty()
+                            : value->GetString().IsEmpty())) {
+        continue;
+      }
     }
 
     WideString fullname =

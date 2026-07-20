@@ -30,8 +30,10 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_substfont.h"
 #include "core/fxge/fx_font.h"
 #include "core/fxge/fx_fontencoding.h"
@@ -395,14 +397,38 @@ const char* CPDF_Font::GetAdobeCharName(
 }
 
 uint32_t CPDF_Font::FallbackFontFromCharcode(uint32_t charcode) {
+  // EmbedPDF: prefer fonts registered through EPDFFont_* before falling back to
+  // PDFium's hard-coded Arial substitute. This lets broken PDFs with missing
+  // glyph coverage render through the same runtime fallback registry used by
+  // annotation authoring, without repairing or mutating the source PDF.
+  WideString str = UnicodeFromCharCode(charcode);
+  uint32_t unicode = !str.IsEmpty() ? str[0] : charcode;
+  for (size_t i = 0; i < font_fallbacks_.size(); ++i) {
+    if (font_fallbacks_[i]->GetFace() &&
+        font_fallbacks_[i]->GetFace()->GetCharIndex(unicode) != 0) {
+      return pdfium::checked_cast<uint32_t>(i);
+    }
+  }
+
+  FX_SAFE_INT32 safe_weight = stem_v_;
+  safe_weight *= 5;
+  const int weight = safe_weight.ValueOrDefault(pdfium::kFontWeightNormal);
+  if (auto font_id = CFX_FontRegistry::FindFallbackFont(unicode, weight,
+                                                        italic_angle_ != 0)) {
+    std::unique_ptr<CFX_Font> fallback_font =
+        CFX_FontRegistry::CreateFont(*font_id);
+    if (fallback_font) {
+      font_fallbacks_.push_back(std::move(fallback_font));
+      return pdfium::checked_cast<uint32_t>(font_fallbacks_.size() - 1);
+    }
+  }
+
   if (font_fallbacks_.empty()) {
-    font_fallbacks_.push_back(std::make_unique<CFX_Font>());
-    FX_SAFE_INT32 safe_weight = stem_v_;
-    safe_weight *= 5;
-    font_fallbacks_[0]->LoadSubst(
-        "Arial", IsTrueTypeFont(), flags_,
-        safe_weight.ValueOrDefault(pdfium::kFontWeightNormal), italic_angle_,
-        FX_CodePage::kDefANSI, IsVertWriting());
+    auto fallback_font = std::make_unique<CFX_Font>();
+    fallback_font->LoadSubst("Arial", IsTrueTypeFont(), flags_, weight,
+                             italic_angle_, FX_CodePage::kDefANSI,
+                             IsVertWriting());
+    font_fallbacks_.push_back(std::move(fallback_font));
   }
   return 0;
 }
