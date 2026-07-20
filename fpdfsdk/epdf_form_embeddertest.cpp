@@ -384,6 +384,82 @@ TEST_F(EPDFFormEmbedderTest, OrphanWidgetsRecovered) {
   EPDFForm_CloseModel(model);
 }
 
+// A "two-plane" document (the IRS f1040 class): every field exists TWICE
+// under one fully qualified name — an orphaned twin inside /AcroForm
+// /Fields that no page references, and a standalone merged twin in page
+// /Annots that /AcroForm cannot reach. Reads reconcile the planes into ONE
+// field, so writes must cover BOTH twins; a write planned from the raw
+// field dictionary alone would edit the invisible orphan while the
+// on-screen widget never changes.
+TEST_F(EPDFFormEmbedderTest, TwoPlaneTwinWidgetsFillTogether) {
+  ASSERT_TRUE(OpenDocument("two_plane_form.pdf"));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  // Two logical fields, not four: the same-FQN twins merge, and each field
+  // carries both twin widgets (the orphan first — /Fields loads before the
+  // page sweep — then the page twin).
+  ASSERT_EQ(2, EPDFForm_CountFields(model));
+  const int checkbox = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  ASSERT_GE(checkbox, 0);
+  ASSERT_EQ(2, EPDFForm_CountFieldWidgets(model, checkbox));
+  EXPECT_EQ(4u, EPDFForm_GetFieldWidgetObjNum(model, checkbox, 0));
+  EXPECT_EQ(9u, EPDFForm_GetFieldWidgetObjNum(model, checkbox, 1));
+  const int text = EPDFForm_GetFieldIndexByObjNum(model, 5u);
+  ASSERT_GE(text, 0);
+  ASSERT_EQ(2, EPDFForm_CountFieldWidgets(model, text));
+  EXPECT_EQ(10u, EPDFForm_GetFieldWidgetObjNum(model, text, 1));
+  EPDFForm_CloseModel(model);
+
+  // Toggling flips /AS on BOTH twins — above all the page twin (obj 11),
+  // the only one the user can see.
+  uint32_t changed[4] = {};
+  unsigned long changed_count = 0;
+  ASSERT_TRUE(
+      EPDFForm_SetToggle(document(), 4u, "1", changed, 4, &changed_count));
+  ASSERT_EQ(2ul, changed_count);
+  EXPECT_EQ(4u, changed[0]);
+  EXPECT_EQ(9u, changed[1]);
+  for (const uint32_t objnum : {4u, 9u}) {
+    RetainPtr<const CPDF_Dictionary> widget =
+        GetEffectiveIndirectDictionary(document(), objnum);
+    ASSERT_TRUE(widget);
+    EXPECT_EQ("1", widget->GetNameFor("AS")) << "widget " << objnum;
+  }
+
+  model = EPDFForm_LoadModel(document());
+  ASSERT_TRUE(model);
+  const int checked = EPDFForm_GetFieldIndexByObjNum(model, 4u);
+  ASSERT_GE(checked, 0);
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, checked, 0));
+  EXPECT_TRUE(EPDFForm_IsFieldWidgetChecked(model, checked, 1));
+  EPDFForm_CloseModel(model);
+
+  // A text commit regenerates the page twin's appearance with the value —
+  // even though this document has no /AcroForm /DR: generation must seed a
+  // fallback font instead of vetoing the appearance.
+  ScopedFPDFWideString value = GetFPDFWideString(L"TWIN");
+  changed_count = 0;
+  ASSERT_TRUE(EPDFForm_SetTextValue(document(), 5u, value.get(), changed, 4,
+                                    &changed_count));
+  ASSERT_EQ(2ul, changed_count);
+  EXPECT_EQ(5u, changed[0]);
+  EXPECT_EQ(10u, changed[1]);
+  const std::wstring appearance =
+      GetEffectiveWidgetAppearance(document(), 10u);
+  EXPECT_NE(std::wstring::npos, appearance.find(L"TWIN")) << appearance;
+
+  // The write seeded /DR/Font with the /DA-named font.
+  RetainPtr<const CPDF_Dictionary> acroform =
+      GetEffectiveIndirectDictionary(document(), 2u);
+  ASSERT_TRUE(acroform);
+  RetainPtr<const CPDF_Dictionary> dr_dict = acroform->GetDictFor("DR");
+  ASSERT_TRUE(dr_dict);
+  RetainPtr<const CPDF_Dictionary> dr_font_dict = dr_dict->GetDictFor("Font");
+  ASSERT_TRUE(dr_font_dict);
+  EXPECT_TRUE(dr_font_dict->KeyExist("Helv"));
+}
+
 // Building a form model must be a pure read: over a layer document it must
 // not promote a single object into the layer, even while it reconciles
 // orphan widgets in memory.

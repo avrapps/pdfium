@@ -1052,6 +1052,36 @@ bool ApplyToggleDefault(CPDF_Document* doc,
                        changed_widget_objnums, buffer_size, out_changed_count);
 }
 
+// Same-FQN twin controls are field roots in their own plane (they carry
+// /T). Value state must land on them too: appearance generation re-reads
+// the value by climbing the control's own dictionary chain — which never
+// crosses planes — and per-widget readers in other viewers do the same.
+// Runs after the field-level value write and before appearance regen.
+void MirrorFieldValueToTwinControls(
+    CPDF_Document* doc,
+    const RetainPtr<CPDF_Dictionary>& promoted_field,
+    const std::vector<TxnControl>& controls) {
+  for (const TxnControl& control : controls) {
+    if (control.merged || !control.dict ||
+        !control.dict->KeyExist(pdfium::form_fields::kT)) {
+      continue;
+    }
+    RetainPtr<CPDF_Dictionary> twin =
+        MutableControlDict(doc, control, promoted_field);
+    if (!twin || twin == promoted_field) {
+      continue;
+    }
+    for (const char* key : {pdfium::form_fields::kV, "I", "RV"}) {
+      RetainPtr<const CPDF_Object> value = promoted_field->GetObjectFor(key);
+      if (value) {
+        twin->SetFor(key, value->Clone());
+      } else {
+        twin->RemoveFor(key);
+      }
+    }
+  }
+}
+
 // Regenerate the /AP of every control and report them all as changed.
 bool RegenerateControlAppearances(
     CPDF_Document* doc,
@@ -1126,6 +1156,7 @@ bool ApplyTextValue(CPDF_Document* doc,
                                          normalized_value.AsStringView());
   // A rich text value would now contradict /V; drop it rather than lie.
   promoted_field->RemoveFor("RV");
+  MirrorFieldValueToTwinControls(doc, promoted_field, controls);
 
   return RegenerateControlAppearances(
       doc, controls, promoted_field, CPDF_GenerateAP::kTextField,
@@ -1207,6 +1238,7 @@ bool ApplyChoiceValues(CPDF_Document* doc,
     }
   }
   promoted_field->RemoveFor("RV");
+  MirrorFieldValueToTwinControls(doc, promoted_field, controls);
 
   return RegenerateControlAppearances(
       doc, controls, promoted_field, ChoiceFormType(flags),
@@ -2275,6 +2307,7 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
     }
   }
   promoted_field->RemoveFor("RV");
+  MirrorFieldValueToTwinControls(doc, promoted_field, controls);
   return RegenerateControlAppearances(
       doc, controls, promoted_field, CPDF_GenerateAP::kTextField,
       changed_widget_objnums, buffer_size, out_changed_count);

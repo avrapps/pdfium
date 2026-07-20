@@ -392,20 +392,24 @@ TEST_F(EPDFActionEmbedderTest,
 
 TEST_F(EPDFActionEmbedderTest, NodeUriPayloadFromRealDocument) {
   ASSERT_TRUE(OpenDocument("annots_action_handling.pdf"));
-  FPDF_PAGE page = LoadPage(0);
+  ScopedPage page = LoadScopedPage(0);
   ASSERT_TRUE(page);
 
   bool checked_link = false;
-  const int annotation_count = FPDFPage_GetAnnotCount(page);
+  const int annotation_count = FPDFPage_GetAnnotCount(page.get());
   for (int i = 0; i < annotation_count; ++i) {
-    ScopedFPDFAnnotation annotation(FPDFPage_GetAnnot(page, i));
+    ScopedFPDFAnnotation annotation(FPDFPage_GetAnnot(page.get(), i));
     ASSERT_TRUE(annotation);
     if (FPDFAnnot_GetSubtype(annotation.get()) != FPDF_ANNOT_LINK) {
       continue;
     }
     ScopedEPDFActionModel model(
         EPDFAnnot_GetActionModel(annotation.get(), EPDF_ANNOT_ACTION_ACTIVATE));
-    ASSERT_TRUE(model);
+    // This fixture also contains destination-only links. They correctly have
+    // no activate action model; keep looking for its URI-action link.
+    if (!model) {
+      continue;
+    }
     const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
     ASSERT_NE(EPDF_ACTION_NODE_INVALID, root);
     ASSERT_EQ(EPDF_ACTION_TYPE_URI, EPDFAction_GetNodeType(model.get(), root));
@@ -426,7 +430,6 @@ TEST_F(EPDFActionEmbedderTest, NodeUriPayloadFromRealDocument) {
     checked_link = true;
   }
   EXPECT_TRUE(checked_link);
-  UnloadPage(page);
 }
 
 TEST_F(EPDFActionEmbedderTest, NodeDestPayloadFromCreatedGoTo) {
