@@ -17,14 +17,12 @@ extern "C" {
 // Experimental EmbedPDF Extension API.
 //
 // Detached PDF action model. A model contains one root action and its
-// normalized /Next descendants. The structural fields (type, subtype,
-// script, chain) are copied at build time and stay valid after the
-// document is closed or mutated. Each node additionally RETAINS its action
-// dictionary so the EPDFAction_GetNode{Dest,URI,FilePath,Name} payload
-// getters can read payloads on demand: those getters read the CURRENT
-// dictionary state, and the ones taking a FPDF_DOCUMENT require the
-// originating document to still be open (they resolve named destinations
-// and URI normalization through it).
+// normalized /Next descendants. Type, subtype, script, chain, destination,
+// URI, file path, and named-action payloads are copied at build time and stay
+// valid after the document is closed or mutated. The getters that take an
+// FPDF_DOCUMENT still require the originating document to be open: it
+// validates destination page identity and is used to resolve a named
+// destination when EPDFAction_LoadModel() had no document owner available.
 //
 // The API extracts action data only. It never executes JavaScript.
 typedef struct epdf_action_model_t__* EPDF_ACTION_MODEL;

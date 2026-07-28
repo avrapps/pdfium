@@ -41,10 +41,11 @@ CPDF_TextPage* GetTextPageForValidIndex(FPDF_TEXTPAGE text_page, int index) {
 }  // namespace
 
 FPDF_EXPORT FPDF_TEXTPAGE FPDF_CALLCONV FPDFText_LoadPage(FPDF_PAGE page) {
-  CPDF_Page* pPDFPage = CPDFPageFromFPDFPage(page);
-  if (!pPDFPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return nullptr;
   }
+  CPDF_Page* pPDFPage = page_view.Get();
 
   CPDF_ViewerPreferences viewRef(pPDFPage->GetDocument());
   auto textpage =

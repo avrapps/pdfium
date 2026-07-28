@@ -34,6 +34,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
 
   OpenStatus ingest_status() const { return ingest_status_; }
   size_t GetPromotedObjectCount() const;
+  bool HasPromotedObjects() const { return begin() != end(); }
   CPDF_BaseDocument* GetBaseDocument() const { return base_.Get(); }
 
   // CPDF_Document:
@@ -45,6 +46,7 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage) override;
   uint32_t GetUserPermissions(bool get_owner_perms) const override;
   RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override;
+  uint64_t GetOverlayEpoch() const override;
   bool IsLayerDocument() const override;
   FX_FILESIZE GetLayerAppendBaseOffset() const override;
   bool ShouldReplaceDeletedPageWithNull(uint32_t page_obj_num) const override;
@@ -76,6 +78,8 @@ class CPDF_LayerDocument final : public CPDF_Document {
   RetainPtr<CPDF_BaseDocument> const base_;
   RetainPtr<IFX_SeekableReadStream> file_access_;
   std::vector<uint32_t> layer_page_list_;
+  // Generation for caches that retain effective-object pointers.
+  uint64_t overlay_epoch_ = 0;
   OpenStatus ingest_status_ = OpenStatus::kSuccess;
 };
 

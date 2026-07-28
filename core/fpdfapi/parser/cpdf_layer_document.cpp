@@ -12,6 +12,7 @@
 #include "core/fpdfapi/parser/cpdf_concat_read_stream.h"
 #include "core/fpdfapi/parser/cpdf_cross_ref_table.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
@@ -80,11 +81,25 @@ CPDF_LayerDocument::CPDF_LayerDocument(
       file_access_(std::move(file_access)) {
   CHECK(base_);
   SetLastObjNum(base_->GetLastObjNum());
-  InitializeFromBase();
-  IngestCurrentDelta();
+  {
+    // Initialization deliberately copies the immutable base view.
+    CPDF_DocumentViewScope frozen_view(base_.Get());
+    InitializeFromBase();
+  }
+#if DCHECK_IS_ON()
+  base_->RegisterLiveLayer(this);
+#endif
+  {
+    CPDF_DocumentViewScope effective_view(this);
+    IngestCurrentDelta();
+  }
 }
 
-CPDF_LayerDocument::~CPDF_LayerDocument() = default;
+CPDF_LayerDocument::~CPDF_LayerDocument() {
+#if DCHECK_IS_ON()
+  base_->UnregisterLiveLayer(this);
+#endif
+}
 
 // static
 CPDF_LayerDocument* CPDF_LayerDocument::FromDocument(CPDF_Document* document) {
@@ -185,6 +200,10 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::FindPromotedObject(
   return FindLocalIndirectObject(objnum);
 }
 
+uint64_t CPDF_LayerDocument::GetOverlayEpoch() const {
+  return overlay_epoch_;
+}
+
 bool CPDF_LayerDocument::IsLayerDocument() const {
   return true;
 }
@@ -224,6 +243,7 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::GetMutableIndirectObject(
 void CPDF_LayerDocument::DeleteIndirectObject(uint32_t objnum) {
   if (FindLocalIndirectObject(objnum)) {
     CPDF_Document::DeleteIndirectObject(objnum);
+    ++overlay_epoch_;
   }
 }
 
@@ -364,6 +384,7 @@ void CPDF_LayerDocument::IngestCurrentDelta() {
     }
     clone->SetGenNum(info.gennum);
     AddPromotedObject(objnum, std::move(clone));
+    ++overlay_epoch_;
     ++selected_delta_object_count;
   }
 
@@ -420,6 +441,7 @@ RetainPtr<CPDF_Object> CPDF_LayerDocument::PromoteFromBase(uint32_t objnum) {
   }
   clone->SetGenNum(base_object->GetGenNum());
   AddPromotedObject(objnum, clone);
+  ++overlay_epoch_;
 
   CPDF_Parser* parser = base_->GetParser();
   if (parser) {

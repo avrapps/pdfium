@@ -141,7 +141,8 @@ ExtractOutcome CapOutcomeToUint32(ExtractOutcome outcome) {
 
 FPDF_EXPORT int FPDF_CALLCONV
 FPDFDoc_GetAttachmentCount(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return 0;
   }
@@ -152,7 +153,8 @@ FPDFDoc_GetAttachmentCount(FPDF_DOCUMENT document) {
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFDoc_AddAttachment(FPDF_DOCUMENT document, FPDF_WIDESTRING name) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -185,7 +187,8 @@ FPDFDoc_AddAttachment(FPDF_DOCUMENT document, FPDF_WIDESTRING name) {
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFDoc_GetAttachment(FPDF_DOCUMENT document, int index) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || index < 0) {
     return nullptr;
   }
@@ -207,7 +210,8 @@ EPDFDoc_GetAttachmentKey(FPDF_DOCUMENT document,
                          int index,
                          FPDF_WCHAR* buffer,
                          unsigned long buflen) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || index < 0) {
     return 0;
   }
@@ -229,7 +233,8 @@ EPDFDoc_GetAttachmentKey(FPDF_DOCUMENT document,
 
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFDoc_GetAttachmentIndexByKey(FPDF_DOCUMENT document, FPDF_WIDESTRING key) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || !key) {
     return -1;
   }
@@ -253,7 +258,8 @@ EPDFDoc_GetAttachmentIndexByKey(FPDF_DOCUMENT document, FPDF_WIDESTRING key) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFDoc_DeleteAttachment(FPDF_DOCUMENT document, int index) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || index < 0) {
     return false;
   }
@@ -384,9 +390,17 @@ FPDFAttachment_SetFile(FPDF_ATTACHMENT attachment,
   }
 
   CPDF_Object* pFile = CPDFObjectFromFPDFAttachment(attachment);
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!pFile || !pFile->IsDictionary() || !doc || len > INT_MAX) {
     return false;
+  }
+  RetainPtr<CPDF_Object> effective_file;
+  if (pFile->GetObjNum() != 0) {
+    effective_file = doc->GetOrParseIndirectObject(pFile->GetObjNum());
+    if (effective_file) {
+      pFile = effective_file.Get();
+    }
   }
 
   // Create a dictionary for the new embedded file stream.

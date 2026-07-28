@@ -292,6 +292,7 @@ uint32_t PageObjNumForWidget(
 }
 
 FieldRecord SnapshotField(
+    CPDF_Document* document,
     CPDF_FormField* field,
     const std::set<const CPDF_Dictionary*>& initial_fields,
     const std::map<const CPDF_Dictionary*, uint32_t>& widget_pages) {
@@ -318,7 +319,8 @@ FieldRecord SnapshotField(
   for (size_t i = 0; i < kActionTypes.size(); ++i) {
     if (additional_actions.ActionExist(kActionTypes[i])) {
       record.actions[i] =
-          epdf::BuildActionModel(additional_actions.GetAction(kActionTypes[i]));
+          epdf::BuildActionModel(additional_actions.GetAction(kActionTypes[i]),
+                                 document);
     }
   }
   if (record.family == EPDF_FORMFIELD_FAMILY_TEXT) {
@@ -1785,7 +1787,8 @@ bool ArrayReferencesDict(const CPDF_Array* array,
 
 FPDF_EXPORT EPDF_FORM_MODEL FPDF_CALLCONV
 EPDFForm_LoadModel(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -1820,7 +1823,8 @@ EPDFForm_LoadModel(FPDF_DOCUMENT document) {
     if (!field) {
       continue;
     }
-    FieldRecord record = SnapshotField(field, initial_fields, widget_pages);
+    FieldRecord record =
+        SnapshotField(doc, field, initial_fields, widget_pages);
     const int index = fxcrt::CollectionSize<int>(model->fields);
     field_index_by_dict.try_emplace(field->GetFieldDict().Get(), index);
     if (record.objnum != 0) {
@@ -2159,7 +2163,8 @@ EPDFForm_SetToggle(FPDF_DOCUMENT document,
                    uint32_t* changed_widget_objnums,
                    unsigned long buffer_size,
                    unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return false;
   }
@@ -2176,7 +2181,8 @@ EPDFForm_SetTextValue(FPDF_DOCUMENT document,
                       uint32_t* changed_widget_objnums,
                       unsigned long buffer_size,
                       unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return false;
   }
@@ -2194,7 +2200,8 @@ EPDFForm_SetChoiceValues(FPDF_DOCUMENT document,
                          uint32_t* changed_widget_objnums,
                          unsigned long buffer_size,
                          unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || (value_count > 0 && !values)) {
     return false;
   }
@@ -2218,7 +2225,8 @@ EPDFForm_ResetField(FPDF_DOCUMENT document,
                     uint32_t* changed_widget_objnums,
                     unsigned long buffer_size,
                     unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return false;
   }
@@ -2320,7 +2328,8 @@ EPDFForm_SetFieldDisplay(FPDF_DOCUMENT document,
                          uint32_t* changed_widget_objnums,
                          unsigned long buffer_size,
                          unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   return doc &&
          ApplyFieldDisplay(doc, field_objnum, display, changed_widget_objnums,
                            buffer_size, out_changed_count);
@@ -2333,7 +2342,8 @@ EPDFForm_SetFieldAppearanceText(FPDF_DOCUMENT document,
                                 uint32_t* changed_widget_objnums,
                                 unsigned long buffer_size,
                                 unsigned long* out_changed_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || !appearance_text) {
     return false;
   }
@@ -2348,7 +2358,8 @@ EPDFForm_ExportFDF(FPDF_DOCUMENT document,
                    uint32_t export_flags,
                    void* buffer,
                    unsigned long buflen) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return 0;
   }
@@ -2369,7 +2380,8 @@ EPDFForm_ExportXFDF(FPDF_DOCUMENT document,
                     uint32_t export_flags,
                     void* buffer,
                     unsigned long buflen) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return 0;
   }
@@ -2390,7 +2402,8 @@ EPDFForm_ImportFDF(FPDF_DOCUMENT document,
   if (out_result) {
     *out_result = {};
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || !data || size == 0) {
     return false;
   }
@@ -2425,7 +2438,8 @@ EPDFForm_ImportXFDF(FPDF_DOCUMENT document,
   if (out_result) {
     *out_result = {};
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || !data || size == 0) {
     return false;
   }
@@ -2468,7 +2482,8 @@ EPDFForm_Repair(FPDF_DOCUMENT document,
   if (out_report) {
     *out_report = {};
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || !doc->GetRoot()) {
     return false;
   }
@@ -2887,7 +2902,8 @@ FPDF_EXPORT uint32_t FPDF_CALLCONV
 EPDFForm_CreateField(FPDF_DOCUMENT document,
                      int family,
                      FPDF_WIDESTRING full_name) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   AuthorFamily author;
   if (!doc || !doc->GetRoot() || !AuthorFamilyFromCode(family, &author)) {
     return 0;
@@ -2989,7 +3005,8 @@ EPDFForm_AttachWidget(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       uint32_t widget_objnum,
                       FPDF_BYTESTRING on_state) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || widget_objnum == 0 ||
       field_objnum == widget_objnum) {
     return false;
@@ -3087,7 +3104,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_DetachWidget(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       uint32_t widget_objnum) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || widget_objnum == 0) {
     return false;
   }
@@ -3139,7 +3157,8 @@ EPDFForm_DeleteField(FPDF_DOCUMENT document,
   if (out_detached_count) {
     *out_detached_count = 0;
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0) {
     return false;
   }
@@ -3292,7 +3311,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_SetFieldName(FPDF_DOCUMENT document,
                       uint32_t field_objnum,
                       FPDF_WIDESTRING partial_name) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0) {
     return false;
   }
@@ -3349,7 +3369,8 @@ EPDFForm_SetFieldFlags(FPDF_DOCUMENT document,
                        uint32_t field_objnum,
                        uint32_t set_bits,
                        uint32_t clear_bits) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0) {
     return false;
   }
@@ -3426,7 +3447,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_SetFieldMaxLen(FPDF_DOCUMENT document,
                         uint32_t field_objnum,
                         int max_len) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || max_len < 0) {
     return false;
   }
@@ -3466,7 +3488,8 @@ EPDFForm_SetFieldDefaultValues(FPDF_DOCUMENT document,
                                uint32_t field_objnum,
                                const FPDF_WIDESTRING* values,
                                unsigned long value_count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || value_count == 0 || !values) {
     return false;
   }
@@ -3525,7 +3548,8 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_SetFieldDefaultToggle(FPDF_DOCUMENT document,
                                uint32_t field_objnum,
                                FPDF_BYTESTRING on_state) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || !on_state || on_state[0] == '\0') {
     return false;
   }
@@ -3571,7 +3595,8 @@ EPDFForm_SetFieldDefaultToggle(FPDF_DOCUMENT document,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFForm_RemoveFieldDefaultValue(FPDF_DOCUMENT document,
                                  uint32_t field_objnum) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0) {
     return false;
   }
@@ -3597,7 +3622,8 @@ FPDF_BOOL SetOptionalFieldText(FPDF_DOCUMENT document,
                                uint32_t field_objnum,
                                FPDF_WIDESTRING value,
                                const char* key) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0) {
     return false;
   }
@@ -3647,7 +3673,8 @@ EPDFForm_SetFieldOptions(FPDF_DOCUMENT document,
                          const FPDF_WIDESTRING* labels,
                          const FPDF_WIDESTRING* exports,
                          unsigned long count) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc || field_objnum == 0 || (count > 0 && (!labels || !exports))) {
     return false;
   }

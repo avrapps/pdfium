@@ -89,14 +89,12 @@ class CPDF_PageObjectHolder {
   ParseState GetParseState() const { return parse_state_; }
 
   CPDF_Document* GetDocument() const { return document_; }
-  RetainPtr<const CPDF_Dictionary> GetDict() const;
+  virtual RetainPtr<const CPDF_Dictionary> GetDict() const;
   RetainPtr<CPDF_Dictionary> GetMutableDict();
-  RetainPtr<const CPDF_Dictionary> GetResources() const;
+  virtual RetainPtr<const CPDF_Dictionary> GetResources() const;
   RetainPtr<CPDF_Dictionary> GetMutableResources();
-  void SetResources(RetainPtr<CPDF_Dictionary> dict) {
-    resources_ = std::move(dict);
-  }
-  RetainPtr<const CPDF_Dictionary> GetPageResources() const;
+  void SetResources(RetainPtr<CPDF_Dictionary> dict);
+  virtual RetainPtr<const CPDF_Dictionary> GetPageResources() const;
   RetainPtr<CPDF_Dictionary> GetMutablePageResources();
   size_t GetPageObjectCount() const { return page_object_list_.size(); }
   size_t GetActivePageObjectCount() const;
@@ -156,6 +154,7 @@ class CPDF_PageObjectHolder {
 
  protected:
   void LoadTransparencyInfo();
+  void ResetParsedContent();
   virtual void EnsureMutableBackingObjectForDict();
   virtual void EnsureMutableBackingObjectForResources();
   virtual void EnsureMutableBackingObjectForPageResources();
@@ -163,6 +162,9 @@ class CPDF_PageObjectHolder {
   RetainPtr<CPDF_Dictionary> page_resources_;
   RetainPtr<CPDF_Dictionary> resources_;
   RetainPtr<CPDF_Dictionary> dict_;
+  mutable uint64_t page_resources_epoch_ = 0;
+  mutable uint64_t resources_epoch_ = 0;
+  mutable uint64_t dict_epoch_ = 0;
   std::map<GraphicsData, ByteString> graphics_map_;
   std::map<FontData, ByteString> fonts_map_;
   std::map<uint32_t, ByteString> fonts_by_objnum_;

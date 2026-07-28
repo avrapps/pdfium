@@ -489,6 +489,27 @@ TEST_F(EPDFFormEmbedderTest, LayerModelLoadIsPure) {
   EPDF_ReleaseBaseDocument(base);
 }
 
+// A promoted non-terminal field is only reachable through frozen /Fields and
+// /Kids references. Rebuilding the model must resolve those references through
+// the effective layer view so the child's fully qualified name observes the
+// promoted ancestor.
+TEST_F(EPDFFormEmbedderTest, LayerModelReadsPromotedFieldAncestor) {
+  LayerDoc doc;
+  ASSERT_TRUE(OpenLayer("toggle_fields.pdf", &doc));
+
+  ASSERT_TRUE(EPDFForm_SetFieldName(
+      doc.layer, 16u, GetFPDFWideString(L"account").get()));
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(doc.layer, 16u));
+
+  EPDF_FORM_MODEL model = EPDFForm_LoadModel(doc.layer);
+  ASSERT_TRUE(model);
+  const int field = EPDFForm_GetFieldIndexByObjNum(model, 17u);
+  ASSERT_GE(field, 0);
+  EXPECT_EQ(L"account.name",
+            GetWideString(EPDFForm_GetFieldName, model, field));
+  EPDFForm_CloseModel(model);
+}
+
 // The radio walkthrough: flipping the group promotes exactly the field plus
 // the two widgets whose /AS changed - the minimal FDF-shaped delta.
 TEST_F(EPDFFormEmbedderTest, SetToggleRadioOnLayer) {

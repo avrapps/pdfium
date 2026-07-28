@@ -51,9 +51,18 @@ CPDF_PageObjectHolder::CPDF_PageObjectHolder(
       dict_(std::move(dict)),
       document_(doc) {
   DCHECK(dict_);
+  const uint64_t overlay_epoch = document_ ? document_->GetOverlayEpoch() : 0;
+  page_resources_epoch_ = overlay_epoch;
+  resources_epoch_ = overlay_epoch;
+  dict_epoch_ = overlay_epoch;
 }
 
 CPDF_PageObjectHolder::~CPDF_PageObjectHolder() = default;
+
+void CPDF_PageObjectHolder::SetResources(RetainPtr<CPDF_Dictionary> dict) {
+  resources_ = std::move(dict);
+  resources_epoch_ = document_ ? document_->GetOverlayEpoch() : 0;
+}
 
 bool CPDF_PageObjectHolder::IsPage() const {
   return false;
@@ -68,15 +77,21 @@ RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetDict() const {
     return dict_;
   }
 
+  const uint64_t current_epoch = document_->GetOverlayEpoch();
+  if (dict_epoch_ == current_epoch) {
+    return dict_;
+  }
+  dict_epoch_ = current_epoch;
+
   const uint32_t objnum = dict_->GetObjNum();
   if (objnum == 0) {
     return dict_;
   }
 
-  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  RetainPtr<const CPDF_Object> live = document_->GetIndirectObject(objnum);
   if (live && live.Get() != dict_.Get()) {
     const_cast<CPDF_PageObjectHolder*>(this)->dict_ =
-        pdfium::WrapRetain(live->AsMutableDictionary());
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(live->AsDictionary()));
   }
   return dict_;
 }
@@ -92,12 +107,14 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableDict() {
     if (live && live.Get() != dict_.Get()) {
       dict_ = pdfium::WrapRetain(live->AsMutableDictionary());
     }
+    dict_epoch_ = document_->GetOverlayEpoch();
     return dict_;
   }
 
   if (dict_->IsFrozen()) {
     EnsureMutableBackingObjectForDict();
   }
+  dict_epoch_ = document_->GetOverlayEpoch();
   return dict_;
 }
 
@@ -106,15 +123,21 @@ RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetResources() const {
     return resources_;
   }
 
+  const uint64_t current_epoch = document_->GetOverlayEpoch();
+  if (resources_epoch_ == current_epoch) {
+    return resources_;
+  }
+  resources_epoch_ = current_epoch;
+
   const uint32_t objnum = resources_->GetObjNum();
   if (objnum == 0) {
     return resources_;
   }
 
-  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  RetainPtr<const CPDF_Object> live = document_->GetIndirectObject(objnum);
   if (live && live.Get() != resources_.Get()) {
     const_cast<CPDF_PageObjectHolder*>(this)->resources_ =
-        pdfium::WrapRetain(live->AsMutableDictionary());
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(live->AsDictionary()));
   }
   return resources_;
 }
@@ -130,12 +153,14 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutableResources() {
     if (live && live.Get() != resources_.Get()) {
       resources_ = pdfium::WrapRetain(live->AsMutableDictionary());
     }
+    resources_epoch_ = document_->GetOverlayEpoch();
     return resources_;
   }
 
   if (resources_->IsFrozen()) {
     EnsureMutableBackingObjectForResources();
   }
+  resources_epoch_ = document_->GetOverlayEpoch();
   return resources_;
 }
 
@@ -145,15 +170,21 @@ RetainPtr<const CPDF_Dictionary> CPDF_PageObjectHolder::GetPageResources()
     return page_resources_;
   }
 
+  const uint64_t current_epoch = document_->GetOverlayEpoch();
+  if (page_resources_epoch_ == current_epoch) {
+    return page_resources_;
+  }
+  page_resources_epoch_ = current_epoch;
+
   const uint32_t objnum = page_resources_->GetObjNum();
   if (objnum == 0) {
     return page_resources_;
   }
 
-  RetainPtr<CPDF_Object> live = document_->FindPromotedObject(objnum);
+  RetainPtr<const CPDF_Object> live = document_->GetIndirectObject(objnum);
   if (live && live.Get() != page_resources_.Get()) {
     const_cast<CPDF_PageObjectHolder*>(this)->page_resources_ =
-        pdfium::WrapRetain(live->AsMutableDictionary());
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(live->AsDictionary()));
   }
   return page_resources_;
 }
@@ -169,12 +200,14 @@ RetainPtr<CPDF_Dictionary> CPDF_PageObjectHolder::GetMutablePageResources() {
     if (live && live.Get() != page_resources_.Get()) {
       page_resources_ = pdfium::WrapRetain(live->AsMutableDictionary());
     }
+    page_resources_epoch_ = document_->GetOverlayEpoch();
     return page_resources_;
   }
 
   if (page_resources_->IsFrozen()) {
     EnsureMutableBackingObjectForPageResources();
   }
+  page_resources_epoch_ = document_->GetOverlayEpoch();
   return page_resources_;
 }
 
@@ -215,6 +248,21 @@ void CPDF_PageObjectHolder::ContinueParse(PauseIndicatorIface* pPause) {
   all_ctms_ = parser_->TakeAllCTMs();
 
   parser_.reset();
+}
+
+void CPDF_PageObjectHolder::ResetParsedContent() {
+  parser_.reset();
+  parse_state_ = ParseState::kNotParsed;
+  page_object_list_.clear();
+  all_ctms_.clear();
+  mask_bounding_boxes_.clear();
+  dirty_streams_.clear();
+  graphics_map_.clear();
+  fonts_map_.clear();
+  fonts_by_objnum_.clear();
+  colorspace_map_.clear();
+  all_removed_resources_map_.clear();
+  background_alpha_needed_ = false;
 }
 
 void CPDF_PageObjectHolder::AddImageMaskBoundingBox(const CFX_FloatRect& box) {

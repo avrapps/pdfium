@@ -11,6 +11,7 @@
 #include "build/build_config.h"
 #include "constants/form_fields.h"
 #include "constants/stream_dict_common.h"
+#include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -233,6 +234,26 @@ FPDF_DOCUMENT FPDFDocumentFromCPDFDocument(CPDF_Document* doc) {
 CPDF_Page* CPDFPageFromFPDFPage(FPDF_PAGE page) {
   return page ? IPDFPageFromFPDFPage(page)->AsPDFPage() : nullptr;
 }
+
+ScopedFPDFDocumentView::ScopedFPDFDocumentView(FPDF_DOCUMENT document)
+    : document_(CPDFDocumentFromFPDFDocument(document)),
+      view_scope_(document_) {}
+
+ScopedFPDFDocumentView::~ScopedFPDFDocumentView() = default;
+
+ScopedFPDFPageView::ScopedFPDFPageView(FPDF_PAGE page)
+    : page_(CPDFPageFromFPDFPage(page)),
+      view_scope_(page_ ? page_->GetDocument() : nullptr) {}
+
+ScopedFPDFPageView::~ScopedFPDFPageView() = default;
+
+ScopedFPDFAnnotationView::ScopedFPDFAnnotationView(
+    FPDF_ANNOTATION annotation)
+    : annotation_(CPDFAnnotContextFromFPDFAnnotation(annotation)),
+      view_scope_(annotation_ ? annotation_->GetPage()->GetDocument()
+                              : nullptr) {}
+
+ScopedFPDFAnnotationView::~ScopedFPDFAnnotationView() = default;
 
 FXDIB_Format FXDIBFormatFromFPDFFormat(int format) {
   switch (format) {

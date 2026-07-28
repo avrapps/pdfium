@@ -530,8 +530,16 @@ bool CPDF_Document::IsObjectPromoted(uint32_t objnum) const {
   return !!FindPromotedObject(objnum);
 }
 
+uint64_t CPDF_Document::GetOverlayEpoch() const {
+  return 0;
+}
+
 bool CPDF_Document::IsLayerDocument() const {
   return false;
+}
+
+const CPDF_BaseDocument* CPDF_Document::GetBaseDocumentForViewScope() const {
+  return nullptr;
 }
 
 FX_FILESIZE CPDF_Document::GetLayerAppendBaseOffset() const {

@@ -25,6 +25,7 @@
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
@@ -1027,10 +1028,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
                                                     int size_y,
                                                     int rotate,
                                                     int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return false;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   auto owned_context = std::make_unique<CPDF_PageRenderContext>();
   CPDF_PageRenderContext* context = owned_context.get();
@@ -1152,10 +1154,11 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageBitmap(FPDF_BITMAP bitmap,
                                                      int size_y,
                                                      int rotate,
                                                      int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
   if (!pBitmap) {
@@ -1188,10 +1191,11 @@ FPDF_RenderPageBitmapWithMatrix(FPDF_BITMAP bitmap,
                                 const FS_MATRIX* matrix,
                                 const FS_RECTF* clipping,
                                 int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
   if (!pBitmap) {
@@ -1244,8 +1248,10 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
     return false;
   }
 
+  CPDF_DocumentViewScope document_view(pPage->GetDocument());
+
   // Get the annotation's dictionary from the context.
-  RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnotContext->GetMutableAnnotDict();
+  const CPDF_Dictionary* pAnnotDict = pAnnotContext->GetAnnotDict();
   if (!pAnnotDict) {
     return false;
   }
@@ -1257,7 +1263,8 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
   }
 
   // Instantiate CPDF_Annot using its public constructor.
-  auto pAnnot = std::make_unique<CPDF_Annot>(std::move(pAnnotDict), pDoc);
+  auto pAnnot = std::make_unique<CPDF_Annot>(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
 
   // ---------------------------------------------------------------- bitmaps
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
@@ -1306,7 +1313,8 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnotContext->GetMutableAnnotDict();
+  CPDF_DocumentViewScope document_view(pPage->GetDocument());
+  const CPDF_Dictionary* pAnnotDict = pAnnotContext->GetAnnotDict();
   if (!pAnnotDict) {
     return false;
   }
@@ -1316,7 +1324,8 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
     return false;
   }
 
-  auto pAnnot = std::make_unique<CPDF_Annot>(std::move(pAnnotDict), pDoc);
+  auto pAnnot = std::make_unique<CPDF_Annot>(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
 
   // Get the AP form for the requested mode.
   // Note: we skip ShouldDrawAnnotation/GenerateAPIfNeeded (private) because
@@ -1394,10 +1403,11 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageSkia(FPDF_SKIA_CANVAS canvas,
     return;
   }
 
-  CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
-  if (!cpdf_page) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* cpdf_page = page_view.Get();
 
   auto owned_context = std::make_unique<CPDF_PageRenderContext>();
   CPDF_PageRenderContext* context = owned_context.get();
@@ -2041,7 +2051,8 @@ FPDF_VIEWERREF_GetName(FPDF_DOCUMENT document,
 
 FPDF_EXPORT FPDF_DWORD FPDF_CALLCONV
 FPDF_CountNamedDests(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return 0;
   }
@@ -2066,7 +2077,8 @@ FPDF_GetNamedDestByName(FPDF_DOCUMENT document, FPDF_BYTESTRING name) {
     return nullptr;
   }
 
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -2163,7 +2175,8 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
     return nullptr;
   }
 
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }

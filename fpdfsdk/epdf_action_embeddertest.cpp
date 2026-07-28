@@ -315,6 +315,39 @@ TEST_F(EPDFActionEmbedderTest, LayerActionReadsDoNotPromote) {
 }
 
 TEST_F(EPDFActionEmbedderTest,
+       NamedJavaScriptModelReadsPromotedActionFromLayer) {
+  const std::string path = PathService::GetTestFilePath("js.pdf");
+  ASSERT_FALSE(path.empty());
+  const std::vector<uint8_t> bytes = GetFileContents(path.c_str());
+  ASSERT_FALSE(bytes.empty());
+  EPDF_BASE_DOCUMENT base = EPDF_LoadMemBaseDocument(
+      bytes.data(), static_cast<int>(bytes.size()), nullptr);
+  ASSERT_TRUE(base);
+  EPDFLayerOpenStatus status;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
+  ASSERT_TRUE(layer);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  CPDF_Document* layer_doc =
+      CPDFDocumentFromFPDFDocument(layer.get());
+  ASSERT_TRUE(layer_doc);
+  RetainPtr<CPDF_Dictionary> action =
+      ToDictionary(layer_doc->GetMutableIndirectObject(5u));
+  ASSERT_TRUE(action);
+  action->SetNewFor<CPDF_String>("JS", L"layer();");
+  EXPECT_TRUE(EPDFLayer_IsObjectPromoted(layer.get(), 5u));
+
+  ScopedEPDFActionModel model(
+      EPDFDoc_GetNamedJavaScriptActionModel(layer.get(), 0));
+  ASSERT_TRUE(model);
+  EXPECT_EQ(L"layer();", GetActionJavaScript(model.get(), 0));
+
+  layer.reset();
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(EPDFActionEmbedderTest,
        MergedFieldAndWidgetAdditionalActionsStaySeparate) {
   ASSERT_TRUE(OpenDocument("text_form.pdf"));
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());

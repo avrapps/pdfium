@@ -10,13 +10,15 @@
 #include "public/epdf_action.h"
 
 class CPDF_Action;
+class CPDF_Document;
 
 namespace epdf {
 
 struct ActionModelData;
 using ActionModelDataPtr = std::shared_ptr<const ActionModelData>;
 
-ActionModelDataPtr BuildActionModel(const CPDF_Action& action);
+ActionModelDataPtr BuildActionModel(const CPDF_Action& action,
+                                    CPDF_Document* document = nullptr);
 EPDF_ACTION_MODEL MakeActionModelHandle(ActionModelDataPtr data);
 
 }  // namespace epdf

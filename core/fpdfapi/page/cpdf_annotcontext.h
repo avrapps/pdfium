@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_
 #define CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_
 
+#include <stdint.h>
+
 #include <memory>
 
 #include "core/fxcrt/retain_ptr.h"
@@ -30,7 +32,7 @@ class CPDF_AnnotContext {
 
   // Never nullptr.
   RetainPtr<CPDF_Dictionary> GetMutableAnnotDict();
-  const CPDF_Dictionary* GetAnnotDict() const { return annot_dict_.Get(); }
+  const CPDF_Dictionary* GetAnnotDict() const;
 
   // Never nullptr.
   IPDF_Page* GetPage() const { return page_; }
@@ -40,12 +42,14 @@ class CPDF_AnnotContext {
   int GetAnnotIndex() const { return annot_index_; }
 
  private:
+  void RefreshAnnotDictIfNeeded() const;
   void EnsureMutableBackingForAnnotDict();
 
-  std::unique_ptr<CPDF_Form> annot_form_;
-  RetainPtr<CPDF_Dictionary> annot_dict_;
+  mutable std::unique_ptr<CPDF_Form> annot_form_;
+  mutable RetainPtr<CPDF_Dictionary> annot_dict_;
   UnownedPtr<IPDF_Page> const page_;
   const int annot_index_ = -1;
+  mutable uint64_t annot_dict_epoch_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_

@@ -13,6 +13,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check.h"
@@ -27,12 +28,14 @@ CPDF_AnnotContext::CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
   DCHECK(annot_dict_);
   DCHECK(page_);
   DCHECK(page_->AsPDFPage());
+  annot_dict_epoch_ = page_->GetDocument()->GetOverlayEpoch();
 }
 
 CPDF_AnnotContext::~CPDF_AnnotContext() = default;
 
 void CPDF_AnnotContext::SetForm(RetainPtr<CPDF_Stream> pStream) {
   CHECK(pStream);
+  CPDF_DocumentViewScope document_view(page_->GetDocument());
   annot_form_ = std::make_unique<CPDF_Form>(
       page_->GetDocument(),
       pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
@@ -50,6 +53,8 @@ void CPDF_AnnotContext::SetForm(RetainPtr<CPDF_Stream> pStream) {
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_AnnotContext::GetMutableAnnotDict() {
+  RefreshAnnotDictIfNeeded();
+
   CPDF_Page* page = page_ ? page_->AsPDFPage() : nullptr;
   CPDF_Document* doc = page ? page->GetDocument() : nullptr;
   if (!doc) {
@@ -62,13 +67,58 @@ RetainPtr<CPDF_Dictionary> CPDF_AnnotContext::GetMutableAnnotDict() {
     if (live && live.Get() != annot_dict_.Get()) {
       annot_dict_ = pdfium::WrapRetain(live->AsMutableDictionary());
     }
+    annot_dict_epoch_ = doc->GetOverlayEpoch();
     return annot_dict_;
   }
 
   if (annot_dict_->IsFrozen()) {
     EnsureMutableBackingForAnnotDict();
   }
+  annot_dict_epoch_ = doc->GetOverlayEpoch();
   return annot_dict_;
+}
+
+const CPDF_Dictionary* CPDF_AnnotContext::GetAnnotDict() const {
+  RefreshAnnotDictIfNeeded();
+  return annot_dict_.Get();
+}
+
+void CPDF_AnnotContext::RefreshAnnotDictIfNeeded() const {
+  CPDF_Page* page = page_ ? page_->AsPDFPage() : nullptr;
+  CPDF_Document* doc = page ? page->GetDocument() : nullptr;
+  if (!doc) {
+    return;
+  }
+
+  const uint64_t current_epoch = doc->GetOverlayEpoch();
+  if (annot_dict_epoch_ == current_epoch) {
+    return;
+  }
+
+  CPDF_DocumentViewScope document_view(doc);
+  const uint32_t objnum = annot_dict_->GetObjNum();
+  if (objnum != 0) {
+    RetainPtr<const CPDF_Object> effective = doc->GetIndirectObject(objnum);
+    const CPDF_Dictionary* effective_dict =
+        effective ? effective->AsDictionary() : nullptr;
+    if (effective_dict && effective_dict != annot_dict_.Get()) {
+      annot_dict_ = pdfium::WrapRetain(
+          const_cast<CPDF_Dictionary*>(effective_dict));
+      annot_form_.reset();
+    }
+  } else if (annot_index_ >= 0) {
+    RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
+    RetainPtr<const CPDF_Dictionary> effective =
+        annots && static_cast<size_t>(annot_index_) < annots->size()
+            ? annots->GetDictAt(static_cast<size_t>(annot_index_))
+            : nullptr;
+    if (effective && effective.Get() != annot_dict_.Get()) {
+      annot_dict_ =
+          pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(effective.Get()));
+      annot_form_.reset();
+    }
+  }
+  annot_dict_epoch_ = current_epoch;
 }
 
 void CPDF_AnnotContext::EnsureMutableBackingForAnnotDict() {

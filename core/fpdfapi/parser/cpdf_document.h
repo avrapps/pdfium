@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFAPI_PARSER_CPDF_DOCUMENT_H_
 #define CORE_FPDFAPI_PARSER_CPDF_DOCUMENT_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <set>
@@ -23,6 +25,7 @@
 #include "core/fxcrt/unowned_ptr.h"
 
 class CPDF_ReadValidator;
+class CPDF_BaseDocument;
 class CPDF_StreamAcc;
 class IFX_SeekableReadStream;
 class JBig2_DocumentContext;
@@ -163,7 +166,14 @@ class CPDF_Document : public Observable,
   // document overlay. Always false for ordinary documents.
   virtual RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const;
   bool IsObjectPromoted(uint32_t objnum) const;
+  // Changes whenever the effective identity of an indirect object can change.
+  // Ordinary documents have no overlay and always return 0.
+  virtual uint64_t GetOverlayEpoch() const;
   virtual bool IsLayerDocument() const;
+  // Returns non-null only for the immutable base document itself. This avoids
+  // RTTI in the ambient-view boundary while preserving exact frozen-view
+  // identity for the debug detector.
+  virtual const CPDF_BaseDocument* GetBaseDocumentForViewScope() const;
   virtual FX_FILESIZE GetLayerAppendBaseOffset() const;
 
   // CPDF_Parser::ParsedObjectsHolder:

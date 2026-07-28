@@ -18,6 +18,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -125,6 +126,8 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
 
 CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
     : page_(pPage), document_(page_->GetDocument()) {
+  CPDF_DocumentViewScope document_view(document_);
+
   RetainPtr<const CPDF_Array> pAnnots = page_->GetAnnotsArray();
   if (!pAnnots) {
     return;
@@ -182,6 +185,8 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
                                  bool bPrinting,
                                  const CFX_Matrix& mtMatrix,
                                  bool bWidgetPass) {
+  CPDF_DocumentViewScope document_view(document_);
+
   CHECK(context);
   for (const auto& pAnnot : annot_list_) {
     bool bWidget = pAnnot->GetSubtype() == CPDF_Annot::Subtype::WIDGET;

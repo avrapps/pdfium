@@ -250,6 +250,33 @@ class FPDFViewEmbedderTest : public EmbedderTest {
       for (int annot_index = 0; annot_index < annot_count; ++annot_index) {
         ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), annot_index));
         ASSERT_TRUE(annot) << file_name << " annot " << annot_index;
+
+        (void)FPDFAnnot_GetFlags(annot.get());
+        (void)EPDFAnnot_GetBlendMode(annot.get());
+        FPDF_STANDARD_FONT font = FPDF_FONT_UNKNOWN;
+        float font_size = 0;
+        unsigned int red = 0;
+        unsigned int green = 0;
+        unsigned int blue = 0;
+        (void)EPDFAnnot_GetDefaultAppearance(
+            annot.get(), &font, &font_size, &red, &green, &blue);
+        const int object_count = FPDFAnnot_GetObjectCount(annot.get());
+        if (object_count > 0) {
+          EXPECT_TRUE(FPDFAnnot_GetObject(annot.get(), 0))
+              << file_name << " annot " << annot_index;
+        }
+
+        if (FPDFAnnot_GetSubtype(annot.get()) == FPDF_ANNOT_LINK) {
+          EXPECT_TRUE(FPDFAnnot_GetLink(annot.get()))
+              << file_name << " annot " << annot_index;
+        }
+        if (FPDFAnnot_GetSubtype(annot.get()) == FPDF_ANNOT_FILEATTACHMENT) {
+          EXPECT_TRUE(FPDFAnnot_GetFileAttachment(annot.get()))
+              << file_name << " annot " << annot_index;
+        }
+
+        ScopedFPDFAnnotation linked(
+            FPDFAnnot_GetLinkedAnnot(annot.get(), "IRT"));
       }
 
       int link_pos = 0;
@@ -1177,8 +1204,246 @@ TEST_F(FPDFViewEmbedderTest, OpenFreshLayerAnnotHandleDoesNotPromote) {
     ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
     ASSERT_TRUE(annot);
     EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+    const int object_count = FPDFAnnot_GetObjectCount(annot.get());
+    EXPECT_GT(object_count, 0);
+    EXPECT_TRUE(FPDFAnnot_GetObject(annot.get(), 0));
+    (void)EPDFAnnot_GetBlendMode(annot.get());
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
+
+    ScopedFPDFBitmap bitmap(
+        FPDFBitmap_Create(/*width=*/612, /*height=*/792, /*alpha=*/1));
+    ASSERT_TRUE(bitmap);
+    ASSERT_TRUE(FPDFBitmap_FillRect(bitmap.get(), 0, 0, 612, 792, 0xFFFFFFFF));
+    const FS_MATRIX identity = {1, 0, 0, 1, 0, 0};
+    EXPECT_TRUE(EPDF_RenderAnnotBitmap(bitmap.get(), page.get(), annot.get(),
+                                       FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                                       &identity, 0));
+    EXPECT_EQ(0u, EPDFLayer_GetPromotedObjectCount(layer.get()));
   }
 
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       ExistingAnnotHandlesAndDeltaReplaySeeEffectiveLayerGeometry) {
+  FileAccessForTesting base_access("polygon_annot.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status_a = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_a(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_a));
+  ASSERT_TRUE(layer_a);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, status_a);
+
+  EPDFLayerOpenStatus status_b = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer_b(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status_b));
+  ASSERT_TRUE(layer_b);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, status_b);
+
+  ScopedFPDFPage writer_page(FPDF_LoadPage(layer_a.get(), 0));
+  ScopedFPDFPage reader_page(FPDF_LoadPage(layer_a.get(), 0));
+  ScopedFPDFPage sibling_page(FPDF_LoadPage(layer_b.get(), 0));
+  ASSERT_TRUE(writer_page);
+  ASSERT_TRUE(reader_page);
+  ASSERT_TRUE(sibling_page);
+
+  ScopedFPDFAnnotation writer(FPDFPage_GetAnnot(writer_page.get(), 0));
+  ScopedFPDFAnnotation reader(FPDFPage_GetAnnot(reader_page.get(), 0));
+  ScopedFPDFAnnotation sibling(FPDFPage_GetAnnot(sibling_page.get(), 0));
+  ASSERT_TRUE(writer);
+  ASSERT_TRUE(reader);
+  ASSERT_TRUE(sibling);
+
+  ScopedFPDFBitmap original_bitmap =
+      RenderPageWithFlags(sibling_page.get(), nullptr, FPDF_ANNOT);
+  ASSERT_TRUE(original_bitmap);
+  const std::string original_hash = HashBitmap(original_bitmap.get());
+
+  FS_RECTF original_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(writer.get(), &original_rect));
+  const FS_RECTF moved_rect = {
+      160.0f,
+      440.0f,
+      500.0f,
+      250.0f,
+  };
+  const FS_POINTF moved_vertices[] = {
+      {176.0f, 319.0f},
+      {367.0f, 434.0f},
+      {489.0f, 266.42f},
+  };
+
+  ASSERT_TRUE(FPDFAnnot_SetRect(writer.get(), &moved_rect));
+  ASSERT_TRUE(EPDFAnnot_SetVertices(writer.get(), moved_vertices,
+                                    std::size(moved_vertices)));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(writer.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(writer_page.get()));
+
+  FS_RECTF observed_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(reader.get(), &observed_rect));
+  EXPECT_FLOAT_EQ(moved_rect.left, observed_rect.left);
+  EXPECT_FLOAT_EQ(moved_rect.top, observed_rect.top);
+  EXPECT_FLOAT_EQ(moved_rect.right, observed_rect.right);
+  EXPECT_FLOAT_EQ(moved_rect.bottom, observed_rect.bottom);
+
+  std::vector<FS_POINTF> observed_vertices(std::size(moved_vertices));
+  ASSERT_EQ(observed_vertices.size(),
+            FPDFAnnot_GetVertices(reader.get(), observed_vertices.data(),
+                                  observed_vertices.size()));
+  for (size_t i = 0; i < observed_vertices.size(); ++i) {
+    EXPECT_FLOAT_EQ(moved_vertices[i].x, observed_vertices[i].x);
+    EXPECT_FLOAT_EQ(moved_vertices[i].y, observed_vertices[i].y);
+  }
+
+  FS_RECTF sibling_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(sibling.get(), &sibling_rect));
+  EXPECT_FLOAT_EQ(original_rect.left, sibling_rect.left);
+  EXPECT_FLOAT_EQ(original_rect.top, sibling_rect.top);
+  EXPECT_FLOAT_EQ(original_rect.right, sibling_rect.right);
+  EXPECT_FLOAT_EQ(original_rect.bottom, sibling_rect.bottom);
+
+  ScopedFPDFBitmap writer_bitmap =
+      RenderPageWithFlags(writer_page.get(), nullptr, FPDF_ANNOT);
+  ScopedFPDFBitmap reader_bitmap =
+      RenderPageWithFlags(reader_page.get(), nullptr, FPDF_ANNOT);
+  ScopedFPDFBitmap sibling_bitmap =
+      RenderPageWithFlags(sibling_page.get(), nullptr, FPDF_ANNOT);
+  ASSERT_TRUE(writer_bitmap);
+  ASSERT_TRUE(reader_bitmap);
+  ASSERT_TRUE(sibling_bitmap);
+  const std::string moved_hash = HashBitmap(writer_bitmap.get());
+  EXPECT_EQ(moved_hash, HashBitmap(reader_bitmap.get()));
+  EXPECT_EQ(original_hash, HashBitmap(sibling_bitmap.get()));
+  EXPECT_NE(original_hash, moved_hash);
+
+  ClearString();
+  EPDFLayerSaveStatus save_status = EPDFLayerSaveStatus_kSaveFailed;
+  ASSERT_TRUE(EPDFLayer_SaveDelta(layer_a.get(), this, &save_status));
+  ASSERT_EQ(EPDFLayerSaveStatus_kSuccess, save_status);
+  std::string delta = GetString();
+  ASSERT_FALSE(delta.empty());
+
+  FPDF_FILEACCESS delta_access = {};
+  delta_access.m_FileLen = delta.size();
+  delta_access.m_GetBlock = GetBlockFromString;
+  delta_access.m_Param = &delta;
+  EPDFLayerOpenStatus replay_status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument replayed(
+      EPDFLayer_OpenLayer(base, &delta_access, nullptr, &replay_status));
+  ASSERT_TRUE(replayed);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, replay_status);
+
+  ScopedFPDFPage replayed_page(FPDF_LoadPage(replayed.get(), 0));
+  ASSERT_TRUE(replayed_page);
+  ScopedFPDFAnnotation replayed_annot(
+      FPDFPage_GetAnnot(replayed_page.get(), 0));
+  ASSERT_TRUE(replayed_annot);
+
+  FS_RECTF replayed_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(replayed_annot.get(), &replayed_rect));
+  EXPECT_FLOAT_EQ(moved_rect.left, replayed_rect.left);
+  EXPECT_FLOAT_EQ(moved_rect.top, replayed_rect.top);
+  EXPECT_FLOAT_EQ(moved_rect.right, replayed_rect.right);
+  EXPECT_FLOAT_EQ(moved_rect.bottom, replayed_rect.bottom);
+
+  std::vector<FS_POINTF> replayed_vertices(std::size(moved_vertices));
+  ASSERT_EQ(
+      replayed_vertices.size(),
+      FPDFAnnot_GetVertices(replayed_annot.get(), replayed_vertices.data(),
+                            replayed_vertices.size()));
+  for (size_t i = 0; i < replayed_vertices.size(); ++i) {
+    EXPECT_FLOAT_EQ(moved_vertices[i].x, replayed_vertices[i].x);
+    EXPECT_FLOAT_EQ(moved_vertices[i].y, replayed_vertices[i].y);
+  }
+
+  ScopedFPDFBitmap replayed_bitmap =
+      RenderPageWithFlags(replayed_page.get(), nullptr, FPDF_ANNOT);
+  ASSERT_TRUE(replayed_bitmap);
+  EXPECT_EQ(moved_hash, HashBitmap(replayed_bitmap.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       PromotedBaseAnnotReopensByObjectNumberFromEffectiveLayer) {
+  FileAccessForTesting base_access("polygon_annot.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
+  ASSERT_TRUE(layer);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation writer(FPDFPage_GetAnnot(page.get(), 0));
+  ASSERT_TRUE(writer);
+  const uint32_t object_number = EPDFAnnot_GetObjectNumber(writer.get());
+  ASSERT_GT(object_number, 0u);
+
+  const FS_RECTF moved_rect = {
+      160.0f,
+      440.0f,
+      500.0f,
+      250.0f,
+  };
+  ASSERT_TRUE(FPDFAnnot_SetRect(writer.get(), &moved_rect));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(writer.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  writer.reset();
+
+  ScopedFPDFAnnotation reopened(
+      EPDFPage_GetAnnotByObjectNumber(page.get(), object_number));
+  ASSERT_TRUE(reopened);
+
+  FS_RECTF observed_rect;
+  ASSERT_TRUE(FPDFAnnot_GetRect(reopened.get(), &observed_rect));
+  EXPECT_FLOAT_EQ(moved_rect.left, observed_rect.left);
+  EXPECT_FLOAT_EQ(moved_rect.top, observed_rect.top);
+  EXPECT_FLOAT_EQ(moved_rect.right, observed_rect.right);
+  EXPECT_FLOAT_EQ(moved_rect.bottom, observed_rect.bottom);
+  EXPECT_EQ(0, FPDFPage_GetAnnotIndex(page.get(), reopened.get()));
+
+  EPDF_ReleaseBaseDocument(base);
+}
+
+TEST_F(FPDFViewEmbedderTest, LinkCacheRebuildsAfterOverlayEpochChanges) {
+  FileAccessForTesting base_access("annots.pdf");
+  EPDF_BASE_DOCUMENT base = EPDF_LoadBaseDocument(&base_access, nullptr);
+  ASSERT_TRUE(base);
+
+  EPDFLayerOpenStatus status = EPDFLayerOpenStatus_kOpenFailed;
+  ScopedFPDFDocument layer(
+      EPDFLayer_OpenLayer(base, nullptr, nullptr, &status));
+  ASSERT_TRUE(layer);
+  ASSERT_EQ(EPDFLayerOpenStatus_kSuccess, status);
+
+  ScopedFPDFPage page(FPDF_LoadPage(layer.get(), 0));
+  ASSERT_TRUE(page);
+
+  FPDF_LINK initial = FPDFLink_GetLinkAtPoint(page.get(), 69.0, 653.0);
+  ASSERT_TRUE(initial);
+  CPDF_Dictionary* initial_dict = CPDFDictionaryFromFPDFLink(initial);
+  ASSERT_TRUE(initial_dict);
+  ASSERT_GT(initial_dict->GetObjNum(), 0u);
+
+  CPDF_Document* layer_doc = CPDFDocumentFromFPDFDocument(layer.get());
+  ASSERT_TRUE(layer_doc);
+  RetainPtr<CPDF_Dictionary> promoted = ToDictionary(
+      layer_doc->GetMutableIndirectObject(initial_dict->GetObjNum()));
+  ASSERT_TRUE(promoted);
+  promoted->SetRectFor("Rect", CFX_FloatRect(300.0f, 300.0f, 350.0f, 350.0f));
+
+  EXPECT_FALSE(FPDFLink_GetLinkAtPoint(page.get(), 69.0, 653.0));
+  EXPECT_TRUE(FPDFLink_GetLinkAtPoint(page.get(), 325.0, 325.0));
+
+  layer.reset();
   EPDF_ReleaseBaseDocument(base);
 }
 

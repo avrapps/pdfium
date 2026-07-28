@@ -49,6 +49,12 @@ CPDF_Link CPDF_LinkList::GetLinkAtPoint(CPDF_Page* pPage,
 
 const std::vector<RetainPtr<const CPDF_Dictionary>>*
 CPDF_LinkList::GetPageLinks(CPDF_Page* pPage) {
+  const uint64_t current_epoch = pPage->GetDocument()->GetOverlayEpoch();
+  if (overlay_epoch_ != current_epoch) {
+    page_map_.clear();
+    overlay_epoch_ = current_epoch;
+  }
+
   uint32_t objnum = pPage->GetDict()->GetObjNum();
   if (objnum == 0) {
     return nullptr;

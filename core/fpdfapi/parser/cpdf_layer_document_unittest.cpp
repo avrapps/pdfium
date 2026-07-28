@@ -13,15 +13,19 @@
 #include <utility>
 #include <vector>
 
+#include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pagemodule.h"
+#include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_base_document.h"
 #include "core/fpdfapi/parser/cpdf_concat_read_stream.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/fx_stream.h"
@@ -124,6 +128,79 @@ std::string BuildSimplePdfWithInfo() {
   }
   pdf << "trailer\n<< /Size " << (objects.size() + 1)
       << " /Root 1 0 R /Info 4 0 R >>\nstartxref\n"
+      << xref_offset << "\n%%EOF\n";
+  return pdf.str();
+}
+
+std::string BuildPdfWithIndirectAnnotation() {
+  const std::vector<std::string> objects = {
+      "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+      "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
+      "3 0 obj\n"
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]\n"
+      "   /Annots [4 0 R] >>\n"
+      "endobj\n",
+      "4 0 obj\n"
+      "<< /Type /Annot /Subtype /Polygon /Rect [10 10 30 30]\n"
+      "   /Vertices [10 10 30 10 20 30] >>\n"
+      "endobj\n",
+  };
+
+  std::ostringstream pdf;
+  pdf << "%PDF-1.7\n";
+  std::vector<size_t> offsets;
+  for (const std::string& object : objects) {
+    offsets.push_back(pdf.tellp());
+    pdf << object;
+  }
+
+  const size_t xref_offset = pdf.tellp();
+  pdf << "xref\n0 " << (objects.size() + 1) << "\n0000000000 65535 f \n";
+  for (size_t offset : offsets) {
+    pdf << std::setw(10) << std::setfill('0') << offset << " 00000 n \n";
+  }
+  pdf << "trailer\n<< /Size " << (objects.size() + 1)
+      << " /Root 1 0 R >>\nstartxref\n"
+      << xref_offset << "\n%%EOF\n";
+  return pdf.str();
+}
+
+std::string BuildPdfWithFormXObject() {
+  const std::string form_content = "0 0 10 10 re f\n";
+  std::ostringstream form_object;
+  form_object << "4 0 obj\n"
+              << "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100]\n"
+              << "   /Resources << /BaseMarker 1 >> /Length "
+              << form_content.size() << " >>\n"
+              << "stream\n"
+              << form_content
+              << "endstream\nendobj\n";
+
+  const std::vector<std::string> objects = {
+      "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+      "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
+      "3 0 obj\n"
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]\n"
+      "   /Resources << /XObject << /Fm0 4 0 R >> >> >>\n"
+      "endobj\n",
+      form_object.str(),
+  };
+
+  std::ostringstream pdf;
+  pdf << "%PDF-1.7\n";
+  std::vector<size_t> offsets;
+  for (const std::string& object : objects) {
+    offsets.push_back(pdf.tellp());
+    pdf << object;
+  }
+
+  const size_t xref_offset = pdf.tellp();
+  pdf << "xref\n0 " << (objects.size() + 1) << "\n0000000000 65535 f \n";
+  for (size_t offset : offsets) {
+    pdf << std::setw(10) << std::setfill('0') << offset << " 00000 n \n";
+  }
+  pdf << "trailer\n<< /Size " << (objects.size() + 1)
+      << " /Root 1 0 R >>\nstartxref\n"
       << xref_offset << "\n%%EOF\n";
   return pdf.str();
 }
@@ -422,6 +499,143 @@ TEST_F(CPDFLayerDocumentTest, CrossHandleReadRefreshesAfterPagePromotion) {
       base->GetFrozenObjectForLayer(3)->AsDictionary()->KeyExist("Bar"));
 }
 
+TEST_F(CPDFLayerDocumentTest,
+       FrozenReferencesResolveThroughOwningLayerWithoutCrossLayerLeakage) {
+  EXPECT_EQ(CPDF_DocumentViewScope::Mode::kNone,
+            CPDF_DocumentViewScope::GetCurrentMode());
+  const std::string pdf = BuildPdfWithIndirectAnnotation();
+  RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
+  ASSERT_TRUE(base);
+  auto layer_a = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  auto layer_b = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+
+  auto page_a = MakeLayerPage(layer_a.get(), 0);
+  auto page_b = MakeLayerPage(layer_b.get(), 0);
+  ASSERT_TRUE(page_a);
+  ASSERT_TRUE(page_b);
+
+  RetainPtr<const CPDF_Array> annots_a = page_a->GetAnnotsArray();
+  RetainPtr<const CPDF_Array> annots_b = page_b->GetAnnotsArray();
+  ASSERT_TRUE(annots_a);
+  ASSERT_TRUE(annots_b);
+  ASSERT_TRUE(annots_a->GetDictAt(0));
+  ASSERT_TRUE(annots_b->GetDictAt(0));
+  EXPECT_FALSE(annots_a->GetDictAt(0)->KeyExist("LayerMarker"));
+  EXPECT_FALSE(annots_b->GetDictAt(0)->KeyExist("LayerMarker"));
+
+  RetainPtr<CPDF_Object> promoted_a = layer_a->GetMutableIndirectObject(4);
+  ASSERT_TRUE(promoted_a);
+  promoted_a->AsMutableDictionary()->SetNewFor<CPDF_Number>("LayerMarker", 41);
+
+  {
+    CPDF_DocumentViewScope scope(layer_a.get());
+    EXPECT_EQ(CPDF_DocumentViewScope::Mode::kEffective,
+              CPDF_DocumentViewScope::GetCurrentMode());
+    EXPECT_EQ(41, page_a->GetAnnotsArray()->GetDictAt(0)->GetIntegerFor(
+                      "LayerMarker"));
+  }
+  EXPECT_EQ(CPDF_DocumentViewScope::Mode::kNone,
+            CPDF_DocumentViewScope::GetCurrentMode());
+  {
+    CPDF_DocumentViewScope scope(layer_b.get());
+    EXPECT_FALSE(
+        page_b->GetAnnotsArray()->GetDictAt(0)->KeyExist("LayerMarker"));
+  }
+
+  RetainPtr<CPDF_Object> promoted_b = layer_b->GetMutableIndirectObject(4);
+  ASSERT_TRUE(promoted_b);
+  promoted_b->AsMutableDictionary()->SetNewFor<CPDF_Number>("LayerMarker", 82);
+
+  {
+    CPDF_DocumentViewScope scope_a(layer_a.get());
+    EXPECT_EQ(41, page_a->GetAnnotsArray()->GetDictAt(0)->GetIntegerFor(
+                      "LayerMarker"));
+    {
+      CPDF_DocumentViewScope scope_b(layer_b.get());
+      EXPECT_EQ(CPDF_DocumentViewScope::Mode::kEffective,
+                CPDF_DocumentViewScope::GetCurrentMode());
+      EXPECT_EQ(82, page_b->GetAnnotsArray()->GetDictAt(0)->GetIntegerFor(
+                        "LayerMarker"));
+    }
+    EXPECT_EQ(41, page_a->GetAnnotsArray()->GetDictAt(0)->GetIntegerFor(
+                      "LayerMarker"));
+  }
+  EXPECT_FALSE(base->GetFrozenObjectForLayer(4)->AsDictionary()->KeyExist(
+      "LayerMarker"));
+
+  {
+    CPDF_DocumentViewScope frozen_scope(base.Get());
+    EXPECT_EQ(CPDF_DocumentViewScope::Mode::kFrozen,
+              CPDF_DocumentViewScope::GetCurrentMode());
+    EXPECT_FALSE(base->GetOrParseIndirectObject(4)
+                     ->AsDictionary()
+                     ->KeyExist("LayerMarker"));
+  }
+  EXPECT_EQ(CPDF_DocumentViewScope::Mode::kNone,
+            CPDF_DocumentViewScope::GetCurrentMode());
+}
+
+#if DCHECK_IS_ON()
+TEST_F(CPDFLayerDocumentTest,
+       DebugDetectorRejectsUnscopedPromotedBaseResolution) {
+  RetainPtr<CPDF_BaseDocument> base =
+      LoadBaseDocumentFromString(BuildPdfWithIndirectAnnotation());
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+  ASSERT_TRUE(layer->GetMutableIndirectObject(4));
+
+  EXPECT_DEATH_IF_SUPPORTED(base->GetOrParseIndirectObject(4), "");
+  {
+    CPDF_DocumentViewScope frozen_scope(base.Get());
+    EXPECT_TRUE(base->GetOrParseIndirectObject(4));
+  }
+  {
+    CPDF_DocumentViewScope effective_scope(layer.get());
+    EXPECT_EQ(layer->FindPromotedObject(4).Get(),
+              base->GetOrParseIndirectObject(4).Get());
+  }
+}
+#endif  // DCHECK_IS_ON()
+
+TEST_F(CPDFLayerDocumentTest,
+       ParsedFormRefreshesAfterSiblingPromotesStream) {
+  RetainPtr<CPDF_BaseDocument> base =
+      LoadBaseDocumentFromString(BuildPdfWithFormXObject());
+  ASSERT_TRUE(base);
+  auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
+
+  RetainPtr<const CPDF_Object> form_object = layer->GetIndirectObject(4);
+  ASSERT_TRUE(form_object);
+  const CPDF_Stream* form_stream = form_object->AsStream();
+  ASSERT_TRUE(form_stream);
+
+  CPDF_Form writer(
+      layer.get(), nullptr,
+      pdfium::WrapRetain(const_cast<CPDF_Stream*>(form_stream)));
+  CPDF_Form reader(
+      layer.get(), nullptr,
+      pdfium::WrapRetain(const_cast<CPDF_Stream*>(form_stream)));
+  writer.ParseContent();
+  reader.ParseContent();
+  ASSERT_EQ(1u, reader.GetPageObjectCount());
+  EXPECT_FLOAT_EQ(10.0f, reader.CalcBoundingBox().Width());
+  EXPECT_EQ(1, reader.GetResources()->GetIntegerFor("BaseMarker"));
+
+  RetainPtr<CPDF_Stream> mutable_stream = writer.GetMutableFormStream();
+  ASSERT_TRUE(mutable_stream);
+  fxcrt::ostringstream updated_content;
+  updated_content << "0 0 20 20 re f\n";
+  mutable_stream->SetDataFromStringstreamAndRemoveFilter(&updated_content);
+  mutable_stream->GetMutableDict()
+      ->GetMutableDictFor("Resources")
+      ->SetNewFor<CPDF_Number>("LayerMarker", 9);
+
+  reader.ParseContent();
+  ASSERT_EQ(1u, reader.GetPageObjectCount());
+  EXPECT_FLOAT_EQ(20.0f, reader.CalcBoundingBox().Width());
+  EXPECT_EQ(9, reader.GetResources()->GetIntegerFor("LayerMarker"));
+}
+
 TEST_F(CPDFLayerDocumentTest, GetOrCreateInfoPromotesBaseInfo) {
   const std::string pdf = BuildSimplePdfWithInfo();
   RetainPtr<CPDF_BaseDocument> base = LoadBaseDocumentFromString(pdf);
@@ -482,13 +696,17 @@ TEST_F(CPDFLayerDocumentTest, DirectResourcesPromoteOwningPage) {
   auto layer = std::make_unique<CPDF_LayerDocument>(base, nullptr);
 
   auto page = MakeLayerPage(layer.get(), 0);
+  auto second_page_handle = MakeLayerPage(layer.get(), 0);
   ASSERT_TRUE(page);
+  ASSERT_TRUE(second_page_handle);
   RetainPtr<CPDF_Dictionary> resources = page->GetMutableResources();
   ASSERT_TRUE(resources);
   EXPECT_EQ(1u, layer->GetPromotedObjectCount());
 
   resources->SetNewFor<CPDF_Number>("Tier3ResourceMarker", 5);
   EXPECT_EQ(5, page->GetResources()->GetIntegerFor("Tier3ResourceMarker"));
+  EXPECT_EQ(5, second_page_handle->GetResources()->GetIntegerFor(
+                   "Tier3ResourceMarker"));
 
   RetainPtr<const CPDF_Dictionary> base_page =
       base->GetFrozenObjectForLayer(3)->GetDict();

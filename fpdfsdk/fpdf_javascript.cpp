@@ -25,11 +25,10 @@ struct CPDF_JavaScript {
 namespace {
 
 RetainPtr<CPDF_Dictionary> GetNamedJavaScriptActionDictionary(
-    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
     int index,
     WideString* name,
     std::optional<WideString>* script) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   if (!doc || index < 0) {
     return nullptr;
   }
@@ -57,7 +56,8 @@ RetainPtr<CPDF_Dictionary> GetNamedJavaScriptActionDictionary(
 
 FPDF_EXPORT int FPDF_CALLCONV
 FPDFDoc_GetJavaScriptActionCount(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return -1;
   }
@@ -68,9 +68,11 @@ FPDFDoc_GetJavaScriptActionCount(FPDF_DOCUMENT document) {
 
 FPDF_EXPORT FPDF_JAVASCRIPT_ACTION FPDF_CALLCONV
 FPDFDoc_GetJavaScriptAction(FPDF_DOCUMENT document, int index) {
+  ScopedFPDFDocumentView document_view(document);
   WideString name;
   std::optional<WideString> script;
-  if (!GetNamedJavaScriptActionDictionary(document, index, &name, &script)) {
+  if (!GetNamedJavaScriptActionDictionary(document_view.Get(), index, &name,
+                                          &script)) {
     return nullptr;
   }
 
@@ -82,12 +84,15 @@ FPDFDoc_GetJavaScriptAction(FPDF_DOCUMENT document, int index) {
 
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFDoc_GetNamedJavaScriptActionModel(FPDF_DOCUMENT document, int index) {
+  ScopedFPDFDocumentView document_view(document);
   WideString name;
   std::optional<WideString> script;
   RetainPtr<CPDF_Dictionary> dictionary =
-      GetNamedJavaScriptActionDictionary(document, index, &name, &script);
+      GetNamedJavaScriptActionDictionary(document_view.Get(), index, &name,
+                                         &script);
   return dictionary ? epdf::MakeActionModelHandle(epdf::BuildActionModel(
-                          CPDF_Action(std::move(dictionary))))
+                          CPDF_Action(std::move(dictionary)),
+                          document_view.Get()))
                     : nullptr;
 }
 

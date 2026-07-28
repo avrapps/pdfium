@@ -32,6 +32,7 @@ class CPDF_LinkList final : public CPDF_Document::LinkListIface {
   const std::vector<RetainPtr<const CPDF_Dictionary>>* GetPageLinks(
       CPDF_Page* pPage);
 
+  uint64_t overlay_epoch_ = 0;
   std::map<uint32_t, std::vector<RetainPtr<const CPDF_Dictionary>>> page_map_;
 };
 

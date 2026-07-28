@@ -15,6 +15,8 @@
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_layer_document.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -151,4 +153,51 @@ bool CPDF_BaseDocument::EagerlyParseAllReachable() {
 RetainPtr<const CPDF_Object> CPDF_BaseDocument::GetFrozenObjectForLayer(
     uint32_t objnum) const {
   return GetIndirectObject(objnum);
+}
+
+#if DCHECK_IS_ON()
+void CPDF_BaseDocument::RegisterLiveLayer(
+    const CPDF_LayerDocument* layer) {
+  DCHECK(layer);
+  DCHECK_EQ(layer->GetBaseDocument(), this);
+  DCHECK_EQ(std::find(live_layers_.begin(), live_layers_.end(), layer),
+            live_layers_.end());
+  live_layers_.push_back(layer);
+}
+
+void CPDF_BaseDocument::UnregisterLiveLayer(
+    const CPDF_LayerDocument* layer) {
+  auto it = std::find(live_layers_.begin(), live_layers_.end(), layer);
+  DCHECK(it != live_layers_.end());
+  live_layers_.erase(it);
+}
+
+bool CPDF_BaseDocument::IsObjectPromotedInAnyLiveLayer(
+    uint32_t objnum) const {
+  return std::any_of(
+      live_layers_.begin(), live_layers_.end(),
+      [objnum](const CPDF_LayerDocument* layer) {
+        return layer->FindPromotedObject(objnum) != nullptr;
+      });
+}
+#endif
+
+CPDF_Object* CPDF_BaseDocument::GetOrParseIndirectObjectInternal(
+    uint32_t objnum) {
+  const CPDF_LayerDocument* layer =
+      CPDF_DocumentViewScope::GetCurrentLayerForBase(this);
+  if (layer && layer->HasPromotedObjects()) {
+    RetainPtr<CPDF_Object> promoted = layer->FindPromotedObject(objnum);
+    if (promoted) {
+      return promoted.Get();
+    }
+  }
+#if DCHECK_IS_ON()
+  // A promoted object resolved without an effective or explicitly frozen view
+  // is path-dependent: the answer silently depends on which holder owns the
+  // reference that happened to lead here.
+  DCHECK(layer || !IsObjectPromotedInAnyLiveLayer(objnum) ||
+         CPDF_DocumentViewScope::IsFrozenForBase(this));
+#endif
+  return CPDF_Document::GetOrParseIndirectObjectInternal(objnum);
 }

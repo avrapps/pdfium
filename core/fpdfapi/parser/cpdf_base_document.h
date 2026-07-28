@@ -8,12 +8,15 @@
 #include <stdint.h>
 
 #include <array>
+#include <vector>
 
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_types.h"
 #include "core/fxcrt/retain_ptr.h"
 
 class IFX_SeekableReadStream;
+class CPDF_LayerDocument;
 
 class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
  public:
@@ -28,15 +31,35 @@ class CPDF_BaseDocument final : public CPDF_Document, public Retainable {
   FX_FILESIZE GetLayerAppendBaseOffset() const override {
     return layer_append_base_offset_;
   }
+  const CPDF_BaseDocument* GetBaseDocumentForViewScope() const override {
+    return this;
+  }
   const std::array<uint8_t, 32>& GetRawBaseSha256() const {
     return raw_base_sha256_;
   }
+
+#if DCHECK_IS_ON()
+  void RegisterLiveLayer(const CPDF_LayerDocument* layer);
+  void UnregisterLiveLayer(const CPDF_LayerDocument* layer);
+#endif
 
  private:
   CPDF_BaseDocument();
   ~CPDF_BaseDocument() override;
 
   bool CacheBaseIdentity();
+
+  // CPDF_IndirectObjectHolder:
+  // This override is intentionally limited to the non-const reference
+  // resolution path. Const base lookups must remain frozen so layer promotion
+  // always clones from the shared base rather than resolving back into the
+  // layer overlay.
+  CPDF_Object* GetOrParseIndirectObjectInternal(uint32_t objnum) override;
+
+#if DCHECK_IS_ON()
+  bool IsObjectPromotedInAnyLiveLayer(uint32_t objnum) const;
+  std::vector<const CPDF_LayerDocument*> live_layers_;
+#endif
 
   FX_FILESIZE raw_base_size_ = 0;
   // PDFium parser offsets are logical PDF offsets after the syntax parser's

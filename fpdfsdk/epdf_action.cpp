@@ -15,7 +15,10 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfdoc/cpdf_action.h"
+#include "core/fpdfdoc/cpdf_dest.h"
+#include "core/fpdfdoc/cpdf_nametree.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_string_wrappers.h"
@@ -37,12 +40,12 @@ struct ActionNodeRecord {
   ByteString subtype;
   int type = EPDF_ACTION_TYPE_UNKNOWN;
   std::optional<WideString> javascript;
+  RetainPtr<const CPDF_Array> destination;
+  ByteString named_destination;
+  ByteString uri;
+  ByteString file_path;
+  ByteString name;
   std::vector<EPDF_ACTION_NODE_ID> next;
-  // Keeps the node's action dictionary alive for the model's lifetime so
-  // the EPDFAction_GetNode{Dest,URI,FilePath,Name} payload getters can
-  // rehydrate a CPDF_Action on demand. Nothing is extracted eagerly:
-  // building a model costs the same as before this field existed.
-  RetainPtr<const CPDF_Dictionary> dict;
 };
 
 int NormalizeActionType(CPDF_Action::Type type) {
@@ -89,6 +92,49 @@ int NormalizeActionType(CPDF_Action::Type type) {
   return EPDF_ACTION_TYPE_UNKNOWN;
 }
 
+RetainPtr<const CPDF_Array> SnapshotDestination(const CPDF_Action& action,
+                                                CPDF_Document* document) {
+  const CPDF_Dictionary* dict = action.GetDict();
+  if (!dict) {
+    return nullptr;
+  }
+
+  RetainPtr<const CPDF_Array> source;
+  if (document) {
+    CPDF_Dest destination = action.GetDest(document);
+    source = pdfium::WrapRetain(destination.GetArray());
+  } else {
+    source = ToArray(dict->GetDirectObjectFor("D"));
+  }
+  if (!source) {
+    return nullptr;
+  }
+
+  auto snapshot = pdfium::MakeRetain<CPDF_Array>();
+  for (size_t i = 0; i < source->size(); ++i) {
+    RetainPtr<const CPDF_Object> value = source->GetDirectObjectAt(i);
+    if (!value) {
+      return nullptr;
+    }
+    if (i == 0 && value->IsDictionary()) {
+      // FPDFDest only needs the page dictionary's object number. A minimal
+      // detached stand-in preserves that identity without retaining the live
+      // page graph.
+      RetainPtr<CPDF_Dictionary> page =
+          snapshot->AppendNew<CPDF_Dictionary>();
+      page->SetObjNum(value->GetObjNum());
+      continue;
+    }
+    RetainPtr<CPDF_Object> clone = value->CloneDirectObject();
+    if (!clone) {
+      return nullptr;
+    }
+    snapshot->Append(std::move(clone));
+  }
+  snapshot->Freeze();
+  return snapshot;
+}
+
 }  // namespace
 
 struct ActionModelData {
@@ -100,6 +146,7 @@ namespace {
 
 std::optional<EPDF_ACTION_NODE_ID> AppendAction(
     const CPDF_Action& action,
+    CPDF_Document* document,
     size_t depth,
     size_t* javascript_code_units,
     std::set<const CPDF_Dictionary*>* active_path,
@@ -117,7 +164,6 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
   ActionNodeRecord node;
   node.subtype = dict->GetNameFor("S");
   node.type = NormalizeActionType(action.GetType());
-  node.dict = pdfium::WrapRetain(dict);
   if (node.type == EPDF_ACTION_TYPE_JAVASCRIPT ||
       node.type == EPDF_ACTION_TYPE_RENDITION) {
     node.javascript = action.MaybeGetJavaScript();
@@ -129,6 +175,29 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
       }
       *javascript_code_units += length;
     }
+  }
+  if (node.type == EPDF_ACTION_TYPE_GOTO ||
+      node.type == EPDF_ACTION_TYPE_GOTO_REMOTE ||
+      node.type == EPDF_ACTION_TYPE_GOTO_EMBEDDED) {
+    node.destination = SnapshotDestination(action, document);
+    RetainPtr<const CPDF_Object> raw_destination =
+        dict->GetDirectObjectFor("D");
+    if (!node.destination && raw_destination &&
+        (raw_destination->IsName() || raw_destination->IsString())) {
+      node.named_destination = raw_destination->GetString();
+    }
+  }
+  if (node.type == EPDF_ACTION_TYPE_URI) {
+    node.uri =
+        document ? action.GetURI(document) : dict->GetByteStringFor("URI");
+  }
+  if (node.type == EPDF_ACTION_TYPE_GOTO_REMOTE ||
+      node.type == EPDF_ACTION_TYPE_GOTO_EMBEDDED ||
+      node.type == EPDF_ACTION_TYPE_LAUNCH) {
+    node.file_path = action.GetFilePath().ToUTF8();
+  }
+  if (node.type == EPDF_ACTION_TYPE_NAMED) {
+    node.name = dict->GetNameFor("N");
   }
 
   const EPDF_ACTION_NODE_ID node_id =
@@ -155,7 +224,7 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
       continue;
     }
     std::optional<EPDF_ACTION_NODE_ID> child_id = AppendAction(
-        child, depth + 1, javascript_code_units, active_path, model);
+        child, document, depth + 1, javascript_code_units, active_path, model);
     if (child_id.has_value()) {
       model->nodes[node_id].next.push_back(child_id.value());
     }
@@ -169,14 +238,16 @@ const ActionModelData* DataFromHandle(EPDF_ACTION_MODEL model);
 
 }  // namespace
 
-ActionModelDataPtr BuildActionModel(const CPDF_Action& action) {
+ActionModelDataPtr BuildActionModel(const CPDF_Action& action,
+                                    CPDF_Document* document) {
   if (!action.HasDict()) {
     return nullptr;
   }
   auto model = std::make_shared<ActionModelData>();
   size_t javascript_code_units = 0;
   std::set<const CPDF_Dictionary*> active_path;
-  AppendAction(action, 0, &javascript_code_units, &active_path, model.get());
+  AppendAction(action, document, 0, &javascript_code_units, &active_path,
+               model.get());
   return model;
 }
 
@@ -204,21 +275,17 @@ const ActionNodeRecord* GetNode(EPDF_ACTION_MODEL model,
 }
 
 EPDF_ACTION_MODEL MakeModelFromDictionary(
-    RetainPtr<const CPDF_Dictionary> dictionary) {
+    RetainPtr<const CPDF_Dictionary> dictionary,
+    CPDF_Document* document) {
   return dictionary ? MakeActionModelHandle(
-                          BuildActionModel(CPDF_Action(std::move(dictionary))))
+                          BuildActionModel(CPDF_Action(std::move(dictionary)),
+                                           document))
                     : nullptr;
 }
 
-const CPDF_Dictionary* GetDocumentRoot(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  return doc ? doc->GetRoot() : nullptr;
-}
-
 RetainPtr<const CPDF_Dictionary> GetPageDictionaryByObjectNumber(
-    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
     uint32_t page_object_number) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   if (!doc || page_object_number == 0) {
     return nullptr;
   }
@@ -306,9 +373,10 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
 EPDFAction_GetNodeDest(FPDF_DOCUMENT document,
                        EPDF_ACTION_MODEL model,
                        EPDF_ACTION_NODE_ID node) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
-  if (!doc || !record || !record->dict) {
+  if (!doc || !record) {
     return nullptr;
   }
   // Same type gate as FPDFAction_GetDest.
@@ -317,8 +385,14 @@ EPDFAction_GetNodeDest(FPDF_DOCUMENT document,
       record->type != EPDF_ACTION_TYPE_GOTO_EMBEDDED) {
     return nullptr;
   }
-  CPDF_Action cAction(record->dict);
-  return FPDFDestFromCPDFArray(cAction.GetDest(doc).GetArray());
+  if (record->destination) {
+    return FPDFDestFromCPDFArray(record->destination.Get());
+  }
+  RetainPtr<const CPDF_Array> named =
+      record->named_destination.IsEmpty()
+          ? nullptr
+          : CPDF_NameTree::LookupNamedDest(doc, record->named_destination);
+  return FPDFDestFromCPDFArray(named.Get());
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
@@ -327,17 +401,15 @@ EPDFAction_GetNodeURI(FPDF_DOCUMENT document,
                       EPDF_ACTION_NODE_ID node,
                       void* buffer,
                       unsigned long buflen) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
-  if (!doc || !record || !record->dict ||
-      record->type != EPDF_ACTION_TYPE_URI) {
+  if (!doc || !record || record->type != EPDF_ACTION_TYPE_URI) {
     return 0;
   }
-  CPDF_Action cAction(record->dict);
-  ByteString uri = cAction.GetURI(doc);
   // SAFETY: required from caller.
   return NulTerminateMaybeCopyAndReturnLength(
-      uri, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+      record->uri, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
@@ -346,7 +418,7 @@ EPDFAction_GetNodeFilePath(EPDF_ACTION_MODEL model,
                            void* buffer,
                            unsigned long buflen) {
   const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
-  if (!record || !record->dict) {
+  if (!record) {
     return 0;
   }
   // Same type gate as FPDFAction_GetFilePath.
@@ -355,11 +427,10 @@ EPDFAction_GetNodeFilePath(EPDF_ACTION_MODEL model,
       record->type != EPDF_ACTION_TYPE_LAUNCH) {
     return 0;
   }
-  CPDF_Action cAction(record->dict);
-  ByteString path = cAction.GetFilePath().ToUTF8();
   // SAFETY: required from caller.
   return NulTerminateMaybeCopyAndReturnLength(
-      path, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+      record->file_path,
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
@@ -368,14 +439,12 @@ EPDFAction_GetNodeName(EPDF_ACTION_MODEL model,
                        void* buffer,
                        unsigned long buflen) {
   const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
-  if (!record || !record->dict ||
-      record->type != EPDF_ACTION_TYPE_NAMED) {
+  if (!record || record->type != EPDF_ACTION_TYPE_NAMED) {
     return 0;
   }
-  ByteString name = record->dict->GetNameFor("N");
   // SAFETY: required from caller.
   return NulTerminateMaybeCopyAndReturnLength(
-      name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+      record->name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
 FPDF_EXPORT int FPDF_CALLCONV
@@ -411,8 +480,11 @@ EPDFAction_IsComplete(EPDF_ACTION_MODEL model) {
 
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFDoc_GetOpenActionModel(FPDF_DOCUMENT document) {
-  const CPDF_Dictionary* root = epdf::GetDocumentRoot(document);
-  return root ? epdf::MakeModelFromDictionary(root->GetDictFor("OpenAction"))
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  return root ? epdf::MakeModelFromDictionary(root->GetDictFor("OpenAction"),
+                                              doc)
               : nullptr;
 }
 
@@ -423,11 +495,13 @@ EPDFDoc_GetAdditionalActionModel(FPDF_DOCUMENT document, int event) {
   if (event < 0 || event >= static_cast<int>(kKeys.size())) {
     return nullptr;
   }
-  const CPDF_Dictionary* root = epdf::GetDocumentRoot(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
   RetainPtr<const CPDF_Dictionary> additional =
       root ? root->GetDictFor("AA") : nullptr;
   return additional ? epdf::MakeModelFromDictionary(
-                          additional->GetDictFor(kKeys[event]))
+                          additional->GetDictFor(kKeys[event]), doc)
                     : nullptr;
 }
 
@@ -438,13 +512,16 @@ EPDFDoc_GetPageActionModel(FPDF_DOCUMENT document,
   if (event != EPDF_PAGE_ACTION_OPEN && event != EPDF_PAGE_ACTION_CLOSE) {
     return nullptr;
   }
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   RetainPtr<const CPDF_Dictionary> page =
-      epdf::GetPageDictionaryByObjectNumber(document, page_object_number);
+      epdf::GetPageDictionaryByObjectNumber(doc, page_object_number);
   RetainPtr<const CPDF_Dictionary> additional =
       page ? page->GetDictFor("AA") : nullptr;
   const char* key = event == EPDF_PAGE_ACTION_OPEN ? "O" : "C";
-  return additional ? epdf::MakeModelFromDictionary(additional->GetDictFor(key))
-                    : nullptr;
+  return additional
+             ? epdf::MakeModelFromDictionary(additional->GetDictFor(key), doc)
+             : nullptr;
 }
 
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
@@ -455,19 +532,23 @@ EPDFAnnot_GetActionModel(FPDF_ANNOTATION annotation, int event) {
       event > EPDF_ANNOT_ACTION_PAGE_INVISIBLE) {
     return nullptr;
   }
-  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annotation);
+  ScopedFPDFAnnotationView annotation_view(annotation);
+  CPDF_AnnotContext* context = annotation_view.Get();
   const CPDF_Dictionary* annotation_dict =
       context ? context->GetAnnotDict() : nullptr;
   if (!annotation_dict) {
     return nullptr;
   }
   if (event == EPDF_ANNOT_ACTION_ACTIVATE) {
-    return epdf::MakeModelFromDictionary(annotation_dict->GetDictFor("A"));
+    return epdf::MakeModelFromDictionary(
+        annotation_dict->GetDictFor("A"), context->GetPage()->GetDocument());
   }
   RetainPtr<const CPDF_Dictionary> additional =
       annotation_dict->GetDictFor("AA");
   const int additional_index = event - EPDF_ANNOT_ACTION_CURSOR_ENTER;
-  return additional ? epdf::MakeModelFromDictionary(additional->GetDictFor(
-                          kAdditionalKeys[additional_index]))
+  return additional ? epdf::MakeModelFromDictionary(
+                          additional->GetDictFor(
+                              kAdditionalKeys[additional_index]),
+                          context->GetPage()->GetDocument())
                     : nullptr;
 }

@@ -29,6 +29,8 @@ source_set("parser") {
     "cpdf_dictionary.h",
     "cpdf_document.cpp",
     "cpdf_document.h",
+    "cpdf_document_view_scope.cpp",
+    "cpdf_document_view_scope.h",
     "cpdf_encryptor.cpp",
     "cpdf_encryptor.h",
     "cpdf_flateencoder.cpp",

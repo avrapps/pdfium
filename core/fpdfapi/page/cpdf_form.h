@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFAPI_PAGE_CPDF_FORM_H_
 #define CORE_FPDFAPI_PAGE_CPDF_FORM_H_
 
+#include <stdint.h>
+
 #include <set>
 #include <utility>
 
@@ -68,13 +70,17 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   // CPDF_PageObjectHolder:
   void EnsureMutableBackingObjectForDict() override;
 
+  void RebindFormStream(RetainPtr<CPDF_Stream> stream,
+                        bool reset_parsed_content);
   void ParseContentInternal(const CPDF_AllStates* pGraphicStates,
                             const CFX_Matrix* pParentMatrix,
                             CPDF_Type3Char* pType3Char,
                             RecursionState* recursion_state);
 
   RecursionState recursion_state_;
-  RetainPtr<CPDF_Stream> form_stream_;
+  RetainPtr<CPDF_Dictionary> const fallback_resources_;
+  mutable RetainPtr<CPDF_Stream> form_stream_;
+  mutable uint64_t form_stream_epoch_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_FORM_H_

@@ -401,10 +401,11 @@ FPDFDest_GetLocationInPage(FPDF_DEST dest,
 FPDF_EXPORT FPDF_LINK FPDF_CALLCONV FPDFLink_GetLinkAtPoint(FPDF_PAGE page,
                                                             double x,
                                                             double y) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return nullptr;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   CPDF_LinkList* pLinkList = GetLinkList(pPage);
   if (!pLinkList) {
@@ -421,10 +422,11 @@ FPDF_EXPORT FPDF_LINK FPDF_CALLCONV FPDFLink_GetLinkAtPoint(FPDF_PAGE page,
 FPDF_EXPORT int FPDF_CALLCONV FPDFLink_GetLinkZOrderAtPoint(FPDF_PAGE page,
                                                             double x,
                                                             double y) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return -1;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   CPDF_LinkList* pLinkList = GetLinkList(pPage);
   if (!pLinkList) {
@@ -443,11 +445,20 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDFLink_GetDest(FPDF_DOCUMENT document,
   if (!link) {
     return nullptr;
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc) {
+  ScopedFPDFDocumentView document_view(document);
+  if (!document_view) {
     return nullptr;
   }
-  CPDF_Link cLink(pdfium::WrapRetain(CPDFDictionaryFromFPDFLink(link)));
+  CPDF_Document* doc = document_view.Get();
+  RetainPtr<CPDF_Dictionary> link_dict(CPDFDictionaryFromFPDFLink(link));
+  if (link_dict->GetObjNum() != 0) {
+    RetainPtr<CPDF_Dictionary> effective =
+        ToDictionary(doc->GetOrParseIndirectObject(link_dict->GetObjNum()));
+    if (effective) {
+      link_dict = std::move(effective);
+    }
+  }
+  CPDF_Link cLink(std::move(link_dict));
   FPDF_DEST dest = FPDFDestFromCPDFArray(cLink.GetDest(doc).GetArray());
   if (dest) {
     return dest;
@@ -475,10 +486,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFLink_Enumerate(FPDF_PAGE page,
   if (!start_pos || !link_annot) {
     return false;
   }
-  const CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return false;
   }
+  const CPDF_Page* pPage = page_view.Get();
   RetainPtr<const CPDF_Array> pAnnots = pPage->GetAnnotsArray();
   if (!pAnnots) {
     return false;
@@ -501,10 +513,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFLink_Enumerate(FPDF_PAGE page,
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 FPDFLink_GetAnnot(FPDF_PAGE page, FPDF_LINK link_annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
   RetainPtr<CPDF_Dictionary> pAnnotDict(CPDFDictionaryFromFPDFLink(link_annot));
   if (!pPage || !pAnnotDict) {
     return nullptr;
+  }
+  if (pAnnotDict->GetObjNum() != 0) {
+    RetainPtr<CPDF_Dictionary> effective = ToDictionary(
+        pPage->GetDocument()->GetOrParseIndirectObject(pAnnotDict->GetObjNum()));
+    if (effective) {
+      pAnnotDict = std::move(effective);
+    }
   }
 
   auto pAnnotContext = std::make_unique<CPDF_AnnotContext>(
