@@ -3109,6 +3109,30 @@ EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
   return true;
 }
 
+namespace {
+
+RetainPtr<const CPDF_Array> GetExplicitBorderDashArray(
+    const CPDF_Dictionary* pAnnotDict) {
+  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
+  if (pBSDict) {
+    // /BS takes precedence over /Border. A missing or unrecognised /S uses
+    // the solid default, so no dash pattern applies.
+    if (pBSDict->GetNameFor("S") != "D") {
+      return nullptr;
+    }
+    return pBSDict->GetArrayFor("D");
+  }
+
+  RetainPtr<const CPDF_Array> pBorderArray =
+      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
+  if (!pBorderArray || pBorderArray->size() < 4) {
+    return nullptr;
+  }
+  return pBorderArray->GetArrayAt(3);
+}
+
+}  // namespace
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot) {
   const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
@@ -3116,24 +3140,9 @@ EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot) {
     return 0;
   }
 
-  // The dash pattern is inside the /BS dictionary.
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (!pBSDict) {
-    return 0;
-  }
-
-  // The border style must be dashed.
-  if (pBSDict->GetNameFor("S") != "D") {
-    return 0;
-  }
-
-  // The dash pattern is defined by the /D array.
-  RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
-  if (!pDashArray) {
-    return 0;
-  }
-
-  return pDashArray->size();
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
+  return pDashArray ? pDashArray->size() : 0;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3145,12 +3154,8 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
     return false;
   }
 
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (!pBSDict || pBSDict->GetNameFor("S") != "D") {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
   if (!pDashArray || pDashArray->size() < count) {
     return false;
   }
@@ -3225,15 +3230,29 @@ EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width) {
     if (width) {
       *width = pBSDict->KeyExist("W") ? pBSDict->GetFloatFor("W") : 1.0f;
     }
-    // Use our new internal helper function and cast the result
-    return static_cast<FPDF_ANNOT_BORDER_STYLE>(
-        CPDF_Annot::StringToBorderStyle(pBSDict->GetNameFor("S")));
+
+    CPDF_Annot::BorderStyle nStyle =
+        CPDF_Annot::StringToBorderStyle(pBSDict->GetNameFor("S"));
+    if (nStyle == CPDF_Annot::BorderStyle::kUnknown) {
+      nStyle = CPDF_Annot::BorderStyle::kSolid;
+    }
+    return static_cast<FPDF_ANNOT_BORDER_STYLE>(nStyle);
   }
 
+  RetainPtr<const CPDF_Array> pBorderArray =
+      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
   if (width) {
-    *width = 0;
+    *width = pBorderArray && pBorderArray->size() >= 3
+                 ? pBorderArray->GetFloatAt(2)
+                 : 1.0f;
   }
-  return FPDF_ANNOT_BS_UNKNOWN;
+
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
+  if (pDashArray && !pDashArray->IsEmpty()) {
+    return FPDF_ANNOT_BS_DASHED;
+  }
+  return FPDF_ANNOT_BS_SOLID;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

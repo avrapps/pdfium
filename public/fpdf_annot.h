@@ -1444,7 +1444,9 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Get the number of entries in the dash pattern for a dashed border.
+// Get the number of entries in the dash pattern for a dashed border. This
+// function handles both the modern /BS dictionary and the legacy /Border
+// array.
 //
 //   annot  - handle to an annotation.
 //
@@ -1454,7 +1456,8 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
-// Get the dash pattern for a dashed border.
+// Get the dash pattern for a dashed border. This function handles both the
+// modern /BS dictionary and the legacy /Border array.
 //
 //   annot      - handle to an annotation.
 //   dash_array - a buffer to receive the dash pattern values.

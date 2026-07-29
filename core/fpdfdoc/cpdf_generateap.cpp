@@ -815,8 +815,10 @@ ByteString GetColorStringWithDefault(const CPDF_Array* color_array,
 
 float GetBorderWidth(const CPDF_Dictionary* dict) {
   RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
-  if (border_style_dict && border_style_dict->KeyExist("W")) {
-    return border_style_dict->GetFloatFor("W");
+  if (border_style_dict) {
+    return border_style_dict->KeyExist("W")
+               ? border_style_dict->GetFloatFor("W")
+               : 1.0f;
   }
 
   auto border_array = dict->GetArrayFor(pdfium::annotation::kBorder);
@@ -824,13 +826,15 @@ float GetBorderWidth(const CPDF_Dictionary* dict) {
     return border_array->GetFloatAt(2);
   }
 
-  return 1;
+  return 1.0f;
 }
 
 RetainPtr<const CPDF_Array> GetDashArray(const CPDF_Dictionary* dict) {
   RetainPtr<const CPDF_Dictionary> border_style_dict = dict->GetDictFor("BS");
-  if (border_style_dict && border_style_dict->GetByteStringFor("S") == "D") {
-    return border_style_dict->GetArrayFor("D");
+  if (border_style_dict) {
+    return border_style_dict->GetByteStringFor("S") == "D"
+               ? border_style_dict->GetArrayFor("D")
+               : nullptr;
   }
 
   RetainPtr<const CPDF_Array> border_array =

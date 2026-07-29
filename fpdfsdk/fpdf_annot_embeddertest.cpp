@@ -4987,6 +4987,93 @@ TEST_F(FPDFAnnotEmbedderTest, AnnotationBorder) {
   }
 }
 
+TEST_F(FPDFAnnotEmbedderTest, BorderStyleResolutionUsesISOPrecedence) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CIRCLE));
+  ASSERT_TRUE(annot);
+
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  ASSERT_TRUE(annot_dict);
+  annot_dict->RemoveFor("BS");
+  annot_dict->RemoveFor(pdfium::annotation::kBorder);
+
+  auto expect_style = [&](FPDF_ANNOT_BORDER_STYLE expected_style,
+                          float expected_width) {
+    float width = -1.0f;
+    EXPECT_EQ(expected_style, EPDFAnnot_GetBorderStyle(annot.get(), &width));
+    EXPECT_FLOAT_EQ(expected_width, width);
+  };
+
+  // ISO 32000-2, 12.5.4: if neither /BS nor /Border is present, the
+  // effective border is a solid 1-point line.
+  expect_style(FPDF_ANNOT_BS_SOLID, 1.0f);
+  EXPECT_EQ(0u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+
+  // The legacy /Border array supplies the width and optional dash pattern
+  // when /BS is absent.
+  RetainPtr<CPDF_Array> border =
+      annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kBorder);
+  border->AppendNew<CPDF_Number>(0);
+  border->AppendNew<CPDF_Number>(0);
+  border->AppendNew<CPDF_Number>(0);
+  expect_style(FPDF_ANNOT_BS_SOLID, 0.0f);
+
+  RetainPtr<CPDF_Array> border_dash = border->AppendNew<CPDF_Array>();
+  border_dash->AppendNew<CPDF_Number>(3);
+  border_dash->AppendNew<CPDF_Number>(2);
+  expect_style(FPDF_ANNOT_BS_DASHED, 0.0f);
+  ASSERT_EQ(2u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+  std::array<float, 2> dash_values;
+  ASSERT_TRUE(EPDFAnnot_GetBorderDashPattern(annot.get(), dash_values.data(),
+                                             dash_values.size()));
+  EXPECT_FLOAT_EQ(3.0f, dash_values[0]);
+  EXPECT_FLOAT_EQ(2.0f, dash_values[1]);
+
+  // /BS suppresses /Border completely. Missing /W and /S in /BS use their
+  // defaults (1 point and solid), rather than falling back to /Border.
+  RetainPtr<CPDF_Dictionary> border_style =
+      annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  expect_style(FPDF_ANNOT_BS_SOLID, 1.0f);
+  EXPECT_EQ(0u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+
+  const FS_RECTF rect{/*left=*/10.0f, /*top=*/90.0f, /*right=*/90.0f,
+                      /*bottom=*/10.0f};
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+  ByteString appearance = GetNormalAppearanceStreamBytes(annot.get());
+  EXPECT_TRUE(appearance.Find("1 w ").has_value());
+  EXPECT_FALSE(appearance.Find("] 0 d").has_value());
+
+  // Explicit /BS values, including zero width, remain authoritative.
+  border_style->SetNewFor<CPDF_Number>("W", 0);
+  border_style->SetNewFor<CPDF_Name>("S", "D");
+  RetainPtr<CPDF_Array> bs_dash = border_style->SetNewFor<CPDF_Array>("D");
+  bs_dash->AppendNew<CPDF_Number>(4);
+  bs_dash->AppendNew<CPDF_Number>(1);
+  expect_style(FPDF_ANNOT_BS_DASHED, 0.0f);
+  ASSERT_EQ(2u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+  ASSERT_TRUE(EPDFAnnot_GetBorderDashPattern(annot.get(), dash_values.data(),
+                                             dash_values.size()));
+  EXPECT_FLOAT_EQ(4.0f, dash_values[0]);
+  EXPECT_FLOAT_EQ(1.0f, dash_values[1]);
+
+  // Unknown /BS styles are required to use the solid default.
+  border_style->SetNewFor<CPDF_Name>("S", "Unknown");
+  expect_style(FPDF_ANNOT_BS_SOLID, 0.0f);
+  EXPECT_EQ(0u, EPDFAnnot_GetBorderDashPatternCount(annot.get()));
+
+  float invalid_width = 42.0f;
+  EXPECT_EQ(FPDF_ANNOT_BS_UNKNOWN,
+            EPDFAnnot_GetBorderStyle(nullptr, &invalid_width));
+  EXPECT_FLOAT_EQ(0.0f, invalid_width);
+}
+
 TEST_F(FPDFAnnotEmbedderTest, AnnotationJavaScript) {
   ASSERT_TRUE(OpenDocument("annot_javascript.pdf"));
   ScopedPage page = LoadScopedPage(0);
