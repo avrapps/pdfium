@@ -30,6 +30,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
+#include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
@@ -909,6 +910,104 @@ TEST_F(FPDFAnnotEmbedderTest, TextFieldGenerateAppearanceStreamIsStable) {
   ASSERT_FALSE(appearance.IsEmpty());
   EXPECT_EQ("68a94799890022965d780f65db1e7430",
             GenerateMD5Base16(appearance.unsigned_span()));
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       StandardFontDefaultAppearanceRoundTripsThroughDr) {
+  static constexpr std::array<FPDF_STANDARD_FONT, 14> kStandardFonts = {
+      FPDF_FONT_COURIER,
+      FPDF_FONT_COURIER_BOLD,
+      FPDF_FONT_COURIER_BOLDITALIC,
+      FPDF_FONT_COURIER_ITALIC,
+      FPDF_FONT_HELVETICA,
+      FPDF_FONT_HELVETICA_BOLD,
+      FPDF_FONT_HELVETICA_BOLDITALIC,
+      FPDF_FONT_HELVETICA_ITALIC,
+      FPDF_FONT_TIMES_ROMAN,
+      FPDF_FONT_TIMES_BOLD,
+      FPDF_FONT_TIMES_BOLDITALIC,
+      FPDF_FONT_TIMES_ITALIC,
+      FPDF_FONT_SYMBOL,
+      FPDF_FONT_ZAPFDINGBATS,
+  };
+
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  for (FPDF_STANDARD_FONT expected_font : kStandardFonts) {
+    SCOPED_TRACE(static_cast<int>(expected_font));
+    ASSERT_TRUE(EPDFAnnot_SetDefaultAppearance(annot.get(), expected_font,
+                                               17.0f, 12, 34, 56));
+
+    FPDF_STANDARD_FONT actual_font = FPDF_FONT_UNKNOWN;
+    float font_size = 0.0f;
+    unsigned int r = 0;
+    unsigned int g = 0;
+    unsigned int b = 0;
+    ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &actual_font,
+                                               &font_size, &r, &g, &b));
+    EXPECT_EQ(expected_font, actual_font);
+    EXPECT_FLOAT_EQ(17.0f, font_size);
+    EXPECT_EQ(12u, r);
+    EXPECT_EQ(34u, g);
+    EXPECT_EQ(56u, b);
+  }
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       DefaultAppearancePrefersAnnotationDrThenFallsBackToAcroFormDr) {
+  ScopedFPDFDocument doc(FPDF_CreateNewDocument());
+  ASSERT_TRUE(doc);
+  ScopedFPDFPage page(FPDFPage_New(doc.get(), 0, 400, 400));
+  ASSERT_TRUE(page);
+  ScopedFPDFAnnotation annot(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_FREETEXT));
+  ASSERT_TRUE(annot);
+
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot.get());
+  ASSERT_TRUE(context);
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  ASSERT_TRUE(annot_dict);
+  annot_dict->SetNewFor<CPDF_String>("DA", "/SharedAlias 17 Tf 0 g");
+
+  RetainPtr<CPDF_Dictionary> annot_font =
+      annot_dict->SetNewFor<CPDF_Dictionary>("DR")
+          ->SetNewFor<CPDF_Dictionary>("Font")
+          ->SetNewFor<CPDF_Dictionary>("SharedAlias");
+  annot_font->SetNewFor<CPDF_Name>("Type", "Font");
+  annot_font->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  annot_font->SetNewFor<CPDF_Name>("BaseFont", "Courier");
+
+  CPDF_Document* cpdf_doc = CPDFDocumentFromFPDFDocument(doc.get());
+  ASSERT_TRUE(cpdf_doc);
+  RetainPtr<CPDF_Dictionary> acroform_font =
+      cpdf_doc->GetMutableRoot()
+          ->SetNewFor<CPDF_Dictionary>("AcroForm")
+          ->SetNewFor<CPDF_Dictionary>("DR")
+          ->SetNewFor<CPDF_Dictionary>("Font")
+          ->SetNewFor<CPDF_Dictionary>("SharedAlias");
+  acroform_font->SetNewFor<CPDF_Name>("Type", "Font");
+  acroform_font->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  acroform_font->SetNewFor<CPDF_Name>("BaseFont", "Times-Roman");
+
+  FPDF_STANDARD_FONT font = FPDF_FONT_UNKNOWN;
+  float font_size = 0.0f;
+  unsigned int r = 0;
+  unsigned int g = 0;
+  unsigned int b = 0;
+  ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &font, &font_size, &r,
+                                             &g, &b));
+  EXPECT_EQ(FPDF_FONT_COURIER, font);
+
+  annot_dict->RemoveFor("DR");
+  ASSERT_TRUE(EPDFAnnot_GetDefaultAppearance(annot.get(), &font, &font_size, &r,
+                                             &g, &b));
+  EXPECT_EQ(FPDF_FONT_TIMES_ROMAN, font);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, FreeTextAppearanceUsesRegisteredMemoryFont) {

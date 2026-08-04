@@ -1051,6 +1051,24 @@ static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap, CPDF_Document* doc) {
   xobj->SetNewFor<CPDF_Reference>("EPDFWRAP", doc, child_stream->GetObjNum());
   return true;
 }
+
+CPDF_Annot::StandardFont ResolveStandardFontFromDefaultResources(
+    const CPDF_Dictionary* dr_dict,
+    const ByteString& resource_name) {
+  if (!dr_dict || resource_name.IsEmpty()) {
+    return CPDF_Annot::StandardFont::kUnknown;
+  }
+
+  RetainPtr<const CPDF_Dictionary> font_resources = dr_dict->GetDictFor("Font");
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      font_resources ? font_resources->GetDictFor(resource_name.AsStringView())
+                     : nullptr;
+  if (!font_dict) {
+    return CPDF_Annot::StandardFont::kUnknown;
+  }
+
+  return CPDF_Annot::StringToStandardFont(font_dict->GetNameFor("BaseFont"));
+}
 }  // namespace
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3776,12 +3794,21 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
   *font_size = font_info.value().size;
   ByteString font_name = font_info.value().name;
 
-  if (!font_name.IsEmpty()) {
-    *font = static_cast<FPDF_STANDARD_FONT>(
-        CPDF_Annot::StringToStandardFont(font_name));
-  } else {
-    *font = FPDF_FONT_UNKNOWN;
+  CPDF_Annot::StandardFont standard_font =
+      CPDF_Annot::StringToStandardFont(font_name);
+  if (standard_font == CPDF_Annot::StandardFont::kUnknown) {
+    RetainPtr<const CPDF_Dictionary> inherited_dr =
+        ToDictionary(CPDF_FormField::GetFieldAttrForDict(annot_dict, "DR"));
+    standard_font =
+        ResolveStandardFontFromDefaultResources(inherited_dr.Get(), font_name);
   }
+  if (standard_font == CPDF_Annot::StandardFont::kUnknown) {
+    RetainPtr<const CPDF_Dictionary> acroform_dr =
+        acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+    standard_font =
+        ResolveStandardFontFromDefaultResources(acroform_dr.Get(), font_name);
+  }
+  *font = static_cast<FPDF_STANDARD_FONT>(standard_font);
 
   // Get Color (with default fallback)
   std::optional<CFX_Color::TypeAndARGB> color_info = da.GetColorARGB();
