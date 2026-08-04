@@ -118,6 +118,8 @@ jobs:
       - name: Install Emscripten
         if: matrix.target == 'wasm32'
         shell: bash
+        env:
+          DEPOT_TOOLS_PYTHON_BYPASS: '1'
         run: |
           mkdir -p third_party
           if [[ -d third_party/emsdk ]]; then
