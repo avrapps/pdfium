@@ -7,7 +7,7 @@ set -euo pipefail
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 WORKSPACE_DIR="$(cd "$SOURCE_DIR/.." && pwd)"
 SOLUTION_NAME="$(basename "$SOURCE_DIR")"
-FORK_URL="${PDF_RUNTIME_FORK_URL:-https://github.com/embedpdf/pdfium.git}"
+FORK_URL="${PDF_RUNTIME_FORK_URL:-https://github.com/embedpdf/runtime.git}"
 REF="${PDF_RUNTIME_REF:-HEAD}"
 TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-}"
 
