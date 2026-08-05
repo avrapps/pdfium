@@ -1735,19 +1735,23 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromStream) {
     }
   }
 
-  // Generate contents should collapse edited split-stream page content into one
-  // canonical stream. The original streams share graphics state across stream
-  // boundaries, so preserving the old split after edits is unsafe.
+  // Generate contents should remove the empty stream and update the page
+  // objects' contents stream indexes.
   EXPECT_TRUE(FPDFPage_GenerateContent(page.get()));
 
-  // Content stream 0: all remaining page objects.
+  // Content stream 0: page objects 0-14.
+  // Content stream 1: page object 15.
   ASSERT_EQ(16, FPDFPage_CountObjects(page.get()));
   for (int i = 0; i < 16; i++) {
     FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(page.get(), i);
     ASSERT_TRUE(page_object);
     CPDF_PageObject* cpdf_page_object =
         CPDFPageObjectFromFPDFPageObject(page_object);
-    EXPECT_EQ(0, cpdf_page_object->GetContentStream()) << i;
+    if (i < 15) {
+      EXPECT_EQ(0, cpdf_page_object->GetContentStream()) << i;
+    } else {
+      EXPECT_EQ(1, cpdf_page_object->GetContentStream()) << i;
+    }
   }
 
   static constexpr char kSplitStreamsRemovedStream1Png[] =
@@ -1761,21 +1765,26 @@ TEST_F(FPDFEditEmbedderTest, RemoveAllFromStream) {
   // Save the file
   EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
 
-  // Re-open the file and check the page object count is still 16, and that the
-  // edited split streams were persisted as one canonical content stream.
+  // Re-open the file and check the page object count is still 16, and that
+  // content stream 1 was removed.
   ScopedSavedDoc saved_document = OpenScopedSavedDocument();
   ASSERT_TRUE(saved_document);
   ScopedSavedPage saved_page = LoadScopedSavedPage(0);
   ASSERT_TRUE(saved_page);
 
-  // Content stream 0: all remaining page objects.
+  // Content stream 0: page objects 0-14.
+  // Content stream 1: page object 15.
   EXPECT_EQ(16, FPDFPage_CountObjects(saved_page.get()));
   for (int i = 0; i < 16; i++) {
     FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(saved_page.get(), i);
     ASSERT_TRUE(page_object);
     CPDF_PageObject* cpdf_page_object =
         CPDFPageObjectFromFPDFPageObject(page_object);
-    EXPECT_EQ(0, cpdf_page_object->GetContentStream()) << i;
+    if (i < 15) {
+      EXPECT_EQ(0, cpdf_page_object->GetContentStream()) << i;
+    } else {
+      EXPECT_EQ(1, cpdf_page_object->GetContentStream()) << i;
+    }
   }
 
   {

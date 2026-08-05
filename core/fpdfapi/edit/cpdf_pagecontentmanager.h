@@ -33,11 +33,6 @@ class CPDF_PageContentManager {
   // is empty, then schedule the removal of the stream instead.
   void UpdateStream(size_t stream_index, fxcrt::ostringstream* buf);
 
-  // Replaces the page's entire Contents entry with one freshly generated stream
-  // and assigns all active page objects to content stream 0. For Form XObjects,
-  // this updates the existing form stream.
-  void ReplaceWithSingleStream(fxcrt::ostringstream* buf);
-
   bool HasStreamAtIndex(size_t stream_index);
 
  private:
