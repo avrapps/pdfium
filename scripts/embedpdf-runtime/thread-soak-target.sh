@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 # EmbedPDF: build and run the thread-confined runtime soak harness

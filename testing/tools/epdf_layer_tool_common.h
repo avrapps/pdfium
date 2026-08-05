@@ -1,6 +1,5 @@
-// Copyright 2026 The PDFium Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef TESTING_TOOLS_EPDF_LAYER_TOOL_COMMON_H_
 #define TESTING_TOOLS_EPDF_LAYER_TOOL_COMMON_H_

@@ -1,3 +1,6 @@
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

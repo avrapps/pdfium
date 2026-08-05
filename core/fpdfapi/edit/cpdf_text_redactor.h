@@ -1,5 +1,5 @@
-// Copyright 2025
-// Use of this source code is governed by a BSD-style license.
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef CORE_FPDFAPI_EDIT_CPDF_TEXT_REDACTOR_H_
 #define CORE_FPDFAPI_EDIT_CPDF_TEXT_REDACTOR_H_

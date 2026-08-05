@@ -1,3 +1,6 @@
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef PUBLIC_FPDF_JPEG_H_
 #define PUBLIC_FPDF_JPEG_H_
 
@@ -23,4 +26,4 @@ extern "C" {
 }  // extern "C"
 #endif
 
-#endif  // PUBLIC_FPDF_JPEG_H_        
+#endif  // PUBLIC_FPDF_JPEG_H_

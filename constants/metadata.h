@@ -1,6 +1,5 @@
-// Copyright 2025 The PDFium Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef CONSTANTS_METADATA_H_
 #define CONSTANTS_METADATA_H_

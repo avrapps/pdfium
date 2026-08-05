@@ -1,0 +1,22 @@
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: CloudPDF License Headers
+
+on:
+  pull_request:
+  push:
+    branches:
+      - embedpdf/main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify CloudPDF ownership headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/embedpdf-runtime/check-cloudpdf-headers.sh

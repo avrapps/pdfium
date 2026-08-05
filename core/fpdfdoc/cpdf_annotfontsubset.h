@@ -1,6 +1,5 @@
-// Copyright 2026 The EmbedPDF Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 //
 // EmbedPDF: fork-owned helper for registered annotation font layout and
 // per-annotation/layer subset embedding.

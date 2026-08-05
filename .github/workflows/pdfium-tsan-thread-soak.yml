@@ -1,4 +1,7 @@
-name: PDFium TSAN Thread Soak
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: CloudPDF Runtime TSAN Thread Soak
 
 on:
   workflow_dispatch:

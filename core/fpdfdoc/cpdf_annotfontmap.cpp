@@ -1,6 +1,5 @@
-// Copyright 2026 The EmbedPDF Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 //
 // EmbedPDF: annotation font map for registered runtime fonts. This lets
 // FreeText appearance generation pick per-glyph fallback fonts and later embed
