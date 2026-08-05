@@ -13,13 +13,62 @@
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pagemodule.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fxcrt/cfx_fileaccess_stream.h"
+#include "core/fxcrt/data_vector.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/utils/path_service.h"
 
 namespace pdfium {
+namespace {
+
+class ScopedPageModule {
+ public:
+  ScopedPageModule() { InitializePageModule(); }
+  ~ScopedPageModule() { DestroyPageModule(); }
+};
+
+RetainPtr<CPDF_Dictionary> CreateImageDict(int width, int height) {
+  auto dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  dict->SetNewFor<CPDF_Name>("Subtype", "Image");
+  dict->SetNewFor<CPDF_Number>("Width", width);
+  dict->SetNewFor<CPDF_Number>("Height", height);
+  dict->SetNewFor<CPDF_Name>("ColorSpace", "DeviceRGB");
+  dict->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
+  return dict;
+}
+
+DataVector<uint8_t> MakeRgbPixel(uint8_t r, uint8_t g, uint8_t b) {
+  return {r, g, b};
+}
+
+class PromotedImageDocument final : public CPDF_Document {
+ public:
+  PromotedImageDocument()
+      : CPDF_Document(std::make_unique<CPDF_DocRenderData>(),
+                      std::make_unique<CPDF_DocPageData>()) {}
+
+  void SetPromotedObject(uint32_t objnum) { promoted_objnum_ = objnum; }
+
+  RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const override {
+    return objnum == promoted_objnum_
+               ? const_cast<PromotedImageDocument*>(this)
+                     ->GetMutableIndirectObject(objnum)
+               : nullptr;
+  }
+
+ private:
+  uint32_t promoted_objnum_ = 0;
+};
+
+}  // namespace
 
 TEST(CPDFPageImageCache, RenderBug1924) {
   // If you render a page with a JPEG2000 image as a thumbnail (small picture)
@@ -82,6 +131,91 @@ TEST(CPDFPageImageCache, RenderBug1924) {
     page->AsPDFPage()->ClearView();
   }
   DestroyPageModule();
+}
+
+TEST(CPDFDocPageDataTest, GetImageDoesNotMutateDocument) {
+  ScopedPageModule page_module;
+  CPDF_Document document(std::make_unique<CPDF_DocRenderData>(),
+                         std::make_unique<CPDF_DocPageData>());
+  RetainPtr<CPDF_Stream> stream = document.NewIndirect<CPDF_Stream>(
+      MakeRgbPixel(1, 2, 3), CreateImageDict(1, 1));
+  const uint32_t stream_objnum = stream->GetObjNum();
+  const uint32_t last_objnum = document.GetLastObjNum();
+
+  CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(&document);
+  RetainPtr<CPDF_Image> image;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    image = page_data->GetImage(stream_objnum);
+  }
+
+  EXPECT_EQ(last_objnum, document.GetLastObjNum());
+  EXPECT_EQ(stream.Get(), image->GetStream().Get());
+
+  RetainPtr<CPDF_Image> cached_image;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    cached_image = page_data->GetImage(stream_objnum);
+  }
+  EXPECT_EQ(last_objnum, document.GetLastObjNum());
+  EXPECT_EQ(image.Get(), cached_image.Get());
+}
+
+TEST(CPDFDocPageDataTest, GetImageRebindsPromotedStream) {
+  ScopedPageModule page_module;
+  PromotedImageDocument document;
+  RetainPtr<CPDF_Stream> original_stream = document.NewIndirect<CPDF_Stream>(
+      MakeRgbPixel(1, 2, 3), CreateImageDict(1, 1));
+  const uint32_t stream_objnum = original_stream->GetObjNum();
+
+  CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(&document);
+  RetainPtr<CPDF_Image> image = page_data->GetImage(stream_objnum);
+  ASSERT_EQ(original_stream.Get(), image->GetStream().Get());
+
+  auto promoted_stream = pdfium::MakeRetain<CPDF_Stream>(MakeRgbPixel(4, 5, 6),
+                                                         CreateImageDict(1, 1));
+  promoted_stream->SetGenNum(1);
+  ASSERT_TRUE(document.ReplaceIndirectObjectIfHigherGeneration(
+      stream_objnum, promoted_stream));
+  document.SetPromotedObject(stream_objnum);
+
+  RetainPtr<CPDF_Image> cached_image = page_data->GetImage(stream_objnum);
+
+  EXPECT_EQ(image.Get(), cached_image.Get());
+  EXPECT_EQ(promoted_stream.Get(), cached_image->GetStream().Get());
+  pdfium::span<const uint8_t> raw_data =
+      cached_image->GetStream()->GetInMemoryRawData();
+  ASSERT_EQ(3u, raw_data.size());
+  EXPECT_EQ(4u, raw_data[0]);
+  EXPECT_EQ(5u, raw_data[1]);
+  EXPECT_EQ(6u, raw_data[2]);
+}
+
+TEST(CPDFDocPageDataTest, OverwriteStreamInPlaceUpdatesCachedImage) {
+  ScopedPageModule page_module;
+  CPDF_Document document(std::make_unique<CPDF_DocRenderData>(),
+                         std::make_unique<CPDF_DocPageData>());
+  RetainPtr<CPDF_Stream> stream = document.NewIndirect<CPDF_Stream>(
+      MakeRgbPixel(1, 2, 3), CreateImageDict(1, 1));
+  const uint32_t stream_objnum = stream->GetObjNum();
+  const uint32_t last_objnum = document.GetLastObjNum();
+
+  CPDF_DocPageData* page_data = CPDF_DocPageData::FromDocument(&document);
+  RetainPtr<CPDF_Image> image = page_data->GetImage(stream_objnum);
+
+  ASSERT_TRUE(image->OverwriteStreamInPlace(MakeRgbPixel(7, 8, 9),
+                                            CreateImageDict(1, 1),
+                                            /*data_is_decoded=*/false));
+  RetainPtr<CPDF_Image> cached_image = page_data->GetImage(stream_objnum);
+
+  EXPECT_EQ(last_objnum, document.GetLastObjNum());
+  EXPECT_EQ(image.Get(), cached_image.Get());
+  pdfium::span<const uint8_t> raw_data =
+      cached_image->GetStream()->GetInMemoryRawData();
+  ASSERT_EQ(3u, raw_data.size());
+  EXPECT_EQ(7u, raw_data[0]);
+  EXPECT_EQ(8u, raw_data[1]);
+  EXPECT_EQ(9u, raw_data[2]);
 }
 
 }  // namespace pdfium

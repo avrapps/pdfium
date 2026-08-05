@@ -17,6 +17,7 @@
 #include "core/fpdfapi/parser/cpdf_encryptor.h"
 #include "core/fpdfapi/parser/cpdf_flateencoder.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -87,6 +88,8 @@ CPDF_Stream* CPDF_Stream::AsMutableStream() {
 }
 
 void CPDF_Stream::InitStreamFromFile(RetainPtr<IFX_SeekableReadStream> file) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   const int size = pdfium::checked_cast<int>(file->GetSize());
   data_ = std::move(file);
   dict_ = pdfium::MakeRetain<CPDF_Dictionary>();
@@ -95,6 +98,12 @@ void CPDF_Stream::InitStreamFromFile(RetainPtr<IFX_SeekableReadStream> file) {
 
 RetainPtr<CPDF_Object> CPDF_Stream::Clone() const {
   return CloneObjectNonCyclic(false);
+}
+
+RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited;
+  return CloneForHolderNonCyclic(holder, &visited);
 }
 
 RetainPtr<CPDF_Object> CPDF_Stream::CloneNonCyclic(
@@ -114,7 +123,30 @@ RetainPtr<CPDF_Object> CPDF_Stream::CloneNonCyclic(
                                          std::move(pNewDict));
 }
 
+RetainPtr<CPDF_Object> CPDF_Stream::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  pVisited->insert(this);
+  auto pAcc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(this));
+  pAcc->LoadAllDataRaw();
+
+  RetainPtr<const CPDF_Dictionary> dict = GetDict();
+  RetainPtr<CPDF_Dictionary> pNewDict;
+  if (!pdfium::Contains(*pVisited, dict.Get())) {
+    pNewDict = ToDictionary(static_cast<const CPDF_Object*>(dict.Get())
+                                ->CloneForHolderNonCyclic(holder, pVisited));
+  }
+  return pdfium::MakeRetain<CPDF_Stream>(pAcc->DetachData(),
+                                         std::move(pNewDict));
+}
+
+void CPDF_Stream::FreezeChildren(std::set<const CPDF_Object*>* visited) {
+  dict_->FreezeForHolder(visited);
+}
+
 void CPDF_Stream::SetDataAndRemoveFilter(pdfium::span<const uint8_t> pData) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   SetData(pData);
   dict_->RemoveFor("Filter");
   dict_->RemoveFor(pdfium::stream::kDecodeParms);
@@ -131,17 +163,23 @@ void CPDF_Stream::SetDataFromStringstreamAndRemoveFilter(
 }
 
 void CPDF_Stream::SetData(pdfium::span<const uint8_t> pData) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   DataVector<uint8_t> data_copy(pData.begin(), pData.end());
   TakeData(std::move(data_copy));
 }
 
 void CPDF_Stream::TakeData(DataVector<uint8_t> data) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   const int size = pdfium::checked_cast<int>(data.size());
   data_ = std::move(data);
   SetLengthInDict(size);
 }
 
 void CPDF_Stream::SetDataFromStringstream(fxcrt::ostringstream* stream) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   if (stream->tellp() <= 0) {
     SetData({});
     return;
@@ -216,5 +254,7 @@ pdfium::span<const uint8_t> CPDF_Stream::GetInMemoryRawData() const {
 }
 
 void CPDF_Stream::SetLengthInDict(int length) {
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   dict_->SetNewFor<CPDF_Number>("Length", length);
 }

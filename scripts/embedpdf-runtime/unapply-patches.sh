@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"

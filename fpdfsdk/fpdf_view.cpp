@@ -8,28 +8,26 @@
 
 #include <algorithm>
 #include <memory>
-#include <mutex>
 #include <set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "build/build_config.h"
 #include "constants/page_object.h"
+#include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pagemodule.h"
-#include "core/fpdfdoc/cpdf_annot.h"
-#include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
-#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
@@ -39,6 +37,7 @@
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
+#include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_nametree.h"
 #include "core/fpdfdoc/cpdf_viewerpreferences.h"
 #include "core/fxcrt/cfx_fileaccess_stream.h"
@@ -46,6 +45,7 @@
 #include "core/fxcrt/cfx_timer.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -57,6 +57,7 @@
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphcache.h"
 #include "core/fxge/cfx_renderdevice.h"
@@ -66,7 +67,6 @@
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
-#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/fpdf_formfill.h"
 
@@ -117,29 +117,11 @@ static_assert(static_cast<int>(CFX_DefaultRenderDevice::RendererType::kSkia) ==
               FPDF_RENDERERTYPE_SKIA);
 #endif  // defined(PDF_USE_SKIA)
 
-// Storage for pending security state (declared in fpdfsdk_pending_security.h).
-// Both the mutex and the map are intentionally leaked behind function-local
-// statics to avoid the static destruction order fiasco.
-std::mutex& GetPendingSecurityMutex() {
-  static std::mutex* mutex = new std::mutex;
-  return *mutex;
-}
-
-std::unordered_map<FPDF_DOCUMENT, PendingSecurity>& GetPendingSecurityMap() {
-  static auto* pending_security =
-      new std::unordered_map<FPDF_DOCUMENT, PendingSecurity>;
-  return *pending_security;
-}
-
-// Helper to cleanup pending security on document close
-void EPDF_CleanupPendingSecurity(FPDF_DOCUMENT doc) {
-  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-  GetPendingSecurityMap().erase(doc);
-}
-
 namespace {
 
-bool g_bLibraryInitialized = false;
+// EmbedPDF: thread-confined runtime - each worker thread tracks its own
+// library-initialized state so per-thread Init/Destroy don't race.
+EPDF_TLS bool g_bLibraryInitialized = false;
 
 void SetRendererType(FPDF_RENDERER_TYPE public_type) {
   // Internal definition of renderer types must stay updated with respect to
@@ -300,6 +282,9 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_DestroyLibrary() {
   CFX_GlyphCache::DestroyGlobals();
 #endif
 
+  // EmbedPDF: registered runtime fonts are global/TLS-backed PDFium state, so
+  // tear them down with the rest of the library singletons.
+  CFX_FontRegistry::DestroyGlobals();
   pdfium::DestroyPageModule();
   CFX_GEModule::Destroy();
   CFX_Timer::DestroyGlobals();
@@ -477,8 +462,8 @@ FPDF_GetSecurityHandlerRevision(FPDF_DOCUMENT document) {
 namespace {
 
 // Build P value with correct reserved bits for R>=3 (including R=4 and R=6)
-// Input: allowed_flags - OR'd combination of permission bits user wants to ALLOW
-// Output: proper P value with reserved bits set correctly
+// Input: allowed_flags - OR'd combination of permission bits user wants to
+// ALLOW Output: proper P value with reserved bits set correctly
 uint32_t BuildPermissionsForRevision(uint32_t allowed_flags) {
   // Enforce: PrintHighQuality implies Print (bit 12 requires bit 3)
   // Some readers interpret oddly if PRINT_HIGH is set without PRINT
@@ -524,8 +509,10 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   int32_t permissions =
       static_cast<int32_t>(BuildPermissionsForRevision(allowed_flags_32));
 
-  // Create encrypt dictionary as indirect object
-  auto pEncryptDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  // Create the encrypt dictionary inline. CPDF_Creator::SetEncryption() owns
+  // the trailer-only reference and writes inline encrypt dictionaries as
+  // indirect objects during save.
+  auto pEncryptDict = pDoc->New<CPDF_Dictionary>();
   pEncryptDict->SetNewFor<CPDF_Name>("Filter", "Standard");
   pEncryptDict->SetNewFor<CPDF_Number>("V", 5);
   pEncryptDict->SetNewFor<CPDF_Number>("R", 6);
@@ -552,20 +539,14 @@ EPDF_SetEncryption(FPDF_DOCUMENT document,
   // Returns false if LoadDict fails or R != 6
   if (!pSecurityHandler->OnCreateWithPasswords(pEncryptDict.Get(), user_pwd,
                                                owner_pwd)) {
-    // Cleanup the indirect object we created
-    pDoc->DeleteIndirectObject(pEncryptDict->GetObjNum());
     return false;
   }
 
-  // Store (OVERWRITE if exists - allows changing password multiple times)
-  {
-    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-    PendingSecurity pending;
-    pending.mode = PendingSecurityMode::kEncrypt;
-    pending.encrypt_dict = std::move(pEncryptDict);
-    pending.security_handler = std::move(pSecurityHandler);
-    GetPendingSecurityMap()[document] = std::move(pending);
-  }
+  CPDF_Document::PendingSecurity pending;
+  pending.mode = CPDF_Document::PendingSecurityMode::kEncrypt;
+  pending.encrypt_dict = std::move(pEncryptDict);
+  pending.security_handler = std::move(pSecurityHandler);
+  pDoc->SetPendingSecurity(std::move(pending));
 
   return true;
 }
@@ -576,13 +557,14 @@ EPDF_RemoveEncryption(FPDF_DOCUMENT document) {
     return false;
   }
 
-  // Set pending security to removal mode
-  // This will cause RemoveSecurity() to be called during save
-  std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-  PendingSecurity pending;
-  pending.mode = PendingSecurityMode::kRemove;
-  // encrypt_dict and security_handler remain null for removal
-  GetPendingSecurityMap()[document] = std::move(pending);
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Document::PendingSecurity pending;
+  pending.mode = CPDF_Document::PendingSecurityMode::kRemove;
+  pDoc->SetPendingSecurity(std::move(pending));
 
   return true;
 }
@@ -612,7 +594,93 @@ EPDF_UnlockOwnerPermissions(FPDF_DOCUMENT document,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_IsEncrypted(FPDF_DOCUMENT document) {
+EPDF_CheckPasswordPermissions(FPDF_DOCUMENT document,
+                              FPDF_BYTESTRING password,
+                              int* out_kind,
+                              unsigned int* out_user_permissions,
+                              unsigned int* out_effective_permissions,
+                              int* out_security_handler_revision) {
+  if (!out_kind || !out_user_permissions || !out_effective_permissions ||
+      !out_security_handler_revision) {
+    return false;
+  }
+
+  *out_kind = EPDF_PASSWORD_PERMISSION_INVALID;
+  *out_user_permissions = 0;
+  *out_effective_permissions = 0;
+  *out_security_handler_revision = -1;
+
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_NONE;
+    *out_user_permissions = 0xFFFFFFFF;
+    *out_effective_permissions = 0xFFFFFFFF;
+    return true;
+  }
+
+  RetainPtr<const CPDF_Dictionary> encrypt_dict = pParser->GetEncryptDict();
+  *out_security_handler_revision =
+      encrypt_dict ? encrypt_dict->GetIntegerFor("R") : -1;
+
+  const unsigned int user_permissions = static_cast<unsigned int>(
+      security_handler->GetPermissionsForPasswordProbe(/*owner=*/false));
+  *out_user_permissions = user_permissions;
+
+  ByteString raw_password(password ? password : "");
+
+  // This is a password probe, not a document-state probe. Do not use
+  // IsOwnerUnlocked(), UnlockOwner(), or FPDF_GetDocPermissions() here; those
+  // depend on or mutate the current handle state. Match PDFium's open path by
+  // checking a non-empty password against owner credentials first.
+  if (!raw_password.IsEmpty() &&
+      security_handler->CheckPasswordNoMutate(raw_password, /*bOwner=*/true)) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_OWNER;
+    *out_effective_permissions = static_cast<unsigned int>(
+        security_handler->GetPermissionsForPasswordProbe(/*owner=*/true));
+    return true;
+  }
+
+  if (security_handler->CheckPasswordNoMutate(raw_password, /*bOwner=*/false)) {
+    *out_kind = EPDF_PASSWORD_PERMISSION_USER;
+    *out_effective_permissions = user_permissions;
+    return true;
+  }
+
+  return false;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_SetRuntimeOwnerPermissions(FPDF_DOCUMENT document, FPDF_BOOL enabled) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  CPDF_Parser* pParser = pDoc->GetParser();
+  if (!pParser) {
+    return false;
+  }
+
+  const auto& security_handler = pParser->GetSecurityHandler();
+  if (!security_handler) {
+    return false;
+  }
+
+  security_handler->SetRuntimeOwnerUnlocked(!!enabled);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_IsEncrypted(FPDF_DOCUMENT document) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
   if (!pDoc) {
     return false;
@@ -660,10 +728,14 @@ namespace {
 
 // Shared body of FPDF_LoadPage and EPDFDoc_LoadPageByObjectNumber. Validates
 // `page_index` against the document's page count, then constructs and returns
-// a leaked page handle. Returns nullptr on any failure.
+// a leaked page handle. When `normalize` is true, the page's rotation is
+// overridden to 0 so all subsequent operations use normalized 0-degree
+// coordinates (the intrinsic rotation is surfaced separately via
+// EPDF_GetPageRotationByIndex). Returns nullptr on any failure.
 FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
                                    CPDF_Document* doc,
-                                   int page_index) {
+                                   int page_index,
+                                   bool normalize) {
   if (page_index < 0 || page_index >= FPDF_GetPageCount(document)) {
     return nullptr;
   }
@@ -675,7 +747,10 @@ FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
   }
 #endif  // PDF_ENABLE_XFA
 
-  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      doc->GetPageDictionary(page_index);
+  RetainPtr<CPDF_Dictionary> dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
   if (!dict) {
     return nullptr;
   }
@@ -683,6 +758,12 @@ FPDF_PAGE LoadPageByValidatedIndex(FPDF_DOCUMENT document,
   auto pPage = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
   pPage->AddPageImageCache();
   pPage->ParseContent();
+
+  // Force rotation to 0 - this re-runs UpdateDimensions() so page_size_ and
+  // page_matrix_ are calculated as if rotation=0.
+  if (normalize) {
+    pPage->SetRotationOverride(0);
+  }
 
   return FPDFPageFromIPDFPage(pPage.Leak());
 }
@@ -695,7 +776,8 @@ FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV FPDF_LoadPage(FPDF_DOCUMENT document,
   if (!doc) {
     return nullptr;
   }
-  return LoadPageByValidatedIndex(document, doc, page_index);
+  return LoadPageByValidatedIndex(document, doc, page_index,
+                                  /*normalize=*/false);
 }
 
 FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
@@ -704,7 +786,19 @@ EPDFDoc_LoadPageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
   if (!doc || obj_num == 0) {
     return nullptr;
   }
-  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num));
+  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num),
+                                  /*normalize=*/false);
+}
+
+FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
+EPDFDoc_LoadPageByObjectNumberNormalized(FPDF_DOCUMENT document,
+                                         unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0) {
+    return nullptr;
+  }
+  return LoadPageByValidatedIndex(document, doc, doc->GetPageIndex(obj_num),
+                                  /*normalize=*/true);
 }
 
 FPDF_EXPORT unsigned int FPDF_CALLCONV
@@ -726,16 +820,80 @@ EPDFDoc_GetPageObjectNumberByIndex(FPDF_DOCUMENT document, int page_index) {
   return dict ? dict->GetObjNum() : 0;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_DeletePageByObjectNumber(FPDF_DOCUMENT document, unsigned int obj_num) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0) {
+    return false;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match the other
+  // EPDFDoc_*ByObjectNumber APIs and reject object-number page mutations for
+  // XFA-backed documents.
+  if (doc->GetExtension()) {
+    return false;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  const int page_index = doc->GetPageIndex(obj_num);
+  if (page_index < 0) {
+    return false;
+  }
+
+  const uint32_t deleted_obj_num = doc->DeletePage(page_index);
+  if (deleted_obj_num == 0) {
+    return false;
+  }
+
+  doc->SetPageToNullObject(deleted_obj_num);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_SetPageRotationByObjectNumber(FPDF_DOCUMENT document,
+                                      unsigned int obj_num,
+                                      int rotate) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || obj_num == 0 || rotate < 0 || rotate > 3) {
+    return false;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  // XFA pages do not have CPDF_Page dictionaries. Match the other
+  // EPDFDoc_*ByObjectNumber APIs and reject object-number page mutations for
+  // XFA-backed documents.
+  if (doc->GetExtension()) {
+    return false;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  if (doc->GetPageIndex(obj_num) < 0) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      ToDictionary(doc->GetMutableIndirectObject(obj_num));
+  if (!page_dict) {
+    return false;
+  }
+
+  page_dict->SetNewFor<CPDF_Number>(pdfium::page_object::kRotate, rotate * 90);
+  return true;
+}
+
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFPage_GetObjectNumber(FPDF_PAGE page) {
   // Note: CPDFPageFromFPDFPage() returns null for XFA pages, so this function
   // returns 0 for XFA pages (documented in the header).
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
+  if (!pPage) {
     return 0;
+  }
   const CPDF_Dictionary* dict = pPage->GetDict().Get();
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
   return dict->GetObjNum();
 }
 
@@ -870,10 +1028,11 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RenderPage(HDC dc,
                                                     int size_y,
                                                     int rotate,
                                                     int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return false;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   auto owned_context = std::make_unique<CPDF_PageRenderContext>();
   CPDF_PageRenderContext* context = owned_context.get();
@@ -995,10 +1154,11 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageBitmap(FPDF_BITMAP bitmap,
                                                      int size_y,
                                                      int rotate,
                                                      int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
   if (!pBitmap) {
@@ -1031,10 +1191,11 @@ FPDF_RenderPageBitmapWithMatrix(FPDF_BITMAP bitmap,
                                 const FS_MATRIX* matrix,
                                 const FS_RECTF* clipping,
                                 int flags) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
   if (!pBitmap) {
@@ -1078,30 +1239,38 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
                        int flags) {
   // Guards
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!bitmap || !pPage || !annot)
+  if (!bitmap || !pPage || !annot) {
     return false;
+  }
 
   CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pAnnotContext)
+  if (!pAnnotContext) {
     return false;
+  }
+
+  CPDF_DocumentViewScope document_view(pPage->GetDocument());
 
   // Get the annotation's dictionary from the context.
-  RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnotContext->GetMutableAnnotDict();
-  if (!pAnnotDict)
+  const CPDF_Dictionary* pAnnotDict = pAnnotContext->GetAnnotDict();
+  if (!pAnnotDict) {
     return false;
+  }
 
   // Get the document from the page. The CPDF_Annot constructor needs it.
   CPDF_Document* pDoc = pPage->GetDocument();
-  if (!pDoc)
+  if (!pDoc) {
     return false;
+  }
 
   // Instantiate CPDF_Annot using its public constructor.
-  auto pAnnot = std::make_unique<CPDF_Annot>(std::move(pAnnotDict), pDoc);
+  auto pAnnot = std::make_unique<CPDF_Annot>(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
 
   // ---------------------------------------------------------------- bitmaps
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
-  if (!pBitmap)
+  if (!pBitmap) {
     return false;
+  }
   ValidateBitmapPremultiplyState(pBitmap);
 
 #if defined(PDF_USE_SKIA)
@@ -1114,8 +1283,9 @@ EPDF_RenderAnnotBitmap(FPDF_BITMAP bitmap,
 
   //   CTM = DisplayMatrix * userMatrix * Translate(bbox.left, bbox.bottom)
   CFX_Matrix ctm = pPage->GetDisplayMatrix();
-  if (matrix)
+  if (matrix) {
     ctm.Concat(CFXMatrixFromFSMatrix(*matrix));
+  }
 
   // Draw appearance
   const bool ok = pAnnot->DrawAppearance(
@@ -1134,39 +1304,50 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
                                 int flags) {
   // Guards (same as EPDF_RenderAnnotBitmap)
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!bitmap || !pPage || !annot)
+  if (!bitmap || !pPage || !annot) {
     return false;
+  }
 
   CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pAnnotContext)
+  if (!pAnnotContext) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnotContext->GetMutableAnnotDict();
-  if (!pAnnotDict)
+  CPDF_DocumentViewScope document_view(pPage->GetDocument());
+  const CPDF_Dictionary* pAnnotDict = pAnnotContext->GetAnnotDict();
+  if (!pAnnotDict) {
     return false;
+  }
 
   CPDF_Document* pDoc = pPage->GetDocument();
-  if (!pDoc)
+  if (!pDoc) {
     return false;
+  }
 
-  auto pAnnot = std::make_unique<CPDF_Annot>(std::move(pAnnotDict), pDoc);
+  auto pAnnot = std::make_unique<CPDF_Annot>(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pAnnotDict)), pDoc);
 
   // Get the AP form for the requested mode.
   // Note: we skip ShouldDrawAnnotation/GenerateAPIfNeeded (private) because
   // the AP stream is expected to already exist when rendering stamps.
   auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
   CPDF_Form* pForm = pAnnot->GetAPForm(pPage, mode);
-  if (!pForm)
+  if (!pForm) {
     return false;
+  }
 
   // Read the raw BBox WITHOUT applying the AP Matrix.
   CFX_FloatRect form_bbox = pForm->GetDict()->GetRectFor("BBox");
 
-  // Use EPDFUnrotatedRect as the target rect for MatchRect.
-  // Falls back to /Rect if EPDFUnrotatedRect is not set.
-  CFX_FloatRect target = pAnnot->GetAnnotDict()->GetRectFor("EPDFUnrotatedRect");
-  if (target.IsEmpty())
+  // Use /EMBD_Metadata /UnrotatedRect as the target rect for MatchRect.
+  // Falls back to /Rect if EmbedPDF metadata is not set.
+  RetainPtr<const CPDF_Dictionary> metadata =
+      pAnnot->GetAnnotDict()->GetDictFor("EMBD_Metadata");
+  CFX_FloatRect target =
+      metadata ? metadata->GetRectFor("UnrotatedRect") : CFX_FloatRect();
+  if (target.IsEmpty()) {
     target = pAnnot->GetRect();
+  }
 
   // The form's Matrix (rotation) was baked into the content objects during
   // parsing by CPDF_ContentParser.  We must undo it so the bitmap is unrotated.
@@ -1180,16 +1361,18 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
 
   // Build CTM = displayMatrix * userMatrix
   CFX_Matrix ctm = pPage->GetDisplayMatrix();
-  if (matrix)
+  if (matrix) {
     ctm.Concat(CFXMatrixFromFSMatrix(*matrix));
+  }
 
   // Combine: form -> page -> device
   mtForm2Page.Concat(ctm);
 
   // ---- Bitmap setup (same as EPDF_RenderAnnotBitmap) ----
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
-  if (!pBitmap)
+  if (!pBitmap) {
     return false;
+  }
   ValidateBitmapPremultiplyState(pBitmap);
 
 #if defined(PDF_USE_SKIA)
@@ -1202,7 +1385,8 @@ EPDF_RenderAnnotBitmapUnrotated(FPDF_BITMAP bitmap,
 
   // Render the AP form with our custom matrix (no AP Matrix distortion).
   CPDF_RenderContext context(pDoc,
-                             pPage->GetMutablePageResources(),
+                             pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+                                 pPage->GetPageResources().Get())),
                              pPage->GetPageImageCache());
   context.AppendLayer(pForm, mtForm2Page);
   context.Render(device.get(), nullptr, nullptr, nullptr);
@@ -1219,10 +1403,11 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPageSkia(FPDF_SKIA_CANVAS canvas,
     return;
   }
 
-  CPDF_Page* cpdf_page = CPDFPageFromFPDFPage(page);
-  if (!cpdf_page) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return;
   }
+  CPDF_Page* cpdf_page = page_view.Get();
 
   auto owned_context = std::make_unique<CPDF_PageRenderContext>();
   CPDF_PageRenderContext* context = owned_context.get();
@@ -1261,9 +1446,6 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
-  // Cleanup pending security BEFORE deletion
-  EPDF_CleanupPendingSecurity(document);
-
   // Take it back across the API and throw it away,
   std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));
 }
@@ -1519,7 +1701,10 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   }
 #endif  // PDF_ENABLE_XFA
 
-  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      doc->GetPageDictionary(page_index);
+  RetainPtr<CPDF_Dictionary> dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
   if (!dict) {
     return false;
   }
@@ -1531,44 +1716,25 @@ FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document,
   return true;
 }
 
+static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
+    FPDF_DOCUMENT document,
+    CPDF_Document* doc,
+    int page_index);
+static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict);
+
 FPDF_EXPORT int FPDF_CALLCONV
 EPDF_GetPageRotationByIndex(FPDF_DOCUMENT document, int page_index) {
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc)
+  if (!pDoc) {
     return -1;
-
-  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
-    return -1;
-
-  // Cheap: no ParseContent().
-  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
-  if (!dict)
-    return -1;
-  auto page = pdfium::MakeRetain<CPDF_Page>(pDoc, std::move(dict));
-  return page->GetPageRotation();
-}
-
-// Walk the page tree (/Parent chain) to resolve an inherited rectangle
-// attribute. Mirrors the logic of CPDF_Page::GetPageAttr + GetBox but works
-// directly on a dictionary pointer so we can avoid constructing a CPDF_Page.
-static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* pPageDict,
-                                      ByteStringView name) {
-  std::set<const CPDF_Dictionary*> visited;
-  const CPDF_Dictionary* pDict = pPageDict;
-  while (pDict && !visited.contains(pDict)) {
-    RetainPtr<const CPDF_Object> pObj = pDict->GetDirectObjectFor(name);
-    if (pObj) {
-      RetainPtr<const CPDF_Array> pArray = ToArray(std::move(pObj));
-      if (pArray) {
-        CFX_FloatRect rect = pArray->GetRect();
-        rect.Normalize();
-        return rect;
-      }
-    }
-    visited.insert(pDict);
-    pDict = pDict->GetDictFor(pdfium::page_object::kParent).Get();
   }
-  return CFX_FloatRect();
+
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
+    return -1;
+  }
+  return GetInheritedPageRotation(dict.Get());
 }
 
 static RetainPtr<const CPDF_Dictionary> GetPageDictionaryByIndex(
@@ -1597,6 +1763,44 @@ static ByteStringView GetPageBoxKey(EPDF_PAGE_BOX_TYPE box_type) {
   return ByteStringView();
 }
 
+// Walk the page tree (/Parent chain) to resolve an inherited rectangle
+// attribute. Mirrors the logic of CPDF_Page::GetPageAttr + GetBox but works
+// directly on a dictionary pointer so we can avoid constructing a CPDF_Page.
+static CFX_FloatRect GetInheritedRect(const CPDF_Dictionary* page_dict,
+                                      ByteStringView name) {
+  std::set<const CPDF_Dictionary*> visited;
+  const CPDF_Dictionary* dict = page_dict;
+  while (dict && !visited.contains(dict)) {
+    RetainPtr<const CPDF_Object> object = dict->GetDirectObjectFor(name);
+    if (object) {
+      RetainPtr<const CPDF_Array> array = ToArray(std::move(object));
+      if (array) {
+        CFX_FloatRect rect = array->GetRect();
+        rect.Normalize();
+        return rect;
+      }
+    }
+    visited.insert(dict);
+    dict = dict->GetDictFor(pdfium::page_object::kParent).Get();
+  }
+  return CFX_FloatRect();
+}
+
+static int GetInheritedPageRotation(const CPDF_Dictionary* page_dict) {
+  std::set<const CPDF_Dictionary*> visited;
+  const CPDF_Dictionary* dict = page_dict;
+  while (dict && !visited.contains(dict)) {
+    if (dict->KeyExist(pdfium::page_object::kRotate)) {
+      int rotation =
+          (dict->GetIntegerFor(pdfium::page_object::kRotate) / 90) % 4;
+      return rotation < 0 ? rotation + 4 : rotation;
+    }
+    visited.insert(dict);
+    dict = dict->GetDictFor(pdfium::page_object::kParent).Get();
+  }
+  return 0;
+}
+
 static CFX_FloatRect GetEffectiveMediaBox(const CPDF_Dictionary* page_dict) {
   CFX_FloatRect media_box =
       GetInheritedRect(page_dict, pdfium::page_object::kMediaBox);
@@ -1604,6 +1808,38 @@ static CFX_FloatRect GetEffectiveMediaBox(const CPDF_Dictionary* page_dict) {
     media_box = CFX_FloatRect(0, 0, 612, 792);
   }
   return media_box;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
+                                  int page_index,
+                                  FS_SIZEF* size) {
+  if (!size) {
+    return false;
+  }
+
+  auto* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
+    return false;
+  }
+
+  // Resolve MediaBox/CropBox via page tree inheritance (not just the page dict)
+  CFX_FloatRect mediabox = GetEffectiveMediaBox(dict.Get());
+  CFX_FloatRect cropbox =
+      GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
+  CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
+  bbox.Intersect(mediabox);
+
+  // Return original dimensions - NO swap for rotation
+  size->width = bbox.Width();
+  size->height = bbox.Height();
+  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1656,48 +1892,38 @@ EPDF_GetPageBoxByIndex(FPDF_DOCUMENT document,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
-                                   int page_index,
-                                   FS_SIZEF* size) {
-  if (!size)
+EPDF_GetPageUserUnitByIndex(FPDF_DOCUMENT document,
+                            int page_index,
+                            float* user_unit) {
+  if (!user_unit) {
     return false;
+  }
 
   auto* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc)
+  if (!pDoc) {
     return false;
+  }
 
-  if (page_index < 0 || page_index >= FPDF_GetPageCount(document))
+  RetainPtr<const CPDF_Dictionary> dict =
+      GetPageDictionaryByIndex(document, pDoc, page_index);
+  if (!dict) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = pDoc->GetMutablePageDictionary(page_index);
-  if (!dict)
-    return false;
-
-  // Resolve MediaBox/CropBox via page tree inheritance (not just the page dict)
-  CFX_FloatRect mediabox =
-      GetInheritedRect(dict.Get(), pdfium::page_object::kMediaBox);
-  if (mediabox.IsEmpty())
-    mediabox = CFX_FloatRect(0, 0, 612, 792);
-
-  CFX_FloatRect cropbox =
-      GetInheritedRect(dict.Get(), pdfium::page_object::kCropBox);
-  CFX_FloatRect bbox = cropbox.IsEmpty() ? mediabox : cropbox;
-  bbox.Intersect(mediabox);
-
-  // Return original dimensions - NO swap for rotation
-  size->width = bbox.Width();
-  size->height = bbox.Height();
+  float value = dict->GetFloatFor("UserUnit");
+  *user_unit = value > 0 ? value : 1.0f;
   return true;
 }
 
 FPDF_EXPORT FPDF_PAGE FPDF_CALLCONV
 EPDF_LoadPageNormalized(FPDF_DOCUMENT document,
-                         int page_index,
-                         int* out_original_rotation) {
+                        int page_index,
+                        int* out_original_rotation) {
   // Load page normally first
   FPDF_PAGE page = FPDF_LoadPage(document, page_index);
-  if (!page)
+  if (!page) {
     return nullptr;
+  }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
   if (!pPage) {
@@ -1825,7 +2051,8 @@ FPDF_VIEWERREF_GetName(FPDF_DOCUMENT document,
 
 FPDF_EXPORT FPDF_DWORD FPDF_CALLCONV
 FPDF_CountNamedDests(FPDF_DOCUMENT document) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return 0;
   }
@@ -1835,7 +2062,7 @@ FPDF_CountNamedDests(FPDF_DOCUMENT document) {
     return 0;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "Dests");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "Dests");
   FX_SAFE_UINT32 count = name_tree ? name_tree->GetCount() : 0;
   RetainPtr<const CPDF_Dictionary> pOldStyleDests = pRoot->GetDictFor("Dests");
   if (pOldStyleDests) {
@@ -1850,7 +2077,8 @@ FPDF_GetNamedDestByName(FPDF_DOCUMENT document, FPDF_BYTESTRING name) {
     return nullptr;
   }
 
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -1947,7 +2175,8 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
     return nullptr;
   }
 
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
   if (!doc) {
     return nullptr;
   }
@@ -1957,7 +2186,7 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDF_GetNamedDest(FPDF_DOCUMENT document,
     return nullptr;
   }
 
-  auto name_tree = CPDF_NameTree::Create(doc, "Dests");
+  auto name_tree = CPDF_NameTree::CreateForReading(doc, "Dests");
   size_t name_tree_count = name_tree ? name_tree->GetCount() : 0;
   RetainPtr<const CPDF_Object> pDestObj;
   WideString wsName;

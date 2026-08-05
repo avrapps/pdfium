@@ -9,11 +9,16 @@
 #include <map>
 
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/epdf_tls.h"
 
 namespace {
 
 using TimerMap = std::map<int32_t, CFX_Timer*>;
-TimerMap* g_pwl_timer_map = nullptr;
+// EmbedPDF: thread-confined runtime - per-thread timer map. The PWL timer
+// subsystem is inactive in headless server rendering, but the global is still
+// made per-thread so per-thread InitializeGlobals()/DestroyGlobals() (and the
+// CHECK(!g_pwl_timer_map) inside Init) hold independently on each worker.
+EPDF_TLS TimerMap* g_pwl_timer_map = nullptr;
 
 }  // namespace
 

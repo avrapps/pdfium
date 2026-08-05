@@ -14,6 +14,12 @@ void CFX_XMLNode::InsertChildNode(CFX_XMLNode* pNode, int32_t index) {
   InsertBefore(pNode, GetNthChild(index));
 }
 
+// EmbedPDF: see header - whitespace-exact serialization entry point.
+void CFX_XMLNode::SaveCompact(
+    const RetainPtr<IFX_RetainableWriteStream>& pXMLStream) {
+  Save(pXMLStream);
+}
+
 CFX_XMLNode* CFX_XMLNode::GetRoot() {
   CFX_XMLNode* pParent = this;
   while (pParent->GetParent()) {

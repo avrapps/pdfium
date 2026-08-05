@@ -1,3 +1,6 @@
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
+
 1 VERSIONINFO
 FILEVERSION     0,0,0,0
 PRODUCTVERSION  0,0,0,0
@@ -6,14 +9,14 @@ BEGIN
     BEGIN
         BLOCK "040904E4"
         BEGIN
-            VALUE "CompanyName",      "EmbedPDF"
-            VALUE "FileDescription",  "PDFium runtime"
+            VALUE "CompanyName",      "CloudPDF LTD"
+            VALUE "FileDescription",  "CloudPDF PDF runtime"
             VALUE "FileVersion",      "0.0.0.0"
             VALUE "InternalName",     "pdfium"
             VALUE "OriginalFilename", "pdfium.dll"
-            VALUE "ProductName",      "pdfium"
+            VALUE "ProductName",      "CloudPDF PDF runtime"
             VALUE "ProductVersion",   "0.0.0.0"
-            VALUE "LegalCopyright",   "Copyright PDFium Authors. All rights reserved."
+            VALUE "LegalCopyright",   "Copyright 2026 CloudPDF LTD"
         END
     END
 

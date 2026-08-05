@@ -591,6 +591,11 @@ bool CPDF_Parser::ParseAndAppendCrossRefSubsectionData(
 
       pdfium::span<const char> pEntry =
           pdfium::span(buf).subspan(i * kEntrySize);
+      // TODO(art-snake): The info.gennum is uint16_t, but version may be
+      // greater than max<uint16_t>. Need to solve this issue.
+      const int32_t version =
+          StringToInt(ByteStringView(pEntry.subspan<11u>()));
+      info.gennum = version;
       if (pEntry[17] == 'f') {
         info.pos = 0;
         info.type = ObjectType::kFree;
@@ -610,11 +615,6 @@ bool CPDF_Parser::ParseAndAppendCrossRefSubsectionData(
 
         info.pos = offset.ValueOrDie();
 
-        // TODO(art-snake): The info.gennum is uint16_t, but version may be
-        // greater than max<uint16_t>. Need to solve this issue.
-        const int32_t version =
-            StringToInt(ByteStringView(pEntry.subspan<11u>()));
-        info.gennum = version;
         info.type = ObjectType::kNormal;
       }
     }
@@ -1164,6 +1164,10 @@ RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectAt(FX_FILESIZE pos,
 
 FX_FILESIZE CPDF_Parser::GetDocumentSize() const {
   return syntax_->GetDocumentSize();
+}
+
+RetainPtr<IFX_SeekableReadStream> CPDF_Parser::GetFileAccess() const {
+  return syntax_ ? syntax_->GetFileAccess() : nullptr;
 }
 
 uint32_t CPDF_Parser::GetFirstPageNo() const {

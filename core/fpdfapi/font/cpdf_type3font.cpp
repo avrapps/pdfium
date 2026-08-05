@@ -60,7 +60,10 @@ void CPDF_Type3Font::WillBeDestroyed() {
 }
 
 bool CPDF_Type3Font::Load() {
-  font_resources_ = font_dict_->GetMutableDictFor("Resources");
+  RetainPtr<const CPDF_Dictionary> font_resources =
+      font_dict_->GetDictFor("Resources");
+  font_resources_ =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(font_resources.Get()));
   RetainPtr<const CPDF_Array> pMatrix = font_dict_->GetArrayFor("FontMatrix");
   float xscale = 1.0f;
   float yscale = 1.0f;
@@ -93,7 +96,10 @@ bool CPDF_Type3Font::Load() {
       }
     }
   }
-  char_procs_ = font_dict_->GetMutableDictFor("CharProcs");
+  RetainPtr<const CPDF_Dictionary> char_procs =
+      font_dict_->GetDictFor("CharProcs");
+  char_procs_ =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(char_procs.Get()));
   if (font_dict_->GetDirectObjectFor("Encoding")) {
     LoadPDFEncoding(false, false);
   }
@@ -125,8 +131,10 @@ CPDF_Type3Char* CPDF_Type3Font::LoadChar(uint32_t charcode) {
     return nullptr;
   }
 
+  RetainPtr<const CPDF_Stream> const_stream =
+      ToStream(char_procs_->GetDirectObjectFor(name));
   RetainPtr<CPDF_Stream> pStream =
-      ToStream(char_procs_->GetMutableDirectObjectFor(name));
+      pdfium::WrapRetain(const_cast<CPDF_Stream*>(const_stream.Get()));
   if (!pStream) {
     return nullptr;
   }

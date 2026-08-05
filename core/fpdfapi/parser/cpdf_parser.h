@@ -109,6 +109,7 @@ class CPDF_Parser {
   bool IsXRefStream() const { return xref_stream_; }
 
   FX_FILESIZE GetDocumentSize() const;
+  RetainPtr<IFX_SeekableReadStream> GetFileAccess() const;
   uint32_t GetFirstPageNo() const;
   const CPDF_LinearizedHeader* GetLinearizedHeader() const {
     return linearized_.get();
@@ -119,8 +120,11 @@ class CPDF_Parser {
   std::vector<unsigned int> GetTrailerEnds();
   bool WriteToArchive(IFX_ArchiveStream* archive, FX_FILESIZE src_size);
 
-  const CPDF_CrossRefTable* GetCrossRefTableForTesting() const {
+  const CPDF_CrossRefTable* GetCrossRefTable() const {
     return cross_ref_table_.get();
+  }
+  const CPDF_CrossRefTable* GetCrossRefTableForTesting() const {
+    return GetCrossRefTable();
   }
 
   CPDF_Dictionary* GetMutableTrailerForTesting();

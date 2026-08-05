@@ -105,17 +105,9 @@ class CPDF_Annot {
     kZapfDingbats
   };
 
-  enum class TextAlignment {
-    kLeft = 0,
-    kCenter = 1,
-    kRight = 2
-  };
+  enum class TextAlignment { kLeft = 0, kCenter = 1, kRight = 2 };
 
-  enum class VerticalAlignment {
-    kTop = 0,
-    kMiddle = 1,
-    kBottom = 2
-  };
+  enum class VerticalAlignment { kTop = 0, kMiddle = 1, kBottom = 2 };
 
   // --------------------------------------------------------------------
   // Built‑in icon (/Name) enumeration – must stay in sync with the public
@@ -230,6 +222,8 @@ class CPDF_Annot {
 
  private:
   void GenerateAPIfNeeded();
+  RetainPtr<CPDF_Stream> GetOrBuildEphemeralAP(AppearanceMode mode);
+  bool CanGenerateEphemeralAP() const;
   bool ShouldGenerateAP() const;
   bool ShouldDrawAnnotation() const;
 
@@ -238,24 +232,27 @@ class CPDF_Annot {
   RetainPtr<CPDF_Dictionary> const annot_dict_;
   UnownedPtr<CPDF_Document> const document_;
   std::map<RetainPtr<CPDF_Stream>, std::unique_ptr<CPDF_Form>> ap_map_;
+  RetainPtr<CPDF_Stream> ephemeral_normal_ap_;
+  std::optional<CFX_FloatRect> ephemeral_rect_;
   // If non-null, then this is not a popup annotation.
   UnownedPtr<CPDF_Annot> popup_annot_;
   const Subtype subtype_;
   const bool is_text_markup_annotation_;
   // |open_state_| is only set for popup annotations.
   bool open_state_ = false;
+  bool ephemeral_built_ = false;
   bool has_generated_ap_;
 };
 
 // Get the AP in an annotation dict for a given appearance mode.
 // If |eMode| is not Normal and there is not AP for that mode, falls back to
 // the Normal AP.
-RetainPtr<CPDF_Stream> GetAnnotAP(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
                                   CPDF_Annot::AppearanceMode eMode);
 
 // Get the AP in an annotation dict for a given appearance mode.
 // No fallbacks to Normal like in GetAnnotAP.
-RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode);
 
 #endif  // CORE_FPDFDOC_CPDF_ANNOT_H_

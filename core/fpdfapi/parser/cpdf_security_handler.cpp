@@ -230,6 +230,17 @@ uint32_t CPDF_SecurityHandler::GetPermissions(bool get_owner_perms) const {
   return dwPermission;
 }
 
+uint32_t CPDF_SecurityHandler::GetPermissionsForPasswordProbe(
+    bool owner) const {
+  uint32_t dwPermission = owner ? 0xFFFFFFFF : permissions_;
+  if (encrypt_dict_ &&
+      encrypt_dict_->GetByteStringFor("Filter") == "Standard") {
+    dwPermission &= 0xFFFFFFFC;
+    dwPermission |= 0xFFFFF0C0;
+  }
+  return dwPermission;
+}
+
 bool CPDF_SecurityHandler::UnlockOwner(const ByteString& password) {
   if (owner_unlocked_) {
     return true;  // Already unlocked
@@ -244,6 +255,20 @@ bool CPDF_SecurityHandler::UnlockOwner(const ByteString& password) {
     return true;
   }
   return false;
+}
+
+bool CPDF_SecurityHandler::CheckPasswordNoMutate(const ByteString& password,
+                                                 bool bOwner) {
+  const PasswordEncodingConversion saved_conversion =
+      password_encoding_conversion_;
+  const std::array<uint8_t, 32> saved_key = encrypt_key_;
+
+  password_encoding_conversion_ = kUnknown;
+  const bool valid = CheckPassword(password, bOwner);
+
+  password_encoding_conversion_ = saved_conversion;
+  encrypt_key_ = saved_key;
+  return valid;
 }
 
 static bool LoadCryptInfo(const CPDF_Dictionary* pEncryptDict,

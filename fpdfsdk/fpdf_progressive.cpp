@@ -53,10 +53,11 @@ FPDF_RenderPageBitmapWithColorScheme_Start(FPDF_BITMAP bitmap,
     return FPDF_RENDER_FAILED;
   }
 
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return FPDF_RENDER_FAILED;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   RetainPtr<CFX_DIBitmap> pBitmap(CFXDIBitmapFromFPDFBitmap(bitmap));
   if (!pBitmap) {
@@ -134,10 +135,11 @@ FPDF_EXPORT int FPDF_CALLCONV FPDF_RenderPage_Continue(FPDF_PAGE page,
     return FPDF_RENDER_FAILED;
   }
 
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return FPDF_RENDER_FAILED;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   auto* context =
       static_cast<CPDF_PageRenderContext*>(pPage->GetRenderContext());

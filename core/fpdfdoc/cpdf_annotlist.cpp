@@ -13,12 +13,12 @@
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
 #include "constants/form_fields.h"
-#include "constants/form_flags.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -26,9 +26,6 @@
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfdoc/cpdf_annot.h"
-#include "core/fpdfdoc/cpdf_formfield.h"
-#include "core/fpdfdoc/cpdf_generateap.h"
-#include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/containers/unique_ptr_adapters.h"
 
@@ -125,90 +122,35 @@ std::unique_ptr<CPDF_Annot> CreatePopupAnnot(CPDF_Document* document,
   return pPopupAnnot;
 }
 
-void GenerateAP(CPDF_Document* doc, CPDF_Dictionary* pAnnotDict) {
-  if (!pAnnotDict ||
-      pAnnotDict->GetByteStringFor(pdfium::annotation::kSubtype) != "Widget") {
-    return;
-  }
-
-  RetainPtr<const CPDF_Object> pFieldTypeObj =
-      CPDF_FormField::GetFieldAttrForDict(pAnnotDict, pdfium::form_fields::kFT);
-  if (!pFieldTypeObj) {
-    return;
-  }
-
-  ByteString field_type = pFieldTypeObj->GetString();
-  if (field_type == pdfium::form_fields::kTx) {
-    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict,
-                                    CPDF_GenerateAP::kTextField);
-    return;
-  }
-
-  RetainPtr<const CPDF_Object> pFieldFlagsObj =
-      CPDF_FormField::GetFieldAttrForDict(pAnnotDict, pdfium::form_fields::kFf);
-  uint32_t flags = pFieldFlagsObj ? pFieldFlagsObj->GetInteger() : 0;
-  if (field_type == pdfium::form_fields::kCh) {
-    auto type = (flags & pdfium::form_flags::kChoiceCombo)
-                    ? CPDF_GenerateAP::kComboBox
-                    : CPDF_GenerateAP::kListBox;
-    CPDF_GenerateAP::GenerateFormAP(doc, pAnnotDict, type);
-    return;
-  }
-
-  if (field_type != pdfium::form_fields::kBtn) {
-    return;
-  }
-  if (flags & pdfium::form_flags::kButtonPushbutton) {
-    return;
-  }
-  if (pAnnotDict->KeyExist(pdfium::annotation::kAS)) {
-    return;
-  }
-
-  RetainPtr<const CPDF_Dictionary> pParentDict =
-      pAnnotDict->GetDictFor(pdfium::form_fields::kParent);
-  if (!pParentDict || !pParentDict->KeyExist(pdfium::annotation::kAS)) {
-    return;
-  }
-
-  pAnnotDict->SetNewFor<CPDF_String>(
-      pdfium::annotation::kAS,
-      pParentDict->GetByteStringFor(pdfium::annotation::kAS));
-}
-
 }  // namespace
 
 CPDF_AnnotList::CPDF_AnnotList(CPDF_Page* pPage)
     : page_(pPage), document_(page_->GetDocument()) {
-  RetainPtr<CPDF_Array> pAnnots = page_->GetMutableAnnotsArray();
+  CPDF_DocumentViewScope document_view(document_);
+
+  RetainPtr<const CPDF_Array> pAnnots = page_->GetAnnotsArray();
   if (!pAnnots) {
     return;
   }
 
-  const CPDF_Dictionary* pRoot = document_->GetRoot();
-  RetainPtr<const CPDF_Dictionary> pAcroForm = pRoot->GetDictFor("AcroForm");
-  bool bRegenerateAP =
-      pAcroForm && pAcroForm->GetBooleanFor("NeedAppearances", false);
   for (size_t i = 0; i < pAnnots->size(); ++i) {
-    RetainPtr<CPDF_Dictionary> dict =
-        ToDictionary(pAnnots->GetMutableDirectObjectAt(i));
-    if (!dict) {
+    RetainPtr<const CPDF_Dictionary> const_dict = pAnnots->GetDictAt(i);
+    if (!const_dict) {
       continue;
     }
     const ByteString subtype =
-        dict->GetByteStringFor(pdfium::annotation::kSubtype);
+        const_dict->GetByteStringFor(pdfium::annotation::kSubtype);
     if (subtype == "Popup") {
       // Skip creating Popup annotations in the PDF document since PDFium
       // provides its own Popup annotations.
       continue;
     }
-    pAnnots->ConvertToIndirectObjectAt(i, document_);
+    // CPDF_Annot still owns a mutable dictionary handle because explicit edit
+    // APIs mutate annotation dictionaries. Listing/rendering must not promote
+    // direct annotations to indirect objects.
+    RetainPtr<CPDF_Dictionary> dict =
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
     annot_list_.push_back(std::make_unique<CPDF_Annot>(dict, document_));
-    if (bRegenerateAP && subtype == "Widget" &&
-        CPDF_InteractiveForm::IsUpdateAPEnabled() &&
-        !dict->GetDictFor(pdfium::annotation::kAP)) {
-      GenerateAP(document_, dict.Get());
-    }
   }
 
   annot_count_ = annot_list_.size();
@@ -243,6 +185,8 @@ void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
                                  bool bPrinting,
                                  const CFX_Matrix& mtMatrix,
                                  bool bWidgetPass) {
+  CPDF_DocumentViewScope document_view(document_);
+
   CHECK(context);
   for (const auto& pAnnot : annot_list_) {
     bool bWidget = pAnnot->GetSubtype() == CPDF_Annot::Subtype::WIDGET;

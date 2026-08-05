@@ -40,6 +40,7 @@ class CPDF_SecurityHandler final : public Retainable {
   // When `get_owner_perms` is true, returns full permissions if unlocked by
   // owner.
   uint32_t GetPermissions(bool get_owner_perms) const;
+  uint32_t GetPermissionsForPasswordProbe(bool owner) const;
   bool IsMetadataEncrypted() const;
 
   CPDF_CryptoHandler* GetCryptoHandler() const { return crypto_handler_.get(); }
@@ -53,6 +54,15 @@ class CPDF_SecurityHandler final : public Retainable {
   // Returns true if the password is valid and owner_unlocked_ is now true.
   // Returns false if password is invalid, empty, or document isn't encrypted.
   bool UnlockOwner(const ByteString& password);
+
+  // Checks a password without changing the document's current unlock state.
+  // This is for app-level authorization probes; it must not be used to decrypt
+  // content for normal document operation.
+  bool CheckPasswordNoMutate(const ByteString& password, bool bOwner);
+
+  // Runtime policy override used by EmbedPDF after app-level authorization has
+  // been handled outside PDFium. This changes only this opened document handle.
+  void SetRuntimeOwnerUnlocked(bool enabled) { owner_unlocked_ = enabled; }
 
   // Returns true if owner permissions are currently unlocked.
   bool IsOwnerUnlocked() const { return owner_unlocked_; }

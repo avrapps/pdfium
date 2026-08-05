@@ -109,6 +109,37 @@ void CFX_XMLElement::Save(
   pXMLStream->WriteString(">\n");
 }
 
+// EmbedPDF: identical to Save() minus the injected newlines, so text
+// content round-trips byte-exact under xml:space="preserve" (XFDF form
+// data values). See CFX_XMLNode::SaveCompact().
+void CFX_XMLElement::SaveCompact(
+    const RetainPtr<IFX_RetainableWriteStream>& pXMLStream) {
+  ByteString bsNameEncoded = name_.ToUTF8();
+
+  pXMLStream->WriteString("<");
+  pXMLStream->WriteString(bsNameEncoded.AsStringView());
+
+  for (const auto& it : attrs_) {
+    pXMLStream->WriteString(
+        AttributeToString(it.first, it.second).ToUTF8().AsStringView());
+  }
+
+  if (!GetFirstChild()) {
+    pXMLStream->WriteString(" />");
+    return;
+  }
+
+  pXMLStream->WriteString(">");
+
+  for (CFX_XMLNode* pChild = GetFirstChild(); pChild;
+       pChild = pChild->GetNextSibling()) {
+    pChild->SaveCompact(pXMLStream);
+  }
+  pXMLStream->WriteString("</");
+  pXMLStream->WriteString(bsNameEncoded.AsStringView());
+  pXMLStream->WriteString(">");
+}
+
 CFX_XMLElement* CFX_XMLElement::GetFirstChildNamed(WideStringView name) const {
   return GetNthChildNamed(name, 0);
 }

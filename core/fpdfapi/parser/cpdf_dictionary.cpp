@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_crypto_handler.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -51,6 +52,12 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::Clone() const {
   return CloneObjectNonCyclic(false);
 }
 
+RetainPtr<CPDF_Object> CPDF_Dictionary::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited;
+  return CloneForHolderNonCyclic(holder, &visited);
+}
+
 RetainPtr<CPDF_Object> CPDF_Dictionary::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {
@@ -67,6 +74,31 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::CloneNonCyclic(
     }
   }
   return pCopy;
+}
+
+RetainPtr<CPDF_Object> CPDF_Dictionary::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  pVisited->insert(this);
+  auto pCopy = pdfium::MakeRetain<CPDF_Dictionary>(pool_);
+  CPDF_DictionaryLocker locker(this);
+  for (const auto& it : locker) {
+    if (!pdfium::Contains(*pVisited, it.second.Get())) {
+      std::set<const CPDF_Object*> visited(*pVisited);
+      auto obj = it.second->CloneForHolderNonCyclic(holder, &visited);
+      if (obj) {
+        pCopy->map_.insert(std::make_pair(it.first, std::move(obj)));
+      }
+    }
+  }
+  return pCopy;
+}
+
+void CPDF_Dictionary::FreezeChildren(std::set<const CPDF_Object*>* visited) {
+  CPDF_DictionaryLocker locker(this);
+  for (const auto& item : locker) {
+    item.second->FreezeForHolder(visited);
+  }
 }
 
 const CPDF_Object* CPDF_Dictionary::GetObjectForInternal(
@@ -99,8 +131,8 @@ RetainPtr<const CPDF_Object> CPDF_Dictionary::GetDirectObjectFor(
 
 RetainPtr<CPDF_Object> CPDF_Dictionary::GetMutableDirectObjectFor(
     ByteStringView key) {
-  return pdfium::WrapRetain(
-      const_cast<CPDF_Object*>(GetDirectObjectForInternal(key)));
+  RetainPtr<CPDF_Object> p = GetMutableObjectFor(key);
+  return p ? p->GetMutableDirect() : nullptr;
 }
 
 ByteString CPDF_Dictionary::GetByteStringFor(ByteStringView key) const {
@@ -169,8 +201,16 @@ RetainPtr<const CPDF_Dictionary> CPDF_Dictionary::GetDictFor(
 
 RetainPtr<CPDF_Dictionary> CPDF_Dictionary::GetMutableDictFor(
     ByteStringView key) {
-  return pdfium::WrapRetain(
-      const_cast<CPDF_Dictionary*>(GetDictForInternal(key)));
+  RetainPtr<CPDF_Object> p = GetMutableDirectObjectFor(key);
+  if (!p) {
+    return nullptr;
+  }
+  CPDF_Dictionary* dict = p->AsMutableDictionary();
+  if (dict) {
+    return pdfium::WrapRetain(dict);
+  }
+  CPDF_Stream* stream = p->AsMutableStream();
+  return stream ? stream->GetMutableDict() : nullptr;
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Dictionary::GetOrCreateDictFor(
@@ -193,7 +233,7 @@ RetainPtr<const CPDF_Array> CPDF_Dictionary::GetArrayFor(
 }
 
 RetainPtr<CPDF_Array> CPDF_Dictionary::GetMutableArrayFor(ByteStringView key) {
-  return pdfium::WrapRetain(const_cast<CPDF_Array*>(GetArrayForInternal(key)));
+  return ToArray(GetMutableDirectObjectFor(key));
 }
 
 RetainPtr<CPDF_Array> CPDF_Dictionary::GetOrCreateArrayFor(ByteStringView key) {
@@ -216,8 +256,7 @@ RetainPtr<const CPDF_Stream> CPDF_Dictionary::GetStreamFor(
 
 RetainPtr<CPDF_Stream> CPDF_Dictionary::GetMutableStreamFor(
     ByteStringView key) {
-  return pdfium::WrapRetain(
-      const_cast<CPDF_Stream*>(GetStreamForInternal(key)));
+  return ToStream(GetMutableDirectObjectFor(key));
 }
 
 const CPDF_Number* CPDF_Dictionary::GetNumberForInternal(
@@ -277,6 +316,8 @@ void CPDF_Dictionary::SetFor(const ByteString& key,
 CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
                                              RetainPtr<CPDF_Object> pObj) {
   CHECK(!IsLocked());
+  DCHECK(!IsFrozen());
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   if (!pObj) {
     map_.erase(key);
     return nullptr;
@@ -297,6 +338,8 @@ void CPDF_Dictionary::ConvertToIndirectObjectFor(
     return;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   pHolder->AddIndirectObject(it->second);
   it->second = it->second->MakeReference(pHolder);
 }
@@ -307,6 +350,8 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::RemoveFor(ByteStringView key) {
   if (it == map_.end()) {
     return RetainPtr<CPDF_Object>();
   }
+  DCHECK(!IsFrozen());
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
   auto node = map_.extract(it);
   return std::move(node.mapped());
 }
@@ -324,6 +369,8 @@ void CPDF_Dictionary::ReplaceKey(const ByteString& oldkey,
     return;
   }
 
+  DCHECK_PDF_GRAPH_MUTABLE_FOR(this);
+  DCHECK(!IsFrozen());
   map_[MaybeIntern(newkey)] = std::move(old_it->second);
   map_.erase(old_it);
 }

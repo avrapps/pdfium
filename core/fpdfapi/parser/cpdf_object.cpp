@@ -7,6 +7,7 @@
 #include "core/fpdfapi/parser/cpdf_object.h"
 
 #include <algorithm>
+#include <set>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -34,6 +35,22 @@ uint64_t CPDF_Object::KeyForCache() const {
          static_cast<uint64_t>(gen_num_);
 }
 
+void CPDF_Object::Freeze() {
+  std::set<const CPDF_Object*> visited;
+  FreezeForHolder(&visited);
+}
+
+void CPDF_Object::FreezeForHolder(std::set<const CPDF_Object*>* visited) {
+  if (!visited->insert(this).second) {
+    return;
+  }
+
+  frozen_ = true;
+  FreezeChildren(visited);
+}
+
+void CPDF_Object::FreezeChildren(std::set<const CPDF_Object*>*) {}
+
 RetainPtr<CPDF_Object> CPDF_Object::GetMutableDirect() {
   return pdfium::WrapRetain(const_cast<CPDF_Object*>(GetDirectInternal()));
 }
@@ -55,10 +72,22 @@ RetainPtr<CPDF_Object> CPDF_Object::CloneDirectObject() const {
   return CloneObjectNonCyclic(true);
 }
 
+RetainPtr<CPDF_Object> CPDF_Object::CloneForHolder(
+    CPDF_IndirectObjectHolder* holder) const {
+  std::set<const CPDF_Object*> visited_objs;
+  return CloneForHolderNonCyclic(holder, &visited_objs);
+}
+
 RetainPtr<CPDF_Object> CPDF_Object::CloneNonCyclic(
     bool bDirect,
     std::set<const CPDF_Object*>* pVisited) const {
   return Clone();
+}
+
+RetainPtr<CPDF_Object> CPDF_Object::CloneForHolderNonCyclic(
+    CPDF_IndirectObjectHolder* holder,
+    std::set<const CPDF_Object*>* pVisited) const {
+  return CloneNonCyclic(/*bDirect=*/false, pVisited);
 }
 
 ByteString CPDF_Object::GetString() const {

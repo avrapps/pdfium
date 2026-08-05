@@ -95,26 +95,29 @@ using pdfium::metadata::kNameTrue;
 using pdfium::metadata::kNameUnknown;
 
 constexpr const char* kReservedInfoKeys[] = {
-    kInfoTitle, kInfoAuthor, kInfoSubject, kInfoKeywords,
-    kInfoProducer, kInfoCreator, kInfoCreationDate, kInfoModDate,
-    kInfoTrapped,
+    kInfoTitle,   kInfoAuthor,       kInfoSubject, kInfoKeywords, kInfoProducer,
+    kInfoCreator, kInfoCreationDate, kInfoModDate, kInfoTrapped,
 };
 
 bool IsReservedInfoKey(ByteStringView key) {
   for (const char* r : kReservedInfoKeys) {
-    if (key == r)
+    if (key == r) {
       return true;
+    }
   }
   return false;
 }
 
 inline FPDF_TRAPPED_STATUS TrappedNameToStatus(ByteStringView name) {
-  if (name == kNameTrue)
+  if (name == kNameTrue) {
     return PDFTRAPPED_TRUE;
-  if (name == kNameFalse)
+  }
+  if (name == kNameFalse) {
     return PDFTRAPPED_FALSE;
-  if (name == kNameUnknown)
+  }
+  if (name == kNameUnknown) {
     return PDFTRAPPED_UNKNOWN;
+  }
   // Be forgiving on odd values.
   return PDFTRAPPED_UNKNOWN;
 }
@@ -333,6 +336,23 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFDest_GetDestPageIndex(FPDF_DOCUMENT document,
   return destination.GetDestPageIndex(doc);
 }
 
+FPDF_EXPORT unsigned int FPDF_CALLCONV
+EPDFDest_GetPageObjectNumber(FPDF_DOCUMENT document, FPDF_DEST dest) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || !dest) {
+    return 0;
+  }
+
+#ifdef PDF_ENABLE_XFA
+  if (doc->GetExtension()) {
+    return 0;
+  }
+#endif  // PDF_ENABLE_XFA
+
+  CPDF_Dest destination(pdfium::WrapRetain(CPDFArrayFromFPDFDest(dest)));
+  return destination.GetPageObjectNumber(doc);
+}
+
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 FPDFDest_GetView(FPDF_DEST dest, unsigned long* pNumParams, FS_FLOAT* pParams) {
   if (!dest) {
@@ -381,10 +401,11 @@ FPDFDest_GetLocationInPage(FPDF_DEST dest,
 FPDF_EXPORT FPDF_LINK FPDF_CALLCONV FPDFLink_GetLinkAtPoint(FPDF_PAGE page,
                                                             double x,
                                                             double y) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return nullptr;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   CPDF_LinkList* pLinkList = GetLinkList(pPage);
   if (!pLinkList) {
@@ -401,10 +422,11 @@ FPDF_EXPORT FPDF_LINK FPDF_CALLCONV FPDFLink_GetLinkAtPoint(FPDF_PAGE page,
 FPDF_EXPORT int FPDF_CALLCONV FPDFLink_GetLinkZOrderAtPoint(FPDF_PAGE page,
                                                             double x,
                                                             double y) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return -1;
   }
+  CPDF_Page* pPage = page_view.Get();
 
   CPDF_LinkList* pLinkList = GetLinkList(pPage);
   if (!pLinkList) {
@@ -423,11 +445,20 @@ FPDF_EXPORT FPDF_DEST FPDF_CALLCONV FPDFLink_GetDest(FPDF_DOCUMENT document,
   if (!link) {
     return nullptr;
   }
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  if (!doc) {
+  ScopedFPDFDocumentView document_view(document);
+  if (!document_view) {
     return nullptr;
   }
-  CPDF_Link cLink(pdfium::WrapRetain(CPDFDictionaryFromFPDFLink(link)));
+  CPDF_Document* doc = document_view.Get();
+  RetainPtr<CPDF_Dictionary> link_dict(CPDFDictionaryFromFPDFLink(link));
+  if (link_dict->GetObjNum() != 0) {
+    RetainPtr<CPDF_Dictionary> effective =
+        ToDictionary(doc->GetOrParseIndirectObject(link_dict->GetObjNum()));
+    if (effective) {
+      link_dict = std::move(effective);
+    }
+  }
+  CPDF_Link cLink(std::move(link_dict));
   FPDF_DEST dest = FPDFDestFromCPDFArray(cLink.GetDest(doc).GetArray());
   if (dest) {
     return dest;
@@ -455,23 +486,25 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFLink_Enumerate(FPDF_PAGE page,
   if (!start_pos || !link_annot) {
     return false;
   }
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return false;
   }
-  RetainPtr<CPDF_Array> pAnnots = pPage->GetMutableAnnotsArray();
+  const CPDF_Page* pPage = page_view.Get();
+  RetainPtr<const CPDF_Array> pAnnots = pPage->GetAnnotsArray();
   if (!pAnnots) {
     return false;
   }
   for (size_t i = *start_pos; i < pAnnots->size(); i++) {
-    RetainPtr<CPDF_Dictionary> dict =
-        ToDictionary(pAnnots->GetMutableDirectObjectAt(i));
+    RetainPtr<const CPDF_Dictionary> dict =
+        ToDictionary(pAnnots->GetDirectObjectAt(i));
     if (!dict) {
       continue;
     }
     if (dict->GetByteStringFor("Subtype") == "Link") {
       *start_pos = static_cast<int>(i + 1);
-      *link_annot = FPDFLinkFromCPDFDictionary(dict.Get());
+      *link_annot =
+          FPDFLinkFromCPDFDictionary(const_cast<CPDF_Dictionary*>(dict.Get()));
       return true;
     }
   }
@@ -480,10 +513,18 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFLink_Enumerate(FPDF_PAGE page,
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 FPDFLink_GetAnnot(FPDF_PAGE page, FPDF_LINK link_annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  ScopedFPDFPageView page_view(page);
+  CPDF_Page* pPage = page_view.Get();
   RetainPtr<CPDF_Dictionary> pAnnotDict(CPDFDictionaryFromFPDFLink(link_annot));
   if (!pPage || !pAnnotDict) {
     return nullptr;
+  }
+  if (pAnnotDict->GetObjNum() != 0) {
+    RetainPtr<CPDF_Dictionary> effective = ToDictionary(
+        pPage->GetDocument()->GetOrParseIndirectObject(pAnnotDict->GetObjNum()));
+    if (effective) {
+      pAnnotDict = std::move(effective);
+    }
   }
 
   auto pAnnotContext = std::make_unique<CPDF_AnnotContext>(
@@ -633,22 +674,23 @@ FPDF_GetPageLabel(FPDF_DOCUMENT document,
       str.value(), UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_SetMetaText(FPDF_DOCUMENT document,
-                 FPDF_BYTESTRING tag,
-                 FPDF_WIDESTRING value) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_SetMetaText(FPDF_DOCUMENT document,
+                                                     FPDF_BYTESTRING tag,
+                                                     FPDF_WIDESTRING value) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc || !tag)
+  if (!pDoc || !tag) {
     return false;
+  }
 
   // Create /Info if it does not exist.
   RetainPtr<CPDF_Dictionary> info = pDoc->GetOrCreateInfo();
-  if (!info)
+  if (!info) {
     return false;
+  }
 
   ByteString key(tag);
-  WideString wide =
-      value ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(value)) : WideString();
+  WideString wide = value ? UNSAFE_BUFFERS(WideStringFromFPDFWideString(value))
+                          : WideString();
 
   if (wide.IsEmpty()) {
     // RemoveFor() expects ByteStringView.
@@ -661,42 +703,53 @@ EPDF_SetMetaText(FPDF_DOCUMENT document,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDF_HasMetaText(FPDF_DOCUMENT document, FPDF_BYTESTRING tag) {
-  if (!tag) return false;
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDF_HasMetaText(FPDF_DOCUMENT document,
+                                                     FPDF_BYTESTRING tag) {
+  if (!tag) {
+    return false;
+  }
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  
-  if (!pDoc) return false;
+
+  if (!pDoc) {
+    return false;
+  }
   RetainPtr<const CPDF_Dictionary> info = pDoc->GetInfo();
 
-  if (!info) return false;
+  if (!info) {
+    return false;
+  }
   return info->KeyExist(tag);
 }
 
 FPDF_EXPORT FPDF_TRAPPED_STATUS FPDF_CALLCONV
 EPDF_GetMetaTrapped(FPDF_DOCUMENT document) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc)
+  if (!pDoc) {
     return PDFTRAPPED_UNKNOWN;
+  }
 
   RetainPtr<const CPDF_Dictionary> info = pDoc->GetInfo();
-  if (!info)
+  if (!info) {
     return PDFTRAPPED_NOTSET;
+  }
 
   // SetNewFor() wants ByteString keys; RemoveFor() wants ByteStringView.
   ByteString key_trapped(kInfoTrapped);
 
   RetainPtr<const CPDF_Object> obj =
       info->GetDirectObjectFor(key_trapped.AsStringView());
-  if (!obj)
+  if (!obj) {
     return PDFTRAPPED_NOTSET;
+  }
 
-  if (const CPDF_Name* pName = ToName(obj.Get()))
+  if (const CPDF_Name* pName = ToName(obj.Get())) {
     return TrappedNameToStatus(pName->GetString().AsStringView());
+  }
 
   // Lenient: some PDFs incorrectly store a boolean; read via the dict helper.
   if (obj->IsBoolean()) {
-    const bool b = info->GetBooleanFor(key_trapped.AsStringView(), /*bDefault=*/false);
+    const bool b =
+        info->GetBooleanFor(key_trapped.AsStringView(), /*bDefault=*/false);
     return b ? PDFTRAPPED_TRUE : PDFTRAPPED_FALSE;
   }
 
@@ -706,12 +759,14 @@ EPDF_GetMetaTrapped(FPDF_DOCUMENT document) {
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDF_SetMetaTrapped(FPDF_DOCUMENT document, FPDF_TRAPPED_STATUS status) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc)
+  if (!pDoc) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> info = pDoc->GetOrCreateInfo();
-  if (!info)
+  if (!info) {
     return false;
+  }
 
   ByteString key_trapped(kInfoTrapped);
 
@@ -721,28 +776,33 @@ EPDF_SetMetaTrapped(FPDF_DOCUMENT document, FPDF_TRAPPED_STATUS status) {
   }
 
   ByteStringView name = StatusToTrappedName(status);
-  if (name.IsEmpty())
+  if (name.IsEmpty()) {
     return false;  // invalid enum
+  }
 
-  info->SetNewFor<CPDF_Name>(key_trapped, ByteString(name));  // expects ByteString key
+  info->SetNewFor<CPDF_Name>(key_trapped,
+                             ByteString(name));  // expects ByteString key
   return true;
 }
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDF_GetMetaKeyCount(FPDF_DOCUMENT document, FPDF_BOOL custom_only) {
+FPDF_EXPORT int FPDF_CALLCONV EPDF_GetMetaKeyCount(FPDF_DOCUMENT document,
+                                                   FPDF_BOOL custom_only) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc)
+  if (!pDoc) {
     return 0;
+  }
 
   RetainPtr<const CPDF_Dictionary> info = pDoc->GetInfo();
-  if (!info)
+  if (!info) {
     return 0;
+  }
 
   int count = 0;
   std::vector<ByteString> keys = info->GetKeys();
   for (const ByteString& key : keys) {
-    if (custom_only && IsReservedInfoKey(key.AsStringView()))
+    if (custom_only && IsReservedInfoKey(key.AsStringView())) {
       continue;
+    }
     ++count;
   }
   return count;
@@ -755,18 +815,21 @@ EPDF_GetMetaKeyName(FPDF_DOCUMENT document,
                     void* buffer,
                     unsigned long buflen) {
   CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
-  if (!pDoc || index < 0)
+  if (!pDoc || index < 0) {
     return 0;
+  }
 
   RetainPtr<const CPDF_Dictionary> info = pDoc->GetInfo();
-  if (!info)
+  if (!info) {
     return 0;
+  }
 
   int seen = 0;
   std::vector<ByteString> keys = info->GetKeys();
   for (const ByteString& key : keys) {
-    if (custom_only && IsReservedInfoKey(key.AsStringView()))
+    if (custom_only && IsReservedInfoKey(key.AsStringView())) {
       continue;
+    }
     if (seen++ == index) {
       return NulTerminateMaybeCopyAndReturnLength(
           key, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));

@@ -91,7 +91,14 @@ class CPDF_PageContentGenerator {
 
   // Updates the resource dictionary for `obj_holder_` to account for all the
   // changes.
-  void UpdateResourcesDict();
+  // EmbedPDF: `regenerated_all_streams` reports whether THIS pass rewrote
+  // every existing content stream. Resource pruning is only sound then —
+  // see the guard in the implementation.
+  void UpdateResourcesDict(bool regenerated_all_streams);
+
+  // EmbedPDF: the holder's current content-stream count (form = its single
+  // stream; page = resolved /Contents array size, or 1 for a lone stream).
+  int32_t CountExistingContentStreams();
 
   UnownedPtr<CPDF_PageObjectHolder> const obj_holder_;
   UnownedPtr<CPDF_Document> const document_;

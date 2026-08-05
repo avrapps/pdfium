@@ -1,0 +1,100 @@
+{{header}}
+{{object 1 0}} <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+{{object 2 0}} <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+{{object 3 0}} <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 160 120]
+  /Resources <<
+    /Font <<
+      /F1 9 0 R
+    >>
+  >>
+  /Contents 4 0 R
+  /Annots [5 0 R 6 0 R 7 0 R 8 0 R]
+>>
+endobj
+{{object 4 0}} <<
+  {{streamlen}}
+>>
+stream
+q
+0.97 0.97 1 rg
+0 0 160 120 re f
+1 0.9 0.9 rg
+20 20 30 25 re f
+0.9 1 0.9 rg
+95 20 30 25 re f
+Q
+BT
+/F1 9 Tf
+10 98 Td
+(apply all redactions removes both targets) Tj
+ET
+endstream
+endobj
+{{object 5 0}} <<
+  /Type /Annot
+  /Subtype /Redact
+  /NM (Redact-left)
+  /F 4
+  /C [1 0 0]
+  /IC [0 0 0]
+  /OverlayText (LEFT)
+  /QuadPoints [15 50 55 50 15 15 55 15]
+  /Rect [15 15 55 50]
+>>
+endobj
+{{object 6 0}} <<
+  /Type /Annot
+  /Subtype /Square
+  /NM (Square-left)
+  /F 4
+  /C [0.8 0 0]
+  /IC [1 0.9 0.9]
+  /Border [0 0 2]
+  /Rect [20 20 50 45]
+>>
+endobj
+{{object 7 0}} <<
+  /Type /Annot
+  /Subtype /Redact
+  /NM (Redact-right)
+  /F 4
+  /C [1 0 0]
+  /IC [0 0 0]
+  /OverlayText (RIGHT)
+  /QuadPoints [90 50 130 50 90 15 130 15]
+  /Rect [90 15 130 50]
+>>
+endobj
+{{object 8 0}} <<
+  /Type /Annot
+  /Subtype /Square
+  /NM (Square-right)
+  /F 4
+  /C [0 0.55 0]
+  /IC [0.9 1 0.9]
+  /Border [0 0 2]
+  /Rect [95 20 125 45]
+>>
+endobj
+{{object 9 0}} <<
+  /Type /Font
+  /Subtype /Type1
+  /BaseFont /Helvetica
+>>
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

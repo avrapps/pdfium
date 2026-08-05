@@ -1,0 +1,89 @@
+%PDF-1.7
+% ò¤ô
+1 0 obj <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+2 0 obj <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+3 0 obj <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 100 100]
+  /Resources <<
+    /Font <<
+      /F1 7 0 R
+    >>
+  >>
+  /Contents 4 0 R
+  /Annots [5 0 R 6 0 R]
+>>
+endobj
+4 0 obj <<
+  /Length 126
+>>
+stream
+q
+0.96 0.98 1 rg
+0 0 100 100 re f
+0.85 0.92 1 rg
+20 20 30 30 re f
+Q
+BT
+/F1 8 Tf
+5 86 Td
+(intersecting square is removed) Tj
+ET
+endstream
+endobj
+5 0 obj <<
+  /Type /Annot
+  /Subtype /Redact
+  /NM (Redact-target)
+  /F 4
+  /C [1 0 0]
+  /IC [0 0 0]
+  /OverlayText (REDACT)
+  /QuadPoints [10 40 40 40 10 10 40 10]
+  /Rect [10 10 40 40]
+>>
+endobj
+6 0 obj <<
+  /Type /Annot
+  /Subtype /Square
+  /NM (Square-target)
+  /F 4
+  /C [0 0.25 1]
+  /IC [0.85 0.93 1]
+  /Border [0 0 2]
+  /Rect [20 20 50 50]
+>>
+endobj
+7 0 obj <<
+  /Type /Font
+  /Subtype /Type1
+  /BaseFont /Helvetica
+>>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000068 00000 n 
+0000000131 00000 n 
+0000000307 00000 n 
+0000000486 00000 n 
+0000000683 00000 n 
+0000000843 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 8
+>>
+startxref
+919
+%%EOF

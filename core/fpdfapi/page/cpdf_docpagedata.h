@@ -19,6 +19,7 @@
 #include "core/fxcrt/fx_codepage_forward.h"
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/unowned_ptr.h"
 
 class CFX_Font;
 class CPDF_Dictionary;
@@ -36,7 +37,10 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   static CPDF_DocPageData* FromDocument(const CPDF_Document* doc);
 
   CPDF_DocPageData();
+  explicit CPDF_DocPageData(CPDF_DocPageData* fallback);
   ~CPDF_DocPageData() override;
+
+  void SetFallback(CPDF_DocPageData* fallback) { fallback_ = fallback; }
 
   // CPDF_Document::PageDataIface:
   void ClearStockFont() override;
@@ -109,6 +113,7 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
       const CPDF_Dictionary* pResources,
       std::set<const CPDF_Object*>* pVisited,
       std::set<const CPDF_Object*>* pVisitedInternal);
+  bool CanUseFallbackForObject(const CPDF_Object* object) const;
 
   size_t CalculateEncodingDict(FX_Charset charset, CPDF_Dictionary* pBaseDict);
   RetainPtr<CPDF_Dictionary> ProcessbCJK(
@@ -118,6 +123,7 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
       std::function<void(wchar_t, wchar_t, CPDF_Array*)> Insert);
 
   bool force_clear_ = false;
+  UnownedPtr<CPDF_DocPageData> fallback_;
 
   // Specific destruction order may be required between maps.
   std::map<HashIccProfileKey, RetainPtr<const CPDF_Stream>>

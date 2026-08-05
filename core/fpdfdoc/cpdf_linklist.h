@@ -29,9 +29,11 @@ class CPDF_LinkList final : public CPDF_Document::LinkListIface {
                            int* z_order);
 
  private:
-  const std::vector<RetainPtr<CPDF_Dictionary>>* GetPageLinks(CPDF_Page* pPage);
+  const std::vector<RetainPtr<const CPDF_Dictionary>>* GetPageLinks(
+      CPDF_Page* pPage);
 
-  std::map<uint32_t, std::vector<RetainPtr<CPDF_Dictionary>>> page_map_;
+  uint64_t overlay_epoch_ = 0;
+  std::map<uint32_t, std::vector<RetainPtr<const CPDF_Dictionary>>> page_map_;
 };
 
 #endif  // CORE_FPDFDOC_CPDF_LINKLIST_H_

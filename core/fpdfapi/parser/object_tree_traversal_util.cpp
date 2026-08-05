@@ -25,8 +25,9 @@ namespace {
 
 class ObjectTreeTraverser {
  public:
-  explicit ObjectTreeTraverser(const CPDF_Document* document)
-      : document_(document) {
+  ObjectTreeTraverser(const CPDF_Document* document,
+                      ObjectTreeReferenceResolveMode resolve_mode)
+      : document_(document), resolve_mode_(resolve_mode) {
     const CPDF_Parser* parser = document_->GetParser();
     const CPDF_Dictionary* trailer = parser ? parser->GetTrailer() : nullptr;
     const CPDF_Dictionary* root = trailer ? trailer : document_->GetRoot();
@@ -83,11 +84,17 @@ class ObjectTreeTraverser {
           const uint32_t referenced_object_number = ref_object->GetRefObjNum();
 
           RetainPtr<const CPDF_Object> referenced_object;
-          if (ref_object->HasIndirectObjectHolder()) {
-            // Calling GetIndirectObject() does not work for normal references.
+          if (resolve_mode_ ==
+              ObjectTreeReferenceResolveMode::kEffectiveDocument) {
+            referenced_object =
+                document_->GetIndirectObject(referenced_object_number);
+          } else if (ref_object->HasIndirectObjectHolder()) {
+            // In kReferenceHolder mode, go through the reference's holder so
+            // lazy parsing can pull the referenced object off disk on demand.
             referenced_object = ref_object->GetDirect();
           } else {
-            // Calling GetDirect() does not work for references from trailers.
+            // Inlined trailer references have no holder, so GetDirect() cannot
+            // resolve them.
             referenced_object =
                 document_->GetIndirectObject(referenced_object_number);
           }
@@ -171,6 +178,7 @@ class ObjectTreeTraverser {
   }
 
   UnownedPtr<const CPDF_Document> const document_;
+  const ObjectTreeReferenceResolveMode resolve_mode_;
 
   // Queue of objects to traverse.
   // - Pointers in the queue are non-null.
@@ -196,8 +204,10 @@ class ObjectTreeTraverser {
 
 }  // namespace
 
-std::set<uint32_t> GetObjectsWithReferences(const CPDF_Document* document) {
-  ObjectTreeTraverser traverser(document);
+std::set<uint32_t> GetObjectsWithReferences(
+    const CPDF_Document* document,
+    ObjectTreeReferenceResolveMode resolve_mode) {
+  ObjectTreeTraverser traverser(document, resolve_mode);
   traverser.Traverse();
 
   std::set<uint32_t> results;
@@ -208,8 +218,9 @@ std::set<uint32_t> GetObjectsWithReferences(const CPDF_Document* document) {
 }
 
 std::set<uint32_t> GetObjectsWithMultipleReferences(
-    const CPDF_Document* document) {
-  ObjectTreeTraverser traverser(document);
+    const CPDF_Document* document,
+    ObjectTreeReferenceResolveMode resolve_mode) {
+  ObjectTreeTraverser traverser(document, resolve_mode);
   traverser.Traverse();
 
   std::set<uint32_t> results;

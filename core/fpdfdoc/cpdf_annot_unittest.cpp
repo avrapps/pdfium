@@ -6,9 +6,14 @@
 
 #include <vector>
 
+#include "constants/annotation_common.h"
+#include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/test_with_page_module.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_test_document.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -23,6 +28,8 @@ RetainPtr<CPDF_Array> CreateQuadPointArrayFromVector(
 }
 
 }  // namespace
+
+class CPDFAnnotWithPageModuleTest : public TestWithPageModule {};
 
 TEST(CPDFAnnotTest, RectFromQuadPointsArray) {
   RetainPtr<CPDF_Array> array = CreateQuadPointArrayFromVector(
@@ -135,4 +142,54 @@ TEST(CPDFAnnotTest, QuadPointCount) {
     array->AppendNew<CPDF_Number>(0);
   }
   EXPECT_EQ(8u, CPDF_Annot::QuadPointCount(array.Get()));
+}
+
+TEST_F(CPDFAnnotWithPageModuleTest,
+       ConstructorDoesNotPersistEphemeralHighlightAP) {
+  CPDF_TestDocument doc;
+  auto annot_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  annot_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Highlight");
+  annot_dict->SetRectFor(pdfium::annotation::kRect,
+                         CFX_FloatRect(0, 0, 100, 100));
+  annot_dict->SetFor("QuadPoints", CreateQuadPointArrayFromVector(
+                                       {10, 20, 50, 20, 10, 10, 50, 10}));
+
+  const uint32_t last_obj_num = doc.GetLastObjNum();
+  CPDF_Annot annot(annot_dict, &doc);
+
+  EXPECT_EQ(last_obj_num, doc.GetLastObjNum());
+  EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
+  EXPECT_FALSE(annot_dict->KeyExist("PDFIUM_HasGeneratedAP"));
+  EXPECT_EQ(CFX_FloatRect(10, 10, 50, 20), annot.GetRect());
+}
+
+TEST_F(CPDFAnnotWithPageModuleTest,
+       EphemeralInkAPUsesInflatedDrawingRectWithoutPersistingRect) {
+  CPDF_TestDocument doc;
+  doc.SetRoot(pdfium::MakeRetain<CPDF_Dictionary>());
+  auto page = pdfium::MakeRetain<CPDF_Page>(
+      &doc, pdfium::MakeRetain<CPDF_Dictionary>());
+
+  auto annot_dict = pdfium::MakeRetain<CPDF_Dictionary>();
+  annot_dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Ink");
+  annot_dict->SetRectFor(pdfium::annotation::kRect,
+                         CFX_FloatRect(0, 0, 10, 10));
+  auto border_style = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  border_style->SetNewFor<CPDF_Number>("W", 4);
+
+  auto ink_list = pdfium::MakeRetain<CPDF_Array>();
+  ink_list->Append(CreateQuadPointArrayFromVector({1, 1, 9, 9}));
+  annot_dict->SetFor("InkList", std::move(ink_list));
+
+  CPDF_Annot annot(annot_dict, &doc);
+  EXPECT_EQ(CFX_FloatRect(0, 0, 10, 10),
+            annot_dict->GetRectFor(pdfium::annotation::kRect));
+
+  ASSERT_TRUE(annot.GetAPForm(page.Get(), CPDF_Annot::AppearanceMode::kNormal));
+  EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
+  EXPECT_EQ(CFX_FloatRect(0, 0, 10, 10),
+            annot_dict->GetRectFor(pdfium::annotation::kRect));
+  // The drawing rect is the minimal union of the authored /Rect and the
+  // stroked ink bounds: points 1..9 inflated by half the width (2).
+  EXPECT_EQ(CFX_FloatRect(-1, -1, 11, 11), annot.GetRect());
 }

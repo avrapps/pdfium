@@ -222,16 +222,16 @@ RetainPtr<CPDF_Font> CPDF_FormControl::GetDefaultControlFont() const {
   }
 
   const ByteString& font_name = maybe_font_name_and_size.value().name;
-  RetainPtr<CPDF_Dictionary> pDRDict = ToDictionary(
-      CPDF_FormField::GetMutableFieldAttrForDict(widget_dict_.Get(), "DR"));
+  RetainPtr<const CPDF_Dictionary> pDRDict = ToDictionary(
+      CPDF_FormField::GetFieldAttrForDict(widget_dict_.Get(), "DR"));
   if (pDRDict) {
-    RetainPtr<CPDF_Dictionary> fonts = pDRDict->GetMutableDictFor("Font");
+    RetainPtr<const CPDF_Dictionary> fonts = pDRDict->GetDictFor("Font");
     if (ValidateFontResourceDict(fonts.Get())) {
-      RetainPtr<CPDF_Dictionary> pElement =
-          fonts->GetMutableDictFor(font_name.AsStringView());
+      RetainPtr<const CPDF_Dictionary> pElement =
+          fonts->GetDictFor(font_name.AsStringView());
       if (pElement) {
-        RetainPtr<CPDF_Font> font =
-            form_->GetFontForElement(std::move(pElement));
+        RetainPtr<CPDF_Font> font = form_->GetFontForElement(
+            pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pElement.Get())));
         if (font) {
           return font;
         }
@@ -243,25 +243,26 @@ RetainPtr<CPDF_Font> CPDF_FormControl::GetDefaultControlFont() const {
     return pFormFont;
   }
 
-  RetainPtr<CPDF_Dictionary> pPageDict = widget_dict_->GetMutableDictFor("P");
-  RetainPtr<CPDF_Dictionary> dict = ToDictionary(
-      CPDF_FormField::GetMutableFieldAttrForDict(pPageDict.Get(), "Resources"));
+  RetainPtr<const CPDF_Dictionary> pPageDict = widget_dict_->GetDictFor("P");
+  RetainPtr<const CPDF_Dictionary> dict = ToDictionary(
+      CPDF_FormField::GetFieldAttrForDict(pPageDict.Get(), "Resources"));
   if (!dict) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> fonts = dict->GetMutableDictFor("Font");
+  RetainPtr<const CPDF_Dictionary> fonts = dict->GetDictFor("Font");
   if (!ValidateFontResourceDict(fonts.Get())) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> pElement =
-      fonts->GetMutableDictFor(font_name.AsStringView());
+  RetainPtr<const CPDF_Dictionary> pElement =
+      fonts->GetDictFor(font_name.AsStringView());
   if (!pElement) {
     return nullptr;
   }
 
-  return form_->GetFontForElement(std::move(pElement));
+  return form_->GetFontForElement(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pElement.Get())));
 }
 
 int CPDF_FormControl::GetControlAlignment() const {

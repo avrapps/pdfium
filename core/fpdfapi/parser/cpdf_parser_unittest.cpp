@@ -204,6 +204,8 @@ TEST(ParserTest, LoadCrossRefTable) {
       EXPECT_EQ(kExpected[i].offset, GetObjInfo(parser, i).pos);
       EXPECT_EQ(kExpected[i].type, GetObjInfo(parser, i).type);
     }
+    EXPECT_EQ(65535u, GetObjInfo(parser, 0).gennum);
+    EXPECT_EQ(7u, GetObjInfo(parser, 3).gennum);
   }
   {
     static const unsigned char kXrefTable[] =

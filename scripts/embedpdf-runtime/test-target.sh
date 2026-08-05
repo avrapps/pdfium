@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TARGET="${1:-}"
 TEST_SUITE="${PDFIUM_TEST_SUITE:-all}"
+# EmbedPDF: thread-confined runtime. test-target.sh only builds native host
+# targets, which is exactly where we ship the flag on, so default it on here to
+# exercise the same variant we ship. Override with EMBEDPDF_TLS_GLOBALS=false to
+# build the baseline (process-global) variant for comparison/regression.
+EMBEDPDF_TLS_GLOBALS="${EMBEDPDF_TLS_GLOBALS:-true}"
 
 if [[ -z "$TARGET" ]]; then
   echo "usage: $0 <target>" >&2
@@ -71,6 +79,7 @@ pdf_is_standalone=true
 use_debug_fission=false
 pdf_is_complete_lib=false
 pdf_use_partition_alloc=false
+embedpdf_thread_local_globals=$EMBEDPDF_TLS_GLOBALS
 symbol_level=1
 target_os="$GN_TARGET_OS"
 target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}

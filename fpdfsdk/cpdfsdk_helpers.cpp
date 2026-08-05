@@ -11,6 +11,7 @@
 #include "build/build_config.h"
 #include "constants/form_fields.h"
 #include "constants/stream_dict_common.h"
+#include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -37,6 +38,18 @@
 namespace {
 
 constexpr char kQuadPoints[] = "QuadPoints";
+
+// EmbedPDF: thread-confined runtime - config callbacks, NOT runtime knobs.
+// These two process-globals are intentionally left process-wide (not EPDF_TLS):
+// they are immutable configuration that MUST be set once during process
+// bootstrap, before any worker thread starts, and MUST NOT be mutated while
+// workers are live. Setting them per-request/per-thread is unsupported. The
+// server sets neither after startup, so there is no cross-thread write race.
+//
+// (Other inactive process-globals in our build config - the Skia font manager
+// and the Windows print-mode globals - are compiled out of the headless server
+// runtime. They would be unsafe under multi-threading if those subsystems were
+// ever re-enabled, and would need the same treatment then.)
 
 // 0 bit: FPDF_POLICY_MACHINETIME_ACCESS
 uint32_t g_sandbox_policy = 0xFFFFFFFF;
@@ -221,6 +234,26 @@ FPDF_DOCUMENT FPDFDocumentFromCPDFDocument(CPDF_Document* doc) {
 CPDF_Page* CPDFPageFromFPDFPage(FPDF_PAGE page) {
   return page ? IPDFPageFromFPDFPage(page)->AsPDFPage() : nullptr;
 }
+
+ScopedFPDFDocumentView::ScopedFPDFDocumentView(FPDF_DOCUMENT document)
+    : document_(CPDFDocumentFromFPDFDocument(document)),
+      view_scope_(document_) {}
+
+ScopedFPDFDocumentView::~ScopedFPDFDocumentView() = default;
+
+ScopedFPDFPageView::ScopedFPDFPageView(FPDF_PAGE page)
+    : page_(CPDFPageFromFPDFPage(page)),
+      view_scope_(page_ ? page_->GetDocument() : nullptr) {}
+
+ScopedFPDFPageView::~ScopedFPDFPageView() = default;
+
+ScopedFPDFAnnotationView::ScopedFPDFAnnotationView(
+    FPDF_ANNOTATION annotation)
+    : annotation_(CPDFAnnotContextFromFPDFAnnotation(annotation)),
+      view_scope_(annotation_ ? annotation_->GetPage()->GetDocument()
+                              : nullptr) {}
+
+ScopedFPDFAnnotationView::~ScopedFPDFAnnotationView() = default;
 
 FXDIB_Format FXDIBFormatFromFPDFFormat(int format) {
   switch (format) {

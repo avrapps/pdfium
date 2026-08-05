@@ -36,6 +36,8 @@ class CPDF_Dictionary final : public CPDF_Object {
   // CPDF_Object:
   Type GetType() const override;
   RetainPtr<CPDF_Object> Clone() const override;
+  RetainPtr<CPDF_Object> CloneForHolder(
+      CPDF_IndirectObjectHolder* holder) const override;
   CPDF_Dictionary* AsMutableDictionary() override;
   bool WriteTo(IFX_ArchiveStream* archive,
                const CPDF_Encryptor* encryptor) const override;
@@ -148,6 +150,10 @@ class CPDF_Dictionary final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
       std::set<const CPDF_Object*>* visited) const override;
+  RetainPtr<CPDF_Object> CloneForHolderNonCyclic(
+      CPDF_IndirectObjectHolder* holder,
+      std::set<const CPDF_Object*>* visited) const override;
+  void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
 
   mutable uint32_t lock_count_ = 0;
   WeakPtr<ByteStringPool> pool_;

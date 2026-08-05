@@ -7,13 +7,17 @@
 #ifndef CORE_FPDFAPI_PARSER_CPDF_DOCUMENT_H_
 #define CORE_FPDFAPI_PARSER_CPDF_DOCUMENT_H_
 
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -21,6 +25,7 @@
 #include "core/fxcrt/unowned_ptr.h"
 
 class CPDF_ReadValidator;
+class CPDF_BaseDocument;
 class CPDF_StreamAcc;
 class IFX_SeekableReadStream;
 class JBig2_DocumentContext;
@@ -81,6 +86,14 @@ class CPDF_Document : public Observable,
     UnownedPtr<CPDF_Document> doc_;
   };
 
+  enum class PendingSecurityMode { kNone, kEncrypt, kRemove };
+
+  struct PendingSecurity {
+    PendingSecurityMode mode = PendingSecurityMode::kNone;
+    RetainPtr<CPDF_Dictionary> encrypt_dict;
+    RetainPtr<CPDF_SecurityHandler> security_handler;
+  };
+
   static constexpr int kPageMaxNum = 0xFFFFF;
 
   static bool IsValidPageObject(const CPDF_Object* obj);
@@ -94,10 +107,11 @@ class CPDF_Document : public Observable,
     extension_ = std::move(pExt);
   }
 
-  CPDF_Parser* GetParser() const { return parser_.get(); }
-  const CPDF_Dictionary* GetRoot() const { return root_dict_.Get(); }
-  RetainPtr<CPDF_Dictionary> GetMutableRoot() { return root_dict_; }
-  RetainPtr<CPDF_Dictionary> GetInfo();
+  virtual CPDF_Parser* GetParser() const;
+  virtual const CPDF_Dictionary* GetRoot() const;
+  virtual RetainPtr<CPDF_Dictionary> GetMutableRoot();
+  virtual RetainPtr<CPDF_Dictionary> GetInfo();
+  virtual RetainPtr<CPDF_Dictionary> GetMutableInfo();
   RetainPtr<CPDF_Dictionary> GetOrCreateInfo();
   RetainPtr<const CPDF_Array> GetFileIdentifier() const;
 
@@ -111,12 +125,12 @@ class CPDF_Document : public Observable,
 
   int GetPageCount() const;
   bool IsPageLoaded(int iPage) const;
-  RetainPtr<const CPDF_Dictionary> GetPageDictionary(int iPage);
-  RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage);
+  virtual RetainPtr<const CPDF_Dictionary> GetPageDictionary(int iPage);
+  virtual RetainPtr<CPDF_Dictionary> GetMutablePageDictionary(int iPage);
   int GetPageIndex(uint32_t objnum);
   // When `get_owner_perms` is true, returns full permissions if unlocked by
   // owner.
-  uint32_t GetUserPermissions(bool get_owner_perms) const;
+  virtual uint32_t GetUserPermissions(bool get_owner_perms) const;
 
   // PageDataIface wrappers, try to avoid explicit getter calls.
   RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
@@ -144,6 +158,24 @@ class CPDF_Document : public Observable,
   // Returns whether CreateModifiedAPStream() created `stream`.
   bool IsModifiedAPStream(const CPDF_Stream* stream) const;
 
+  void SetPendingSecurity(PendingSecurity pending);
+  const PendingSecurity* GetPendingSecurity() const;
+  void ClearPendingSecurity();
+
+  // Returns whether `objnum` has been promoted from its base storage into a
+  // document overlay. Always false for ordinary documents.
+  virtual RetainPtr<CPDF_Object> FindPromotedObject(uint32_t objnum) const;
+  bool IsObjectPromoted(uint32_t objnum) const;
+  // Changes whenever the effective identity of an indirect object can change.
+  // Ordinary documents have no overlay and always return 0.
+  virtual uint64_t GetOverlayEpoch() const;
+  virtual bool IsLayerDocument() const;
+  // Returns non-null only for the immutable base document itself. This avoids
+  // RTTI in the ambient-view boundary while preserving exact frozen-view
+  // identity for the debug detector.
+  virtual const CPDF_BaseDocument* GetBaseDocumentForViewScope() const;
+  virtual FX_FILESIZE GetLayerAppendBaseOffset() const;
+
   // CPDF_Parser::ParsedObjectsHolder:
   bool TryInit() override;
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override;
@@ -169,6 +201,25 @@ class CPDF_Document : public Observable,
   void SetParser(std::unique_ptr<CPDF_Parser> pParser);
 
   void ResizePageListForTesting(size_t size);
+
+  virtual uint32_t GetPageObjNumAt(size_t index) const;
+  virtual void SetPageObjNumAt(size_t index, uint32_t objnum);
+  virtual void InsertPageObjNum(size_t index, uint32_t objnum);
+  virtual void ErasePageObjNum(size_t index);
+  virtual void ResizePageList(size_t size);
+  virtual size_t GetPageListSize() const;
+  bool RebuildPageListFromCurrentPageTree();
+
+  void SetCachedRootDict(RetainPtr<CPDF_Dictionary> root);
+  void InvalidateCachedRootDict();
+  void SetCachedInfoDict(RetainPtr<CPDF_Dictionary> info);
+  void InvalidateCachedInfoDict();
+
+  // EmbedPDF layer documents represent deletion by removing references from the
+  // promoted owning container, e.g. /Pages /Kids or /Annots. Base objects
+  // remain resolvable through the base xref and are not null-replaced in
+  // append-only layer deltas.
+  virtual bool ShouldReplaceDeletedPageWithNull(uint32_t page_obj_num) const;
 
  private:
   class StockFontClearer {
@@ -228,6 +279,7 @@ class CPDF_Document : public Observable,
   std::unique_ptr<JBig2_DocumentContext> codec_context_;
   std::unique_ptr<LinkListIface> links_context_;
   std::set<uint32_t> modified_apstream_ids_;
+  std::optional<PendingSecurity> pending_security_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
 
   // Must be second to last.
