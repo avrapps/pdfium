@@ -214,30 +214,6 @@ void CPDF_PageContentManager::UpdateStream(size_t stream_index,
   stream_reference->SetRef(document_, new_stream->GetObjNum());
 }
 
-void CPDF_PageContentManager::ReplaceWithSingleStream(
-    fxcrt::ostringstream* buf) {
-  if (is_form_xobject_) {
-    RetainPtr<CPDF_Stream> form_stream = GetContentsStream();
-    if (form_stream) {
-      form_stream->SetDataFromStringstreamAndRemoveFilter(buf);
-    }
-    return;
-  }
-
-  auto new_stream = document_->NewIndirect<CPDF_Stream>(buf);
-  RetainPtr<CPDF_Dictionary> page_dict = page_obj_holder_->GetMutableDict();
-  page_dict->SetNewFor<CPDF_Reference>("Contents", document_,
-                                       new_stream->GetObjNum());
-  contents_ = std::move(new_stream);
-  streams_to_remove_.clear();
-
-  for (const auto& obj : *page_obj_holder_) {
-    if (obj->IsActive()) {
-      obj->SetContentStream(0);
-    }
-  }
-}
-
 void CPDF_PageContentManager::ScheduleRemoveStreamByIndex(size_t stream_index) {
   streams_to_remove_.insert(stream_index);
 }
