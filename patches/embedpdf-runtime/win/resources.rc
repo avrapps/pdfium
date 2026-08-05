@@ -13,7 +13,7 @@ BEGIN
             VALUE "FileDescription",  "CloudPDF PDF runtime"
             VALUE "FileVersion",      "0.0.0.0"
             VALUE "InternalName",     "pdfium"
-            VALUE "OriginalFilename", "pdfium.dll"
+            VALUE "OriginalFilename", "embedpdf.dll"
             VALUE "ProductName",      "CloudPDF PDF runtime"
             VALUE "ProductVersion",   "0.0.0.0"
             VALUE "LegalCopyright",   "Copyright 2026 CloudPDF LTD"

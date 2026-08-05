@@ -163,7 +163,7 @@ jobs:
         run: scripts/embedpdf-runtime/package-target.sh "${{ matrix.target }}"
       - uses: actions/upload-artifact@v6
         with:
-          name: libembedpdf-pdf-runtime-${{ matrix.target }}
+          name: libembedpdf-runtime-${{ matrix.target }}
           path: out/embedpdf-runtime-artifacts/*.tar.gz
 
   release:
