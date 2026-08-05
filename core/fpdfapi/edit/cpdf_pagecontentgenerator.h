@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "core/fxcrt/bytestring.h"
@@ -69,10 +70,19 @@ class CPDF_PageContentGenerator {
   // streams are not touched.
   std::map<int32_t, fxcrt::ostringstream> GenerateModifiedStreams();
 
+  // For edited pages, regenerates all active page objects into one canonical
+  // content stream. PDF /Contents arrays are rendered as one continuous program,
+  // so keeping old split boundaries after edits can corrupt graphics-state
+  // handoff between streams.
+  std::optional<fxcrt::ostringstream> GenerateCanonicalPageStream();
+
   // For each entry in `new_stream_data`, adds the string buffer to the page's
   // content stream.
   void UpdateContentStreams(
       std::map<int32_t, fxcrt::ostringstream>&& new_stream_data);
+
+  void ReplaceContentStreamsWithSingleStream(
+      fxcrt::ostringstream&& stream_data);
 
   // Sets the stream index of all page objects with stream index ==
   // |CPDF_PageObject::kNoContentStream|. These are new objects that had not
