@@ -433,10 +433,21 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   all_dirty_streams.insert(marked_dirty_streams.begin(),
                            marked_dirty_streams.end());
 
-  // --- embedpdf: if anything is dirty, regenerate *all* page content streams.
-  // Rationale: CTM / graphics-state handoff between streams means rewriting
-  // only a subset can leave the concatenated effect inconsistent.
-  if (!all_dirty_streams.empty()) {
+  // --- embedpdf: if an existing stream (or an object living in one) changed,
+  // regenerate *all* page content streams. Rationale: CTM / graphics-state
+  // handoff between streams means rewriting only a subset can leave the
+  // concatenated effect inconsistent.
+  //
+  // A pure append is exempt: every dirty entry is the streamless bucket and
+  // no stream was marked dirty. Regeneration serializes page objects only, so
+  // rewriting an untouched stream drops ambient ops no page object owns —
+  // e.g. a page-level `/C1 cs` prolog a bare-`scn` form inherits (see the
+  // pruning guard in UpdateResourcesDict, and
+  // FPDFAnnotEmbedderTest.ApplyRedactionPreservesInheritedColorspaceResources).
+  const bool append_only =
+      marked_dirty_streams.empty() && all_dirty_streams.size() == 1 &&
+      all_dirty_streams.count(CPDF_PageObject::kNoContentStream) == 1;
+  if (!append_only && !all_dirty_streams.empty()) {
     int32_t last_index = -1;
     // For Form XObjects, the content is in the XObject stream itself (index 0),
     // not in a separate "Contents" entry.
@@ -444,9 +455,13 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
       last_index = 0;
     } else if (RetainPtr<const CPDF_Object> contents =
             obj_holder_->GetDict()->GetObjectFor(pdfium::page_object::kContents)) {
-      if (const CPDF_Array* arr = contents->AsArray()) {
+      // Resolve indirection like CountExistingContentStreams(): /Contents is
+      // commonly `4 0 R` pointing at the split-stream array
+      // (split_streams.pdf), which must enumerate like a direct array.
+      RetainPtr<const CPDF_Object> direct = contents->GetDirect();
+      if (const CPDF_Array* arr = direct ? direct->AsArray() : nullptr) {
         last_index = static_cast<int32_t>(arr->size()) - 1;
-      } else if (contents->IsStream()) {
+      } else if (direct && direct->IsStream()) {
         last_index = 0;
       }
     }
