@@ -4,7 +4,9 @@
 #include "public/epdf_redact.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -35,36 +37,52 @@ const CPDF_Dictionary* GetAnnotDictFromFPDFAnnotation(
   return context ? context->GetAnnotDict() : nullptr;
 }
 
-std::vector<CFX_FloatRect> GetRedactRectsFromAnnotDict(
+std::vector<RedactRegion> GetRedactRegionsFromAnnotDict(
     const CPDF_Dictionary* annot_dict) {
-  std::vector<CFX_FloatRect> rects;
+  std::vector<RedactRegion> regions;
   if (!annot_dict) {
-    return rects;
+    return regions;
   }
 
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
   if (quad_points_array && quad_points_array->size() >= 8) {
+    bool invalid_quad = false;
     size_t quad_count = CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_count; ++i) {
-      CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
-      rect.Normalize();
-      if (!rect.IsEmpty()) {
-        rects.push_back(rect);
+      const size_t offset = i * 8;
+      std::array<CFX_PointF, 4> corners;
+      for (size_t c = 0; c < 4; ++c) {
+        corners[c] =
+            CFX_PointF(quad_points_array->GetFloatAt(offset + c * 2),
+                       quad_points_array->GetFloatAt(offset + c * 2 + 1));
       }
+      // Oriented well-formed quads redact their exact cells. Finite malformed
+      // entries degrade to their all-corner AABB; non-finite/degenerate data
+      // invalidates the quad set so the trusted annotation /Rect is used.
+      std::optional<RedactRegion> region =
+          RedactRegionFromQuadCorners(corners);
+      if (!region.has_value() || region->bbox.IsEmpty()) {
+        invalid_quad = true;
+        break;
+      }
+      regions.push_back(std::move(*region));
     }
-    if (!rects.empty()) {
-      return rects;
+    if (!invalid_quad && !regions.empty()) {
+      return regions;
     }
+    regions.clear();
   }
 
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
   rect.Normalize();
   if (!rect.IsEmpty()) {
-    rects.push_back(rect);
+    RedactRegion region;
+    region.bbox = rect;
+    regions.push_back(std::move(region));
   }
 
-  return rects;
+  return regions;
 }
 
 struct RemovedAnnotCandidate {
@@ -81,15 +99,8 @@ uint32_t GetAnnotObjectNumber(const CPDF_Object* entry,
   return dict ? dict->GetObjNum() : 0;
 }
 
-bool RectsIntersectWithPositiveArea(CFX_FloatRect a, CFX_FloatRect b) {
-  a.Normalize();
-  b.Normalize();
-  a.Intersect(b);
-  return !a.IsEmpty();
-}
-
 bool AnnotIntersectsAny(const CPDF_Dictionary* annot_dict,
-                        pdfium::span<const CFX_FloatRect> redact_rects) {
+                        pdfium::span<const RedactRegion> regions) {
   if (!annot_dict) {
     return false;
   }
@@ -99,8 +110,10 @@ bool AnnotIntersectsAny(const CPDF_Dictionary* annot_dict,
   if (annot_rect.IsEmpty()) {
     return false;
   }
-  for (const CFX_FloatRect& redact_rect : redact_rects) {
-    if (RectsIntersectWithPositiveArea(annot_rect, redact_rect)) {
+  // Quad-aware: an annotation touching only the EMPTY corner of a rotated
+  // mark's bounding box is not collateral — removal is destructive.
+  for (const RedactRegion& region : regions) {
+    if (RedactRegionIntersectsRect(region, annot_rect)) {
       return true;
     }
   }
@@ -353,8 +366,8 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
   // from an empty object list.
   page->ParseContent();
 
-  std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(redact_dict);
-  if (rects.empty()) {
+  std::vector<RedactRegion> regions = GetRedactRegionsFromAnnotDict(redact_dict);
+  if (regions.empty()) {
     return false;
   }
 
@@ -371,7 +384,7 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
       if (annot_dict->GetNameFor(pdfium::annotation::kSubtype) == "Redact") {
         continue;
       }
-      if (AnnotIntersectsAny(annot_dict.Get(), pdfium::span(rects))) {
+      if (AnnotIntersectsAny(annot_dict.Get(), pdfium::span(regions))) {
         AddRemovalCandidate(page, i, &removals);
       }
     }
@@ -387,9 +400,13 @@ bool ApplySingleRedactionCore(CPDF_Page* page,
 
   SortCandidatesByOriginalIndex(&removals);
 
-  RedactTextInRects(page, pdfium::span(rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
+  const RedactResult redact_result = RedactTextInRegions(
+      page, pdfium::span(regions),
+      /*recurse_forms=*/true,
+      /*draw_black_boxes=*/false);
+  if (!redact_result.succeeded) {
+    return false;
+  }
 
   RetainPtr<const CPDF_Stream> overlay =
       ResolveRedactOverlay(page->GetDocument(), redact_dict);
@@ -423,7 +440,7 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
     return false;
   }
 
-  std::vector<CFX_FloatRect> all_rects;
+  std::vector<RedactRegion> all_regions;
   std::vector<std::pair<RetainPtr<const CPDF_Stream>, CFX_FloatRect>>
       overlays;
   std::vector<RemovedAnnotCandidate> removals;
@@ -439,10 +456,10 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
 
     AddRemovalCandidate(page, i, &removals);
 
-    std::vector<CFX_FloatRect> rects =
-        GetRedactRectsFromAnnotDict(annot_dict.Get());
-    for (const CFX_FloatRect& rect : rects) {
-      all_rects.push_back(rect);
+    std::vector<RedactRegion> regions =
+        GetRedactRegionsFromAnnotDict(annot_dict.Get());
+    for (RedactRegion& region : regions) {
+      all_regions.push_back(std::move(region));
     }
 
     RetainPtr<const CPDF_Stream> overlay =
@@ -455,7 +472,7 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
     }
   }
 
-  if (all_rects.empty()) {
+  if (all_regions.empty()) {
     return false;
   }
 
@@ -469,7 +486,7 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
     if (annot_dict->GetNameFor(pdfium::annotation::kSubtype) == "Redact") {
       continue;
     }
-    if (AnnotIntersectsAny(annot_dict.Get(), pdfium::span(all_rects))) {
+    if (AnnotIntersectsAny(annot_dict.Get(), pdfium::span(all_regions))) {
       AddRemovalCandidate(page, i, &removals);
     }
   }
@@ -477,9 +494,13 @@ bool ApplyAllRedactionsCore(CPDF_Page* page,
   AddPopupCascade(page, &removals);
   SortCandidatesByOriginalIndex(&removals);
 
-  RedactTextInRects(page, pdfium::span(all_rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
+  const RedactResult redact_result = RedactTextInRegions(
+      page, pdfium::span(all_regions),
+      /*recurse_forms=*/true,
+      /*draw_black_boxes=*/false);
+  if (!redact_result.succeeded) {
+    return false;
+  }
 
   for (const auto& [overlay, annot_rect] : overlays) {
     EpdfAppendFormXObjectToPage(page, overlay, annot_rect);

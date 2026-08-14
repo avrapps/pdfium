@@ -56,6 +56,7 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_creator_unittest.cpp",
     "cpdf_npagetooneexporter_unittest.cpp",
     "cpdf_pagecontentgenerator_unittest.cpp",
+    "cpdf_text_redactor_unittest.cpp",
   ]
   deps = [
     ":edit",

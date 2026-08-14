@@ -2978,29 +2978,65 @@ bool GenerateLinkAP(CPDF_Document* doc,
 
 // EmbedPDF: the regions a /Redact annotation targets — /QuadPoints quads when
 // present (text redactions), else the annotation /Rect (area redactions).
-std::vector<CFX_FloatRect> GetRedactOverlayRegions(
+// One overlay region: the AABB (label layout + area marks) plus the exact
+// oriented quad when the marked cell is not axis-aligned (rotated text marks
+// fill their true cells; the label tiling stays axis-aligned in the bbox,
+// matching the live scene preview).
+struct RedactOverlayRegion {
+  CFX_FloatRect bbox;
+  std::optional<MarkupQuad> quad;
+};
+
+bool RedactQuadValuesAreFinite(const CPDF_Array* array, size_t index) {
+  const size_t offset = index * 8;
+  for (size_t i = 0; i < 8; ++i) {
+    if (!std::isfinite(array->GetFloatAt(offset + i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<RedactOverlayRegion> GetRedactOverlayRegions(
     const CPDF_Dictionary* annot_dict) {
-  std::vector<CFX_FloatRect> regions;
+  std::vector<RedactOverlayRegion> regions;
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
   if (quad_points_array && quad_points_array->size() >= 8) {
     const size_t quad_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
+    bool invalid_quad = false;
     for (size_t i = 0; i < quad_count; ++i) {
+      if (!RedactQuadValuesAreFinite(quad_points_array.Get(), i)) {
+        invalid_quad = true;
+        break;
+      }
+      std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
-      if (!rect.IsEmpty()) {
-        regions.push_back(rect);
+      if (rect.IsEmpty()) {
+        invalid_quad = true;
+        break;
       }
+      RedactOverlayRegion region;
+      region.bbox = rect;
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        region.quad = quad;
+      }
+      regions.push_back(region);
     }
-    if (!regions.empty()) {
+    if (!invalid_quad && !regions.empty()) {
       return regions;
     }
+    regions.clear();
   }
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
   rect.Normalize();
   if (!rect.IsEmpty()) {
-    regions.push_back(rect);
+    RedactOverlayRegion region;
+    region.bbox = rect;
+    regions.push_back(region);
   }
   return regions;
 }
@@ -3008,14 +3044,16 @@ std::vector<CFX_FloatRect> GetRedactOverlayRegions(
 // EmbedPDF: the marking-stage /AP BBox and the overlay BBox share this rule:
 // quad bounding box for text redactions, /Rect for area redactions.
 CFX_FloatRect GetRedactOverlayBBox(const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Array> quad_points_array =
-      annot_dict->GetArrayFor("QuadPoints");
-  if (quad_points_array && quad_points_array->size() >= 8) {
-    return CPDF_Annot::BoundingRectFromQuadPoints(annot_dict);
+  const std::vector<RedactOverlayRegion> regions =
+      GetRedactOverlayRegions(annot_dict);
+  if (regions.empty()) {
+    return CFX_FloatRect();
   }
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  return rect;
+  CFX_FloatRect bbox = regions.front().bbox;
+  for (size_t i = 1; i < regions.size(); ++i) {
+    bbox.Union(regions[i].bbox);
+  }
+  return bbox;
 }
 
 RetainPtr<CPDF_Stream> MakeRedactFormStream(
@@ -3121,7 +3159,7 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
     return false;
   }
 
-  const std::vector<CFX_FloatRect> regions =
+  const std::vector<RedactOverlayRegion> regions =
       GetRedactOverlayRegions(annot_dict);
   if (regions.empty()) {
     return false;
@@ -3131,8 +3169,16 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
     stream << GetColorStringWithDefault(
         interior_color.Get(), CFX_Color(CFX_Color::Type::kTransparent),
         PaintOperation::kFill);
-    for (const CFX_FloatRect& region : regions) {
-      WriteRect(stream, region) << " re f\n";
+    for (const RedactOverlayRegion& region : regions) {
+      if (region.quad.has_value()) {
+        // Fill the exact oriented cell (ring order, like the highlight AP).
+        WritePoint(stream, region.quad->upper_start) << " m ";
+        WritePoint(stream, region.quad->upper_end) << " l ";
+        WritePoint(stream, region.quad->lower_end) << " l ";
+        WritePoint(stream, region.quad->lower_start) << " l h f\n";
+      } else {
+        WriteRect(stream, region.bbox) << " re f\n";
+      }
     }
   }
 
@@ -3189,9 +3235,9 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
 
   CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
                         /*allow_registered_fallbacks=*/true);
-  for (const CFX_FloatRect& region : regions) {
+  for (const RedactOverlayRegion& region : regions) {
     AppendRedactLabelForRegion(map, annot_dict, overlay_text, da_font_size,
-                               label_color, region, stream);
+                               label_color, region.bbox, stream);
   }
   *out_font_resources = map.CreateFontResourceDict();
   return true;
@@ -3215,8 +3261,9 @@ bool GenerateRedactAP(CPDF_Document* doc,
   if (border_width > 0) {
     normal_stream << border_width << " w ";
     normal_stream << GetDashPatternString(annot_dict);
-    for (const CFX_FloatRect& region : GetRedactOverlayRegions(annot_dict)) {
-      CFX_FloatRect stroke_rect = region;
+    for (const RedactOverlayRegion& region :
+         GetRedactOverlayRegions(annot_dict)) {
+      CFX_FloatRect stroke_rect = region.bbox;
       stroke_rect.Deflate(border_width / 2, border_width / 2);
       normal_stream << stroke_rect.left << " " << stroke_rect.bottom << " "
                     << stroke_rect.Width() << " " << stroke_rect.Height()
