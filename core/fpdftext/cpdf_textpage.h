@@ -46,13 +46,19 @@ class CPDF_TextPage {
   class CharInfo {
    public:
     CharInfo();
-    CharInfo(CharType char_type,
-             uint32_t char_code,
-             wchar_t unicode,
-             CFX_PointF origin,
-             CFX_FloatRect char_box,
-             CFX_Matrix matrix,
-             CPDF_TextObject* text_object);
+    static CharInfo RealGlyph(CharType char_type,
+                              uint32_t char_code,
+                              wchar_t unicode,
+                              CFX_PointF local_origin,
+                              CFX_FloatRect page_char_box,
+                              CFX_Matrix matrix,
+                              CPDF_TextObject* text_object);
+    static CharInfo Synthetic(CharType char_type,
+                              wchar_t unicode,
+                              CFX_PointF page_origin,
+                              CFX_FloatRect page_char_box,
+                              CFX_Matrix matrix,
+                              CPDF_TextObject* text_object);
     CharInfo(const CharInfo&);
     ~CharInfo();
 
@@ -65,6 +71,9 @@ class CPDF_TextPage {
     void set_unicode(wchar_t unicode) { unicode_ = unicode; }
 
     const CFX_PointF& origin() const { return origin_; }
+    const std::optional<CFX_PointF>& local_origin() const {
+      return local_origin_;
+    }
 
     const CFX_FloatRect& char_box() const { return char_box_; }
     const CFX_FloatRect& loose_char_box() const { return loose_char_box_; }
@@ -75,10 +84,20 @@ class CPDF_TextPage {
     CPDF_TextObject* text_object() { return text_object_; }
 
    private:
+    CharInfo(CharType char_type,
+             uint32_t char_code,
+             wchar_t unicode,
+             CFX_PointF page_origin,
+             std::optional<CFX_PointF> local_origin,
+             CFX_FloatRect page_char_box,
+             CFX_Matrix matrix,
+             CPDF_TextObject* text_object);
+
     CharType char_type_ = CharType::kNormal;
     wchar_t unicode_ = 0;  // Above `char_code_` to potentially pack tighter.
     uint32_t char_code_ = 0;
     CFX_PointF origin_;
+    std::optional<CFX_PointF> local_origin_;
     CFX_FloatRect char_box_;
     CFX_FloatRect loose_char_box_;
     CFX_Matrix matrix_;
@@ -87,6 +106,11 @@ class CPDF_TextPage {
 
   CPDF_TextPage(const CPDF_Page* pPage, bool rtl);
   ~CPDF_TextPage();
+
+  struct CharLocalGeometry {
+    CFX_FloatRect loose_box;
+    std::optional<CFX_FloatRect> tight_box;
+  };
 
   int CharIndexFromTextIndex(int text_index) const;
   int TextIndexFromCharIndex(int char_index) const;
@@ -98,6 +122,7 @@ class CPDF_TextPage {
   CharInfo& GetCharInfo(size_t index);
   float GetCharFontSize(size_t index) const;
   CFX_FloatRect GetCharLooseBounds(size_t index) const;
+  std::optional<CharLocalGeometry> GetCharLocalGeometry(size_t index) const;
 
   std::vector<CFX_FloatRect> GetRectArray(int start, int count) const;
   int GetIndexAtPos(const CFX_PointF& point, const CFX_SizeF& tolerance) const;

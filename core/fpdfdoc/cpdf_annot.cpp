@@ -7,6 +7,8 @@
 #include "core/fpdfdoc/cpdf_annot.h"
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -307,20 +309,23 @@ CFX_FloatRect CPDF_Annot::RectFromQuadPointsArray(const CPDF_Array* pArray,
   DCHECK(pArray);
   DCHECK(nIndex < pArray->size() / 8);
 
-  // QuadPoints are defined with 4 pairs of numbers
-  // ([ pair0, pair1, pair2, pair3 ]), where
-  // pair0 = top_left
-  // pair1 = top_right
-  // pair2 = bottom_left
-  // pair3 = bottom_right
-  //
-  // On the other hand, /Rect is defined as 2 pairs [pair0, pair1] where:
-  // pair0 = bottom_left
-  // pair1 = top_right.
-
-  return CFX_FloatRect(
-      pArray->GetFloatAt(4 + nIndex * 8), pArray->GetFloatAt(5 + nIndex * 8),
-      pArray->GetFloatAt(2 + nIndex * 8), pArray->GetFloatAt(3 + nIndex * 8));
+  // QuadPoints text-markup order is top-left, top-right, bottom-left,
+  // bottom-right. Bounds remain producer-order agnostic and inspect all four.
+  const size_t offset = nIndex * 8;
+  std::optional<CFX_FloatRect> rect;
+  for (size_t i = 0; i < 4; ++i) {
+    const CFX_PointF point(pArray->GetFloatAt(offset + i * 2),
+                           pArray->GetFloatAt(offset + i * 2 + 1));
+    if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+      continue;
+    }
+    if (rect) {
+      rect->UpdateRect(point);
+    } else {
+      rect.emplace(point);
+    }
+  }
+  return rect.value_or(CFX_FloatRect());
 }
 
 // static

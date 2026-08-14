@@ -40,6 +40,24 @@ RetainPtr<CPDF_Dictionary> MakeAnnotDict(const ByteString& subtype,
   return annot_dict;
 }
 
+ByteString GenerateTextMarkupAPContent(const ByteString& subtype_name,
+                                       CPDF_Annot::Subtype subtype,
+                                       const std::vector<float>& quad_points) {
+  CPDF_TestDocument doc;
+  auto annot_dict = MakeAnnotDict(subtype_name, CFX_FloatRect(0, 0, 100, 100));
+  annot_dict->SetFor("QuadPoints", MakeNumberArray(quad_points));
+  std::optional<CPDF_GenerateAP::GeneratedAP> generated =
+      CPDF_GenerateAP::GenerateEphemeralAnnotAP(&doc, annot_dict.Get(),
+                                                subtype);
+  if (!generated || !generated->normal_stream ||
+      !generated->normal_stream->IsMemoryBased()) {
+    return ByteString();
+  }
+  const pdfium::span<const uint8_t> data =
+      generated->normal_stream->GetInMemoryRawData();
+  return ByteString(data.data(), data.size());
+}
+
 RetainPtr<CPDF_Dictionary> AddAcroFormWithHelvetica(CPDF_TestDocument* doc) {
   doc->CreateNewDoc();
   RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
@@ -198,8 +216,8 @@ TEST_F(CPDFGenerateAPTest,
 
   ASSERT_TRUE(CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
       &doc, annot_dict.Get(), CFX_Color(60, 120, 180)));
-  ASSERT_TRUE(CPDF_GenerateAP::GenerateAnnotAP(
-      &doc, annot_dict.Get(), CPDF_Annot::Subtype::FREETEXT));
+  ASSERT_TRUE(CPDF_GenerateAP::GenerateAnnotAP(&doc, annot_dict.Get(),
+                                               CPDF_Annot::Subtype::FREETEXT));
 
   RetainPtr<const CPDF_Dictionary> ap_dict =
       annot_dict->GetDictFor(pdfium::annotation::kAP);
@@ -244,6 +262,43 @@ TEST_F(CPDFGenerateAPTest, GenerateEphemeralAnnotAPDoesNotPersistHighlightAP) {
   EXPECT_EQ(0u, generated->normal_stream->GetObjNum());
   EXPECT_EQ(last_obj_num, doc.GetLastObjNum());
   EXPECT_FALSE(annot_dict->KeyExist(pdfium::annotation::kAP));
+}
+
+TEST_F(CPDFGenerateAPTest, TextMarkupAxisAlignedFastPathIsStable) {
+  const ByteString content =
+      GenerateTextMarkupAPContent("Highlight", CPDF_Annot::Subtype::HIGHLIGHT,
+                                  {10, 20, 50, 20, 10, 10, 50, 10});
+  EXPECT_TRUE(content.Contains("10 20 m 50 20 l 50 10 l 10 10 l h f\n"));
+}
+
+TEST_F(CPDFGenerateAPTest, HighlightUsesOrientedQuad) {
+  const ByteString content =
+      GenerateTextMarkupAPContent("Highlight", CPDF_Annot::Subtype::HIGHLIGHT,
+                                  {0, 10, 0, 20, 10, 10, 10, 20});
+  EXPECT_TRUE(content.Contains("0 10 m 0 20 l 10 20 l 10 10 l h f\n"));
+}
+
+TEST_F(CPDFGenerateAPTest, LineMarkupUsesOrientedQuad) {
+  const std::vector<float> quad = {0, 10, 0, 20, 10, 10, 10, 20};
+  const ByteString underline = GenerateTextMarkupAPContent(
+      "Underline", CPDF_Annot::Subtype::UNDERLINE, quad);
+  EXPECT_TRUE(underline.Contains("9 10 m 9 20 l S\n"));
+
+  const ByteString strikeout = GenerateTextMarkupAPContent(
+      "StrikeOut", CPDF_Annot::Subtype::STRIKEOUT, quad);
+  EXPECT_TRUE(strikeout.Contains("5 10 m 5 20 l S\n"));
+
+  const ByteString squiggly = GenerateTextMarkupAPContent(
+      "Squiggly", CPDF_Annot::Subtype::SQUIGGLY, quad);
+  EXPECT_TRUE(
+      squiggly.Contains("8 10 m 10 12 l 8 14 l 10 16 l 8 18 l 10 20 l S\n"));
+}
+
+TEST_F(CPDFGenerateAPTest, MalformedTextMarkupFallsBackToAllCornerBounds) {
+  const ByteString content =
+      GenerateTextMarkupAPContent("Highlight", CPDF_Annot::Subtype::HIGHLIGHT,
+                                  {0, 10, 10, 0, 10, 10, 0, 0});
+  EXPECT_TRUE(content.Contains("0 10 m 10 10 l 10 0 l 0 0 l h f\n"));
 }
 
 TEST_F(CPDFGenerateAPTest, GenerateEphemeralInkAPDoesNotInflateAnnotRect) {

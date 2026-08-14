@@ -35,16 +35,16 @@ TEST(CPDFAnnotTest, RectFromQuadPointsArray) {
   RetainPtr<CPDF_Array> array = CreateQuadPointArrayFromVector(
       {0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1});
   CFX_FloatRect rect = CPDF_Annot::RectFromQuadPointsArray(array.Get(), 0);
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(5.0f, rect.bottom);
-  EXPECT_EQ(2.0f, rect.right);
-  EXPECT_EQ(3.0f, rect.top);
+  EXPECT_EQ(0.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(6.0f, rect.right);
+  EXPECT_EQ(7.0f, rect.top);
 
   rect = CPDF_Annot::RectFromQuadPointsArray(array.Get(), 1);
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(3.0f, rect.bottom);
-  EXPECT_EQ(6.0f, rect.right);
-  EXPECT_EQ(5.0f, rect.top);
+  EXPECT_EQ(2.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(8.0f, rect.right);
+  EXPECT_EQ(7.0f, rect.top);
 }
 
 TEST(CPDFAnnotTest, BoundingRectFromQuadPoints) {
@@ -65,18 +65,18 @@ TEST(CPDFAnnotTest, BoundingRectFromQuadPoints) {
   dict->SetFor("QuadPoints",
                CreateQuadPointArrayFromVector({0, 1, 2, 3, 4, 5, 6, 7}));
   rect = CPDF_Annot::BoundingRectFromQuadPoints(dict.Get());
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(5.0f, rect.bottom);
-  EXPECT_EQ(2.0f, rect.right);
-  EXPECT_EQ(3.0f, rect.top);
+  EXPECT_EQ(0.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(6.0f, rect.right);
+  EXPECT_EQ(7.0f, rect.top);
 
   dict->SetFor("QuadPoints", CreateQuadPointArrayFromVector(
                                  {0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5,
                                   4, 3, 2, 1, 9, 2, 5, 7, 3, 6, 4, 1}));
   rect = CPDF_Annot::BoundingRectFromQuadPoints(dict.Get());
-  EXPECT_EQ(2.0f, rect.left);
-  EXPECT_EQ(3.0f, rect.bottom);
-  EXPECT_EQ(6.0f, rect.right);
+  EXPECT_EQ(0.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(9.0f, rect.right);
   EXPECT_EQ(7.0f, rect.top);
 }
 
@@ -96,10 +96,10 @@ TEST(CPDFAnnotTest, RectFromQuadPoints) {
   dict->SetFor("QuadPoints",
                CreateQuadPointArrayFromVector({0, 1, 2, 3, 4, 5, 6, 7}));
   rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 0);
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(5.0f, rect.bottom);
-  EXPECT_EQ(2.0f, rect.right);
-  EXPECT_EQ(3.0f, rect.top);
+  EXPECT_EQ(0.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(6.0f, rect.right);
+  EXPECT_EQ(7.0f, rect.top);
   rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 5);
   EXPECT_EQ(0.0f, rect.left);
   EXPECT_EQ(0.0f, rect.bottom);
@@ -110,19 +110,19 @@ TEST(CPDFAnnotTest, RectFromQuadPoints) {
                                  {0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5,
                                   4, 3, 2, 1, 9, 2, 5, 7, 3, 6, 4, 1}));
   rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 0);
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(5.0f, rect.bottom);
-  EXPECT_EQ(2.0f, rect.right);
-  EXPECT_EQ(3.0f, rect.top);
-  rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 1);
-  EXPECT_EQ(4.0f, rect.left);
-  EXPECT_EQ(3.0f, rect.bottom);
+  EXPECT_EQ(0.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
   EXPECT_EQ(6.0f, rect.right);
-  EXPECT_EQ(5.0f, rect.top);
+  EXPECT_EQ(7.0f, rect.top);
+  rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 1);
+  EXPECT_EQ(2.0f, rect.left);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(8.0f, rect.right);
+  EXPECT_EQ(7.0f, rect.top);
   rect = CPDF_Annot::RectFromQuadPoints(dict.Get(), 2);
   EXPECT_EQ(3.0f, rect.left);
-  EXPECT_EQ(6.0f, rect.bottom);
-  EXPECT_EQ(5.0f, rect.right);
+  EXPECT_EQ(1.0f, rect.bottom);
+  EXPECT_EQ(9.0f, rect.right);
   EXPECT_EQ(7.0f, rect.top);
 }
 

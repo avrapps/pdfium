@@ -80,6 +80,131 @@ static CFX_PointF UnitVector(const CFX_PointF& v) {
   return CFX_PointF(v.x / len, v.y / len);
 }
 
+struct MarkupQuad {
+  CFX_PointF upper_start;
+  CFX_PointF upper_end;
+  CFX_PointF lower_start;
+  CFX_PointF lower_end;
+};
+
+constexpr float kMarkupQuadTolerance = 1e-4f;
+
+float DotProduct(const CFX_PointF& lhs, const CFX_PointF& rhs) {
+  return lhs.x * rhs.x + lhs.y * rhs.y;
+}
+
+float CrossProduct(const CFX_PointF& lhs, const CFX_PointF& rhs) {
+  return lhs.x * rhs.y - lhs.y * rhs.x;
+}
+
+float VectorLength(const CFX_PointF& vector) {
+  return std::hypot(vector.x, vector.y);
+}
+
+bool IsFinitePoint(const CFX_PointF& point) {
+  return std::isfinite(point.x) && std::isfinite(point.y);
+}
+
+std::optional<MarkupQuad> ReadMarkupQuad(const CPDF_Array* array,
+                                         size_t index) {
+  const size_t offset = index * 8;
+  MarkupQuad quad = {
+      {array->GetFloatAt(offset), array->GetFloatAt(offset + 1)},
+      {array->GetFloatAt(offset + 2), array->GetFloatAt(offset + 3)},
+      {array->GetFloatAt(offset + 4), array->GetFloatAt(offset + 5)},
+      {array->GetFloatAt(offset + 6), array->GetFloatAt(offset + 7)}};
+  if (!IsFinitePoint(quad.upper_start) || !IsFinitePoint(quad.upper_end) ||
+      !IsFinitePoint(quad.lower_start) || !IsFinitePoint(quad.lower_end)) {
+    return std::nullopt;
+  }
+
+  const CFX_PointF upper_edge = quad.upper_end - quad.upper_start;
+  const CFX_PointF lower_edge = quad.lower_end - quad.lower_start;
+  const CFX_PointF start_edge = quad.lower_start - quad.upper_start;
+  const CFX_PointF end_edge = quad.lower_end - quad.upper_end;
+  const float upper_length = VectorLength(upper_edge);
+  const float lower_length = VectorLength(lower_edge);
+  const float start_length = VectorLength(start_edge);
+  const float end_length = VectorLength(end_edge);
+  if (!std::isfinite(upper_length) || !std::isfinite(lower_length) ||
+      !std::isfinite(start_length) || !std::isfinite(end_length) ||
+      upper_length <= kMarkupQuadTolerance ||
+      lower_length <= kMarkupQuadTolerance ||
+      start_length <= kMarkupQuadTolerance ||
+      end_length <= kMarkupQuadTolerance) {
+    return std::nullopt;
+  }
+
+  // The PDF text-markup order is upper-start, upper-end, lower-start,
+  // lower-end. Reject crossed and reversed producer data before interpreting
+  // those pairs as a local frame.
+  const float horizontal_alignment = DotProduct(upper_edge, lower_edge);
+  const float vertical_alignment = DotProduct(start_edge, end_edge);
+  if (!std::isfinite(horizontal_alignment) ||
+      !std::isfinite(vertical_alignment) || horizontal_alignment <= 0.0f ||
+      vertical_alignment <= 0.0f) {
+    return std::nullopt;
+  }
+  const float start_area = CrossProduct(upper_edge, start_edge);
+  const float end_area = CrossProduct(lower_edge, end_edge);
+  if (!std::isfinite(start_area) || !std::isfinite(end_area) ||
+      std::signbit(start_area) != std::signbit(end_area) ||
+      std::abs(start_area) <=
+          kMarkupQuadTolerance * upper_length * start_length ||
+      std::abs(end_area) <= kMarkupQuadTolerance * lower_length * end_length) {
+    return std::nullopt;
+  }
+  return quad;
+}
+
+bool IsAxisAlignedZigZag(const MarkupQuad& quad) {
+  const float scale =
+      std::max({1.0f, VectorLength(quad.upper_end - quad.upper_start),
+                VectorLength(quad.lower_end - quad.lower_start),
+                VectorLength(quad.lower_start - quad.upper_start),
+                VectorLength(quad.lower_end - quad.upper_end)});
+  const float tolerance = kMarkupQuadTolerance * scale;
+  return std::abs(quad.upper_start.y - quad.upper_end.y) <= tolerance &&
+         std::abs(quad.lower_start.y - quad.lower_end.y) <= tolerance &&
+         std::abs(quad.upper_start.x - quad.lower_start.x) <= tolerance &&
+         std::abs(quad.upper_end.x - quad.lower_end.x) <= tolerance;
+}
+
+CFX_PointF Midpoint(const CFX_PointF& first, const CFX_PointF& second) {
+  return 0.5f * (first + second);
+}
+
+CFX_PointF LowerToUpperUnit(const MarkupQuad& quad) {
+  return UnitVector((quad.upper_start - quad.lower_start) +
+                    (quad.upper_end - quad.lower_end));
+}
+
+void EmitOrientedSquiggle(fxcrt::ostringstream& stream,
+                          const MarkupQuad& quad,
+                          float delta) {
+  const CFX_PointF lower_edge = quad.lower_end - quad.lower_start;
+  const float length = VectorLength(lower_edge);
+  const CFX_PointF along = UnitVector(lower_edge);
+  const CFX_PointF toward_upper = LowerToUpperUnit(quad);
+  WritePoint(stream, quad.lower_start + delta * toward_upper) << " m ";
+
+  float distance = delta;
+  bool is_upwards = false;
+  while (distance < length) {
+    CFX_PointF point = quad.lower_start + distance * along;
+    if (is_upwards) {
+      point += delta * toward_upper;
+    }
+    WritePoint(stream, point) << " l ";
+    distance += delta;
+    is_upwards = !is_upwards;
+  }
+
+  const float remainder = length - (distance - delta);
+  const float height = is_upwards ? remainder : delta - remainder;
+  WritePoint(stream, quad.lower_end + height * toward_upper) << " l S\n";
+}
+
 // Read one token from a /LE array and return it as a ByteString, accepting
 // both Name and String objects (some generators are sloppy).
 static ByteString ReadLineEndingToken(const CPDF_Array* le, size_t idx) {
@@ -2209,6 +2334,16 @@ bool GenerateHighlightAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        WritePoint(app_stream, quad->upper_start) << " m ";
+        WritePoint(app_stream, quad->upper_end) << " l ";
+        WritePoint(app_stream, quad->lower_end) << " l ";
+        WritePoint(app_stream, quad->lower_start) << " l h f\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
@@ -2545,6 +2680,16 @@ bool GenerateUnderlineAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        const CFX_PointF inset = LowerToUpperUnit(*quad);
+        WritePoint(app_stream, quad->lower_start + kLineWidth * inset) << " m ";
+        WritePoint(app_stream, quad->lower_end + kLineWidth * inset)
+            << " l S\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
       app_stream << rect.left << " " << rect.bottom + kLineWidth << " m "
@@ -2686,6 +2831,13 @@ bool GenerateSquigglyAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        EmitOrientedSquiggle(app_stream, *quad, kDelta);
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
@@ -2737,6 +2889,18 @@ bool GenerateStrikeOutAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        static constexpr int kLineWidth = 1;
+        app_stream << kLineWidth << " w ";
+        WritePoint(app_stream, Midpoint(quad->upper_start, quad->lower_start))
+            << " m ";
+        WritePoint(app_stream, Midpoint(quad->upper_end, quad->lower_end))
+            << " l S\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
