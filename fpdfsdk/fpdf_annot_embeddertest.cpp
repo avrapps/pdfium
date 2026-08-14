@@ -4,6 +4,8 @@
 
 #include "public/fpdf_annot.h"
 #include "public/epdf_form.h"
+#include "public/epdf_text.h"
+#include "public/fpdf_edit.h"
 
 #include <limits.h>
 
@@ -11,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -43,6 +46,7 @@
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
+#include "public/fpdf_ppo.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
 #include "public/fpdfview.h"
@@ -4453,6 +4457,359 @@ TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRemovesTextInMiddleOfSentence) {
   EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
   EXPECT_NE(std::wstring::npos, after.find(L"world"));
   EXPECT_NE(before_hash, after_hash);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionSplitsFillAndStrokePathAcrossSave) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(612.0f, FPDF_GetPageWidthF(page.get()));
+  ASSERT_EQ(792.0f, FPDF_GetPageHeightF(page.get()));
+  const int original_object_count = FPDFPage_CountObjects(page.get());
+
+  ScopedFPDFPageObject path(
+      FPDFPageObj_CreateNewRect(100.0f, 300.0f, 400.0f, 200.0f));
+  ASSERT_TRUE(path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPageObj_SetStrokeColor(path.get(), 255, 0, 0, 255));
+  ASSERT_TRUE(FPDFPageObj_SetStrokeWidth(path.get(), 20.0f));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/true));
+  FPDFPage_InsertObject(page.get(), path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_EQ(original_object_count + 1, FPDFPage_CountObjects(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 300, 392));
+  }
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {280.0f, 550.0f, 332.0f, 250.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_EQ(original_object_count + 2, FPDFPage_CountObjects(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 450, 287));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(original_object_count + 2, FPDFPage_CountObjects(saved_page));
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 450, 287));
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionPreservesEnclosedVectorHoleAcrossSave) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  const int original_object_count = FPDFPage_CountObjects(page.get());
+
+  ScopedFPDFPageObject path(
+      FPDFPageObj_CreateNewRect(100.0f, 300.0f, 400.0f, 200.0f));
+  ASSERT_TRUE(path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/false));
+  FPDFPage_InsertObject(page.get(), path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {280.0f, 425.0f, 332.0f, 375.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_EQ(original_object_count + 1, FPDFPage_CountObjects(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(original_object_count + 1, FPDFPage_CountObjects(saved_page));
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionClonesSharedFormBeforeVectorEdit) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage source_page = LoadScopedPage(0);
+  ASSERT_TRUE(source_page);
+
+  ScopedFPDFPageObject source_path(
+      FPDFPageObj_CreateNewRect(0.0f, 0.0f, 100.0f, 100.0f));
+  ASSERT_TRUE(source_path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(source_path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(source_path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/false));
+  FPDFPage_InsertObject(source_page.get(), source_path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(source_page.get()));
+
+  FPDF_XOBJECT xobject =
+      FPDF_NewXObjectFromPage(document(), document(), /*src_page_index=*/0);
+  ASSERT_TRUE(xobject);
+  ScopedFPDFPage target_page(FPDFPage_New(document(), 1, 612.0f, 792.0f));
+  ASSERT_TRUE(target_page);
+
+  FPDF_PAGEOBJECT first_form = FPDF_NewFormObjectFromXObject(xobject);
+  ASSERT_TRUE(first_form);
+  FPDFPageObj_Transform(first_form, 1.0, 0.0, 0.0, 1.0, 100.0, 300.0);
+  FPDFPage_InsertObject(target_page.get(), first_form);
+
+  FPDF_PAGEOBJECT second_form = FPDF_NewFormObjectFromXObject(xobject);
+  ASSERT_TRUE(second_form);
+  FPDFPageObj_Transform(second_form, 1.0, 0.0, 0.0, 1.0, 300.0, 300.0);
+  FPDFPage_InsertObject(target_page.get(), second_form);
+  ASSERT_TRUE(FPDFPage_GenerateContent(target_page.get()));
+  FPDF_CloseXObject(xobject);
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(target_page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(target_page.get(), {140.0f, 420.0f, 160.0f, 280.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(
+        EPDFAnnot_ApplyRedaction(target_page.get(), annot.get(), nullptr));
+  }
+  ASSERT_TRUE(FPDFPage_GenerateContent(target_page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(target_page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(1);
+  ASSERT_TRUE(saved_page);
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RotatedCaretAppearanceCarriesTransform) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CARET));
+  ASSERT_TRUE(annot);
+  // Rotated-visual AABB as /Rect + the box-family /EMBD_Metadata pair: the
+  // generator must draw in the UNROTATED box and emit an AP form matrix.
+  const FS_RECTF rect = {90.0f, 110.0f, 110.0f, 90.0f};  // L, T, R, B
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 90.0f));
+  const FS_RECTF unrotated = {92.0f, 108.0f, 108.0f, 92.0f};
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect",
+                                             &unrotated));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  FS_MATRIX matrix = {};
+  ASSERT_TRUE(EPDFAnnot_GetAPMatrix(annot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                                    &matrix));
+  // 90° CCW (PDF convention): a≈0, b≈1, c≈-1, d≈0 — the symbol rides its
+  // text's baseline instead of staying screen-upright.
+  EXPECT_NEAR(0.0f, matrix.a, 1e-4f);
+  EXPECT_NEAR(1.0f, matrix.b, 1e-4f);
+  EXPECT_NEAR(-1.0f, matrix.c, 1e-4f);
+  EXPECT_NEAR(0.0f, matrix.d, 1e-4f);
+
+  // An upright caret keeps the identity form matrix.
+  ScopedFPDFAnnotation upright(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CARET));
+  ASSERT_TRUE(upright);
+  ASSERT_TRUE(FPDFAnnot_SetRect(upright.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(upright.get()));
+  FS_MATRIX upright_matrix = {};
+  ASSERT_TRUE(EPDFAnnot_GetAPMatrix(
+      upright.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL, &upright_matrix));
+  EXPECT_FLOAT_EQ(1.0f, upright_matrix.a);
+  EXPECT_FLOAT_EQ(0.0f, upright_matrix.b);
+  EXPECT_FLOAT_EQ(0.0f, upright_matrix.c);
+  EXPECT_FLOAT_EQ(1.0f, upright_matrix.d);
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
+  ASSERT_TRUE(OpenDocument("rotated_redact.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  std::wstring before = ExtractPageText(page.get());
+  ASSERT_NE(std::wstring::npos, before.find(L"SECRET"));
+  ASSERT_NE(std::wstring::npos, before.find(L"KEEPME"));
+
+  // Measure SECRET's oriented cells and derive the mark's QuadPoints from
+  // them: the union of the first and last glyph cells in slot space
+  // (upper-start of the first, upper-end of the last, and so on).
+  FS_QUADPOINTSF region = {};
+  float bbox_left = 0;
+  float bbox_bottom = 0;
+  float bbox_right = 0;
+  float bbox_top = 0;
+  bool keepme_overlaps_bbox = false;
+  {
+    ScopedFPDFTextPage text_page(FPDFText_LoadPage(page.get()));
+    ASSERT_TRUE(text_page);
+    const int secret = static_cast<int>(before.find(L"SECRET"));
+    EPDF_CHAR_GEOMETRY first = {};
+    EPDF_CHAR_GEOMETRY last = {};
+    ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), secret, &first));
+    ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), secret + 5, &last));
+    ASSERT_TRUE(first.flags & EPDF_CHARGEO_HAS_LOOSE_QUAD);
+    ASSERT_FALSE(first.flags & EPDF_CHARGEO_UPRIGHT);
+    region.x1 = first.loose_quad.x1;
+    region.y1 = first.loose_quad.y1;
+    region.x2 = last.loose_quad.x2;
+    region.y2 = last.loose_quad.y2;
+    region.x3 = first.loose_quad.x3;
+    region.y3 = first.loose_quad.y3;
+    region.x4 = last.loose_quad.x4;
+    region.y4 = last.loose_quad.y4;
+    bbox_left = std::min({region.x1, region.x2, region.x3, region.x4});
+    bbox_right = std::max({region.x1, region.x2, region.x3, region.x4});
+    bbox_bottom = std::min({region.y1, region.y2, region.y3, region.y4});
+    bbox_top = std::max({region.y1, region.y2, region.y3, region.y4});
+
+    // Discrimination guard: the pre-quad AABB semantics WOULD have clipped
+    // the parallel neighbour — at least one KEEPME glyph box intersects the
+    // mark's bounding box even though its cells sit outside the quad.
+    const int keep = static_cast<int>(before.find(L"KEEPME"));
+    for (int i = keep; i < keep + 6; ++i) {
+      EPDF_CHAR_GEOMETRY geo = {};
+      ASSERT_TRUE(EPDFText_GetCharGeometry(text_page.get(), i, &geo));
+      if (geo.loose_box.right > bbox_left && geo.loose_box.left < bbox_right &&
+          geo.loose_box.top > bbox_bottom && geo.loose_box.bottom < bbox_top) {
+        keepme_overlaps_bbox = true;
+        break;
+      }
+    }
+  }
+  EXPECT_TRUE(keepme_overlaps_bbox);
+
+  {
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_REDACT));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(FPDFAnnot_AppendAttachmentPoints(annot.get(), &region));
+    const FS_RECTF rect = {bbox_left, bbox_top, bbox_right, bbox_bottom};
+    ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  std::wstring after = ExtractPageText(saved_page);
+  CloseSavedPage(saved_page);
+  EXPECT_EQ(std::wstring::npos, after.find(L"SECRET"));
+  EXPECT_NE(std::wstring::npos, after.find(L"KEEPME"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionFallsBackToRectForNonFiniteQuad) {
+  ASSERT_TRUE(OpenDocument("redact_text_middle.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  {
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(page.get(), 0));
+    ASSERT_TRUE(annot);
+    FS_QUADPOINTSF quad = {};
+    ASSERT_TRUE(FPDFAnnot_GetAttachmentPoints(annot.get(), 0, &quad));
+    quad.x4 = std::numeric_limits<float>::quiet_NaN();
+    ASSERT_TRUE(FPDFAnnot_SetAttachmentPoints(annot.get(), 0, &quad));
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  const std::wstring after = ExtractPageText(saved_page);
+  CloseSavedPage(saved_page);
+  EXPECT_NE(std::wstring::npos, after.find(L"hello"));
+  EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
+  EXPECT_NE(std::wstring::npos, after.find(L"world"));
+}
+
+TEST_F(FPDFAnnotEmbedderTest, RedactInQuadsRejectsNonFiniteInput) {
+  ASSERT_TRUE(OpenDocument("rotated_redact.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  const std::wstring before = ExtractPageText(page.get());
+  FS_QUADPOINTSF region = {0.0f, 10.0f, 10.0f, 10.0f,
+                           0.0f, 0.0f,
+                           std::numeric_limits<float>::quiet_NaN(), 0.0f};
+  EXPECT_FALSE(EPDFText_RedactInQuads(page.get(), &region, 1,
+                                      /*recurse_forms=*/true,
+                                      /*draw_black_boxes=*/false));
+  EXPECT_EQ(before, ExtractPageText(page.get()));
 }
 
 TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionCountsIntersectingAnnotation) {

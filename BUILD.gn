@@ -208,6 +208,8 @@ source_set("pdfium_public_headers_impl") {
     # EmbedPDF: generic namespace-scoped document/page /PieceInfo metadata.
     "public/epdf_pieceinfo.h",
     "public/epdf_redact.h",
+    # EmbedPDF: one-call exact oriented glyph geometry.
+    "public/epdf_text.h",
     "public/fpdf_annot.h",
     "public/fpdf_attachment.h",
     "public/fpdf_catalog.h",

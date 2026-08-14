@@ -178,6 +178,37 @@ RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {
   return form_stream_;
 }
 
+bool CPDF_Form::CloneBackingStreamForWrite() {
+  CPDF_Document* doc = GetDocument();
+  RetainPtr<const CPDF_Stream> source = GetStream();
+  if (!doc || !source) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Stream> clone = ToStream(source->CloneForHolder(doc));
+  if (!clone) {
+    return false;
+  }
+
+  // The form dictionary clone keeps indirect resource references by design.
+  // Make the effective resource dictionary private too, since content
+  // generation may add or prune resource names for the sanitized stream.
+  if (resources_) {
+    RetainPtr<CPDF_Dictionary> cloned_resources =
+        ToDictionary(resources_->CloneForHolder(doc));
+    if (!cloned_resources) {
+      return false;
+    }
+    clone->GetMutableDict()->SetFor("Resources", std::move(cloned_resources));
+  }
+
+  if (doc->AddIndirectObject(clone) == 0) {
+    return false;
+  }
+  RebindFormStream(std::move(clone), /*reset_parsed_content=*/false);
+  return true;
+}
+
 void CPDF_Form::RebindFormStream(RetainPtr<CPDF_Stream> stream,
                                  bool reset_parsed_content) {
   CHECK(stream);

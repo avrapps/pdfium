@@ -10,6 +10,7 @@
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 
 #include "public/epdf_font.h"
+#include "public/epdf_text.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_catalog.h"
@@ -42,6 +43,9 @@ fnptr g_c_api_test_fnptr = NULL;  // Extern, so can't know it doesn't change.
 
 // Function to call from gtest harness to ensure linker resolution.
 int CheckPDFiumCApi() {
+  // epdf_text.h
+  CHK(EPDFText_GetCharGeometry);
+
   // fpdf_annot.h
   CHK(FPDFAnnot_AddFileAttachment);
   CHK(FPDFAnnot_AddInkStroke);

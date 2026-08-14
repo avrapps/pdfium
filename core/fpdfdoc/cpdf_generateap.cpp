@@ -80,6 +80,131 @@ static CFX_PointF UnitVector(const CFX_PointF& v) {
   return CFX_PointF(v.x / len, v.y / len);
 }
 
+struct MarkupQuad {
+  CFX_PointF upper_start;
+  CFX_PointF upper_end;
+  CFX_PointF lower_start;
+  CFX_PointF lower_end;
+};
+
+constexpr float kMarkupQuadTolerance = 1e-4f;
+
+float DotProduct(const CFX_PointF& lhs, const CFX_PointF& rhs) {
+  return lhs.x * rhs.x + lhs.y * rhs.y;
+}
+
+float CrossProduct(const CFX_PointF& lhs, const CFX_PointF& rhs) {
+  return lhs.x * rhs.y - lhs.y * rhs.x;
+}
+
+float VectorLength(const CFX_PointF& vector) {
+  return std::hypot(vector.x, vector.y);
+}
+
+bool IsFinitePoint(const CFX_PointF& point) {
+  return std::isfinite(point.x) && std::isfinite(point.y);
+}
+
+std::optional<MarkupQuad> ReadMarkupQuad(const CPDF_Array* array,
+                                         size_t index) {
+  const size_t offset = index * 8;
+  MarkupQuad quad = {
+      {array->GetFloatAt(offset), array->GetFloatAt(offset + 1)},
+      {array->GetFloatAt(offset + 2), array->GetFloatAt(offset + 3)},
+      {array->GetFloatAt(offset + 4), array->GetFloatAt(offset + 5)},
+      {array->GetFloatAt(offset + 6), array->GetFloatAt(offset + 7)}};
+  if (!IsFinitePoint(quad.upper_start) || !IsFinitePoint(quad.upper_end) ||
+      !IsFinitePoint(quad.lower_start) || !IsFinitePoint(quad.lower_end)) {
+    return std::nullopt;
+  }
+
+  const CFX_PointF upper_edge = quad.upper_end - quad.upper_start;
+  const CFX_PointF lower_edge = quad.lower_end - quad.lower_start;
+  const CFX_PointF start_edge = quad.lower_start - quad.upper_start;
+  const CFX_PointF end_edge = quad.lower_end - quad.upper_end;
+  const float upper_length = VectorLength(upper_edge);
+  const float lower_length = VectorLength(lower_edge);
+  const float start_length = VectorLength(start_edge);
+  const float end_length = VectorLength(end_edge);
+  if (!std::isfinite(upper_length) || !std::isfinite(lower_length) ||
+      !std::isfinite(start_length) || !std::isfinite(end_length) ||
+      upper_length <= kMarkupQuadTolerance ||
+      lower_length <= kMarkupQuadTolerance ||
+      start_length <= kMarkupQuadTolerance ||
+      end_length <= kMarkupQuadTolerance) {
+    return std::nullopt;
+  }
+
+  // The PDF text-markup order is upper-start, upper-end, lower-start,
+  // lower-end. Reject crossed and reversed producer data before interpreting
+  // those pairs as a local frame.
+  const float horizontal_alignment = DotProduct(upper_edge, lower_edge);
+  const float vertical_alignment = DotProduct(start_edge, end_edge);
+  if (!std::isfinite(horizontal_alignment) ||
+      !std::isfinite(vertical_alignment) || horizontal_alignment <= 0.0f ||
+      vertical_alignment <= 0.0f) {
+    return std::nullopt;
+  }
+  const float start_area = CrossProduct(upper_edge, start_edge);
+  const float end_area = CrossProduct(lower_edge, end_edge);
+  if (!std::isfinite(start_area) || !std::isfinite(end_area) ||
+      std::signbit(start_area) != std::signbit(end_area) ||
+      std::abs(start_area) <=
+          kMarkupQuadTolerance * upper_length * start_length ||
+      std::abs(end_area) <= kMarkupQuadTolerance * lower_length * end_length) {
+    return std::nullopt;
+  }
+  return quad;
+}
+
+bool IsAxisAlignedZigZag(const MarkupQuad& quad) {
+  const float scale =
+      std::max({1.0f, VectorLength(quad.upper_end - quad.upper_start),
+                VectorLength(quad.lower_end - quad.lower_start),
+                VectorLength(quad.lower_start - quad.upper_start),
+                VectorLength(quad.lower_end - quad.upper_end)});
+  const float tolerance = kMarkupQuadTolerance * scale;
+  return std::abs(quad.upper_start.y - quad.upper_end.y) <= tolerance &&
+         std::abs(quad.lower_start.y - quad.lower_end.y) <= tolerance &&
+         std::abs(quad.upper_start.x - quad.lower_start.x) <= tolerance &&
+         std::abs(quad.upper_end.x - quad.lower_end.x) <= tolerance;
+}
+
+CFX_PointF Midpoint(const CFX_PointF& first, const CFX_PointF& second) {
+  return 0.5f * (first + second);
+}
+
+CFX_PointF LowerToUpperUnit(const MarkupQuad& quad) {
+  return UnitVector((quad.upper_start - quad.lower_start) +
+                    (quad.upper_end - quad.lower_end));
+}
+
+void EmitOrientedSquiggle(fxcrt::ostringstream& stream,
+                          const MarkupQuad& quad,
+                          float delta) {
+  const CFX_PointF lower_edge = quad.lower_end - quad.lower_start;
+  const float length = VectorLength(lower_edge);
+  const CFX_PointF along = UnitVector(lower_edge);
+  const CFX_PointF toward_upper = LowerToUpperUnit(quad);
+  WritePoint(stream, quad.lower_start + delta * toward_upper) << " m ";
+
+  float distance = delta;
+  bool is_upwards = false;
+  while (distance < length) {
+    CFX_PointF point = quad.lower_start + distance * along;
+    if (is_upwards) {
+      point += delta * toward_upper;
+    }
+    WritePoint(stream, point) << " l ";
+    distance += delta;
+    is_upwards = !is_upwards;
+  }
+
+  const float remainder = length - (distance - delta);
+  const float height = is_upwards ? remainder : delta - remainder;
+  WritePoint(stream, quad.lower_end + height * toward_upper) << " l S\n";
+}
+
 // Read one token from a /LE array and return it as a ByteString, accepting
 // both Name and String objects (some generators are sloppy).
 static ByteString ReadLineEndingToken(const CPDF_Array* le, size_t idx) {
@@ -2209,6 +2334,16 @@ bool GenerateHighlightAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        WritePoint(app_stream, quad->upper_start) << " m ";
+        WritePoint(app_stream, quad->upper_end) << " l ";
+        WritePoint(app_stream, quad->lower_end) << " l ";
+        WritePoint(app_stream, quad->lower_start) << " l h f\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
@@ -2545,6 +2680,16 @@ bool GenerateUnderlineAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        const CFX_PointF inset = LowerToUpperUnit(*quad);
+        WritePoint(app_stream, quad->lower_start + kLineWidth * inset) << " m ";
+        WritePoint(app_stream, quad->lower_end + kLineWidth * inset)
+            << " l S\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
       app_stream << rect.left << " " << rect.bottom + kLineWidth << " m "
@@ -2686,6 +2831,13 @@ bool GenerateSquigglyAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        EmitOrientedSquiggle(app_stream, *quad, kDelta);
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
@@ -2737,6 +2889,18 @@ bool GenerateStrikeOutAP(APGenerationTarget* target,
     const size_t quad_point_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
     for (size_t i = 0; i < quad_point_count; ++i) {
+      const std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        static constexpr int kLineWidth = 1;
+        app_stream << kLineWidth << " w ";
+        WritePoint(app_stream, Midpoint(quad->upper_start, quad->lower_start))
+            << " m ";
+        WritePoint(app_stream, Midpoint(quad->upper_end, quad->lower_end))
+            << " l S\n";
+        continue;
+      }
+
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
 
@@ -2814,29 +2978,65 @@ bool GenerateLinkAP(CPDF_Document* doc,
 
 // EmbedPDF: the regions a /Redact annotation targets — /QuadPoints quads when
 // present (text redactions), else the annotation /Rect (area redactions).
-std::vector<CFX_FloatRect> GetRedactOverlayRegions(
+// One overlay region: the AABB (label layout + area marks) plus the exact
+// oriented quad when the marked cell is not axis-aligned (rotated text marks
+// fill their true cells; the label tiling stays axis-aligned in the bbox,
+// matching the live scene preview).
+struct RedactOverlayRegion {
+  CFX_FloatRect bbox;
+  std::optional<MarkupQuad> quad;
+};
+
+bool RedactQuadValuesAreFinite(const CPDF_Array* array, size_t index) {
+  const size_t offset = index * 8;
+  for (size_t i = 0; i < 8; ++i) {
+    if (!std::isfinite(array->GetFloatAt(offset + i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<RedactOverlayRegion> GetRedactOverlayRegions(
     const CPDF_Dictionary* annot_dict) {
-  std::vector<CFX_FloatRect> regions;
+  std::vector<RedactOverlayRegion> regions;
   RetainPtr<const CPDF_Array> quad_points_array =
       annot_dict->GetArrayFor("QuadPoints");
   if (quad_points_array && quad_points_array->size() >= 8) {
     const size_t quad_count =
         CPDF_Annot::QuadPointCount(quad_points_array.Get());
+    bool invalid_quad = false;
     for (size_t i = 0; i < quad_count; ++i) {
+      if (!RedactQuadValuesAreFinite(quad_points_array.Get(), i)) {
+        invalid_quad = true;
+        break;
+      }
+      std::optional<MarkupQuad> quad =
+          ReadMarkupQuad(quad_points_array.Get(), i);
       CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
       rect.Normalize();
-      if (!rect.IsEmpty()) {
-        regions.push_back(rect);
+      if (rect.IsEmpty()) {
+        invalid_quad = true;
+        break;
       }
+      RedactOverlayRegion region;
+      region.bbox = rect;
+      if (quad && !IsAxisAlignedZigZag(*quad)) {
+        region.quad = quad;
+      }
+      regions.push_back(region);
     }
-    if (!regions.empty()) {
+    if (!invalid_quad && !regions.empty()) {
       return regions;
     }
+    regions.clear();
   }
   CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
   rect.Normalize();
   if (!rect.IsEmpty()) {
-    regions.push_back(rect);
+    RedactOverlayRegion region;
+    region.bbox = rect;
+    regions.push_back(region);
   }
   return regions;
 }
@@ -2844,14 +3044,16 @@ std::vector<CFX_FloatRect> GetRedactOverlayRegions(
 // EmbedPDF: the marking-stage /AP BBox and the overlay BBox share this rule:
 // quad bounding box for text redactions, /Rect for area redactions.
 CFX_FloatRect GetRedactOverlayBBox(const CPDF_Dictionary* annot_dict) {
-  RetainPtr<const CPDF_Array> quad_points_array =
-      annot_dict->GetArrayFor("QuadPoints");
-  if (quad_points_array && quad_points_array->size() >= 8) {
-    return CPDF_Annot::BoundingRectFromQuadPoints(annot_dict);
+  const std::vector<RedactOverlayRegion> regions =
+      GetRedactOverlayRegions(annot_dict);
+  if (regions.empty()) {
+    return CFX_FloatRect();
   }
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  return rect;
+  CFX_FloatRect bbox = regions.front().bbox;
+  for (size_t i = 1; i < regions.size(); ++i) {
+    bbox.Union(regions[i].bbox);
+  }
+  return bbox;
 }
 
 RetainPtr<CPDF_Stream> MakeRedactFormStream(
@@ -2957,7 +3159,7 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
     return false;
   }
 
-  const std::vector<CFX_FloatRect> regions =
+  const std::vector<RedactOverlayRegion> regions =
       GetRedactOverlayRegions(annot_dict);
   if (regions.empty()) {
     return false;
@@ -2967,8 +3169,16 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
     stream << GetColorStringWithDefault(
         interior_color.Get(), CFX_Color(CFX_Color::Type::kTransparent),
         PaintOperation::kFill);
-    for (const CFX_FloatRect& region : regions) {
-      WriteRect(stream, region) << " re f\n";
+    for (const RedactOverlayRegion& region : regions) {
+      if (region.quad.has_value()) {
+        // Fill the exact oriented cell (ring order, like the highlight AP).
+        WritePoint(stream, region.quad->upper_start) << " m ";
+        WritePoint(stream, region.quad->upper_end) << " l ";
+        WritePoint(stream, region.quad->lower_end) << " l ";
+        WritePoint(stream, region.quad->lower_start) << " l h f\n";
+      } else {
+        WriteRect(stream, region.bbox) << " re f\n";
+      }
     }
   }
 
@@ -3025,9 +3235,9 @@ bool AppendRedactOverlayOps(CPDF_Document* doc,
 
   CPDF_AnnotFontMap map(doc, std::move(default_font), font_name,
                         /*allow_registered_fallbacks=*/true);
-  for (const CFX_FloatRect& region : regions) {
+  for (const RedactOverlayRegion& region : regions) {
     AppendRedactLabelForRegion(map, annot_dict, overlay_text, da_font_size,
-                               label_color, region, stream);
+                               label_color, region.bbox, stream);
   }
   *out_font_resources = map.CreateFontResourceDict();
   return true;
@@ -3051,8 +3261,9 @@ bool GenerateRedactAP(CPDF_Document* doc,
   if (border_width > 0) {
     normal_stream << border_width << " w ";
     normal_stream << GetDashPatternString(annot_dict);
-    for (const CFX_FloatRect& region : GetRedactOverlayRegions(annot_dict)) {
-      CFX_FloatRect stroke_rect = region;
+    for (const RedactOverlayRegion& region :
+         GetRedactOverlayRegions(annot_dict)) {
+      CFX_FloatRect stroke_rect = region.bbox;
       stroke_rect.Deflate(border_width / 2, border_width / 2);
       normal_stream << stroke_rect.left << " " << stroke_rect.bottom << " "
                     << stroke_rect.Width() << " " << stroke_rect.Height()
@@ -3779,9 +3990,10 @@ void CPDF_GenerateAP::GenerateEmptyAP(CPDF_Document* doc,
                        false);
 }
 
-bool GenerateCaretAP(CPDF_Document* doc,
+bool GenerateCaretAP(APGenerationTarget* target,
                      CPDF_Dictionary* annot_dict,
                      const ByteString& blend_name) {
+  CPDF_Document* doc = target->doc;
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
 
@@ -3792,7 +4004,11 @@ bool GenerateCaretAP(CPDF_Document* doc,
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
       CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kFill);
 
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  // A caret anchored to rotated text carries the box-family /EMBD_Metadata
+  // rotation pair: draw in the UNROTATED box and let the AP form matrix turn
+  // the symbol onto its text's baseline (the shape/free-text machinery).
+  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+  CFX_FloatRect rect = rot_info.bbox;
   rect.Normalize();
 
   float draw_left = rect.left;
@@ -3829,8 +4045,15 @@ bool GenerateCaretAP(CPDF_Document* doc,
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
-                       false /*IsTextMarkupAnnotation*/);
+  if (rot_info.is_rotated) {
+    GenerateAndSetAPDictWithTransform(target, annot_dict, &app_stream,
+                                      std::move(resources_dict),
+                                      rot_info.matrix, rot_info.bbox);
+  } else {
+    GenerateAndSetAPDict(target, annot_dict, &app_stream,
+                         std::move(resources_dict),
+                         false /*IsTextMarkupAnnotation*/);
+  }
   return true;
 }
 
@@ -3898,7 +4121,7 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
     case CPDF_Annot::Subtype::REDACT:
       return GenerateRedactAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::CARET:
-      return GenerateCaretAP(doc, annot_dict, blend_name);
+      return GenerateCaretAP(&target, annot_dict, blend_name);
     default:
       return false;
   }
