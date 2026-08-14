@@ -66,6 +66,11 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   // Never returns nullptr.
   RetainPtr<const CPDF_Stream> GetStream() const;
 
+  // Rebinds this parsed form to a private clone of its backing stream. Call
+  // before serializing per-placement edits so another use of the same Form
+  // XObject cannot be changed or overwrite this form's sanitized content.
+  bool CloneBackingStreamForWrite();
+
  private:
   // CPDF_PageObjectHolder:
   void EnsureMutableBackingObjectForDict() override;

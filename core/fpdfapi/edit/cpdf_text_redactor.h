@@ -19,10 +19,9 @@ class CPDF_Page;
 // carries the exact oriented corners in FS_QUADPOINTSF slot order:
 // upper-start, upper-end, lower-start, lower-end.
 //
-// Text keep/remove decisions use the quad when present (and the glyph's own
-// oriented cell when the text is rotated); image, vector-path, shading, and
-// black-box drawing stay `bbox`-based — for an oriented mark that is the
-// conservative (over-redacting, never leaking) direction.
+// Text, vector paths, and shadings use the quad when present. Images remain
+// conservatively bbox-based; black-box drawing uses the exact quad so the
+// final overlay matches the marked area.
 struct RedactRegion {
   CFX_FloatRect bbox;
   bool has_quad = false;

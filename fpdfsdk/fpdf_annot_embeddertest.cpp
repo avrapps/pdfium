@@ -46,6 +46,7 @@
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
+#include "public/fpdf_ppo.h"
 #include "public/fpdf_save.h"
 #include "public/fpdf_text.h"
 #include "public/fpdfview.h"
@@ -4456,6 +4457,194 @@ TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRemovesTextInMiddleOfSentence) {
   EXPECT_EQ(std::wstring::npos, after.find(L"secret"));
   EXPECT_NE(std::wstring::npos, after.find(L"world"));
   EXPECT_NE(before_hash, after_hash);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionSplitsFillAndStrokePathAcrossSave) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  ASSERT_EQ(612.0f, FPDF_GetPageWidthF(page.get()));
+  ASSERT_EQ(792.0f, FPDF_GetPageHeightF(page.get()));
+  const int original_object_count = FPDFPage_CountObjects(page.get());
+
+  ScopedFPDFPageObject path(
+      FPDFPageObj_CreateNewRect(100.0f, 300.0f, 400.0f, 200.0f));
+  ASSERT_TRUE(path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPageObj_SetStrokeColor(path.get(), 255, 0, 0, 255));
+  ASSERT_TRUE(FPDFPageObj_SetStrokeWidth(path.get(), 20.0f));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/true));
+  FPDFPage_InsertObject(page.get(), path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+  ASSERT_EQ(original_object_count + 1, FPDFPage_CountObjects(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 300, 392));
+  }
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {280.0f, 550.0f, 332.0f, 250.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  ASSERT_EQ(original_object_count + 2, FPDFPage_CountObjects(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 450, 287));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(original_object_count + 2, FPDFPage_CountObjects(saved_page));
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 150, 287));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 287));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+    EXPECT_EQ(0xFFFF0000u, GetPixelColor(bitmap.get(), 450, 287));
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionPreservesEnclosedVectorHoleAcrossSave) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  const int original_object_count = FPDFPage_CountObjects(page.get());
+
+  ScopedFPDFPageObject path(
+      FPDFPageObj_CreateNewRect(100.0f, 300.0f, 400.0f, 200.0f));
+  ASSERT_TRUE(path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/false));
+  FPDFPage_InsertObject(page.get(), path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(page.get(), {280.0f, 425.0f, 332.0f, 375.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_ApplyRedaction(page.get(), annot.get(), nullptr));
+  }
+  ASSERT_EQ(original_object_count + 1, FPDFPage_CountObjects(page.get()));
+  ASSERT_TRUE(FPDFPage_GenerateContent(page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_EQ(original_object_count + 1, FPDFPage_CountObjects(saved_page));
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 392));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 300, 392));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 450, 392));
+  }
+  CloseSavedPage(saved_page);
+}
+
+TEST_F(FPDFAnnotEmbedderTest,
+       ApplyRedactionClonesSharedFormBeforeVectorEdit) {
+  ASSERT_TRUE(OpenDocument("about_blank.pdf"));
+  ScopedPage source_page = LoadScopedPage(0);
+  ASSERT_TRUE(source_page);
+
+  ScopedFPDFPageObject source_path(
+      FPDFPageObj_CreateNewRect(0.0f, 0.0f, 100.0f, 100.0f));
+  ASSERT_TRUE(source_path);
+  ASSERT_TRUE(FPDFPageObj_SetFillColor(source_path.get(), 0, 0, 255, 255));
+  ASSERT_TRUE(FPDFPath_SetDrawMode(source_path.get(), FPDF_FILLMODE_WINDING,
+                                   /*stroke=*/false));
+  FPDFPage_InsertObject(source_page.get(), source_path.release());
+  ASSERT_TRUE(FPDFPage_GenerateContent(source_page.get()));
+
+  FPDF_XOBJECT xobject =
+      FPDF_NewXObjectFromPage(document(), document(), /*src_page_index=*/0);
+  ASSERT_TRUE(xobject);
+  ScopedFPDFPage target_page(FPDFPage_New(document(), 1, 612.0f, 792.0f));
+  ASSERT_TRUE(target_page);
+
+  FPDF_PAGEOBJECT first_form = FPDF_NewFormObjectFromXObject(xobject);
+  ASSERT_TRUE(first_form);
+  FPDFPageObj_Transform(first_form, 1.0, 0.0, 0.0, 1.0, 100.0, 300.0);
+  FPDFPage_InsertObject(target_page.get(), first_form);
+
+  FPDF_PAGEOBJECT second_form = FPDF_NewFormObjectFromXObject(xobject);
+  ASSERT_TRUE(second_form);
+  FPDFPageObj_Transform(second_form, 1.0, 0.0, 0.0, 1.0, 300.0, 300.0);
+  FPDFPage_InsertObject(target_page.get(), second_form);
+  ASSERT_TRUE(FPDFPage_GenerateContent(target_page.get()));
+  FPDF_CloseXObject(xobject);
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(target_page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+
+  {
+    ScopedFPDFAnnotation annot =
+        CreateRedactAnnot(target_page.get(), {140.0f, 420.0f, 160.0f, 280.0f});
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(
+        EPDFAnnot_ApplyRedaction(target_page.get(), annot.get(), nullptr));
+  }
+  ASSERT_TRUE(FPDFPage_GenerateContent(target_page.get()));
+
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(target_page.get(), 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(1);
+  ASSERT_TRUE(saved_page);
+  {
+    ScopedFPDFBitmap bitmap = RenderPageOnWhite(saved_page, 612, 792);
+    ASSERT_TRUE(bitmap);
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 180, 442));
+    EXPECT_EQ(0xFFFFFFFFu, GetPixelColor(bitmap.get(), 150, 442));
+    EXPECT_EQ(0xFF0000FFu, GetPixelColor(bitmap.get(), 350, 442));
+  }
+  CloseSavedPage(saved_page);
 }
 
 TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
