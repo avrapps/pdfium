@@ -4647,6 +4647,49 @@ TEST_F(FPDFAnnotEmbedderTest,
   CloseSavedPage(saved_page);
 }
 
+TEST_F(FPDFAnnotEmbedderTest, RotatedCaretAppearanceCarriesTransform) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFAnnotation annot(FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CARET));
+  ASSERT_TRUE(annot);
+  // Rotated-visual AABB as /Rect + the box-family /EMBD_Metadata pair: the
+  // generator must draw in the UNROTATED box and emit an AP form matrix.
+  const FS_RECTF rect = {90.0f, 110.0f, 110.0f, 90.0f};  // L, T, R, B
+  ASSERT_TRUE(FPDFAnnot_SetRect(annot.get(), &rect));
+  ASSERT_TRUE(
+      EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 90.0f));
+  const FS_RECTF unrotated = {92.0f, 108.0f, 108.0f, 92.0f};
+  ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect",
+                                             &unrotated));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+  FS_MATRIX matrix = {};
+  ASSERT_TRUE(EPDFAnnot_GetAPMatrix(annot.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL,
+                                    &matrix));
+  // 90° CCW (PDF convention): a≈0, b≈1, c≈-1, d≈0 — the symbol rides its
+  // text's baseline instead of staying screen-upright.
+  EXPECT_NEAR(0.0f, matrix.a, 1e-4f);
+  EXPECT_NEAR(1.0f, matrix.b, 1e-4f);
+  EXPECT_NEAR(-1.0f, matrix.c, 1e-4f);
+  EXPECT_NEAR(0.0f, matrix.d, 1e-4f);
+
+  // An upright caret keeps the identity form matrix.
+  ScopedFPDFAnnotation upright(
+      FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CARET));
+  ASSERT_TRUE(upright);
+  ASSERT_TRUE(FPDFAnnot_SetRect(upright.get(), &rect));
+  ASSERT_TRUE(EPDFAnnot_GenerateAppearance(upright.get()));
+  FS_MATRIX upright_matrix = {};
+  ASSERT_TRUE(EPDFAnnot_GetAPMatrix(
+      upright.get(), FPDF_ANNOT_APPEARANCEMODE_NORMAL, &upright_matrix));
+  EXPECT_FLOAT_EQ(1.0f, upright_matrix.a);
+  EXPECT_FLOAT_EQ(0.0f, upright_matrix.b);
+  EXPECT_FLOAT_EQ(0.0f, upright_matrix.c);
+  EXPECT_FLOAT_EQ(1.0f, upright_matrix.d);
+}
+
 TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
   ASSERT_TRUE(OpenDocument("rotated_redact.pdf"));
   ScopedPage page = LoadScopedPage(0);

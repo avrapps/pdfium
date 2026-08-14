@@ -3990,9 +3990,10 @@ void CPDF_GenerateAP::GenerateEmptyAP(CPDF_Document* doc,
                        false);
 }
 
-bool GenerateCaretAP(CPDF_Document* doc,
+bool GenerateCaretAP(APGenerationTarget* target,
                      CPDF_Dictionary* annot_dict,
                      const ByteString& blend_name) {
+  CPDF_Document* doc = target->doc;
   fxcrt::ostringstream app_stream;
   app_stream << "/" << kGSDictName << " gs ";
 
@@ -4003,7 +4004,11 @@ bool GenerateCaretAP(CPDF_Document* doc,
       annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
       CFX_Color(CFX_Color::Type::kRGB, 0, 0, 0), PaintOperation::kFill);
 
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
+  // A caret anchored to rotated text carries the box-family /EMBD_Metadata
+  // rotation pair: draw in the UNROTATED box and let the AP form matrix turn
+  // the symbol onto its text's baseline (the shape/free-text machinery).
+  const ShapeRotationInfo rot_info = GetShapeRotationInfo(annot_dict);
+  CFX_FloatRect rect = rot_info.bbox;
   rect.Normalize();
 
   float draw_left = rect.left;
@@ -4040,8 +4045,15 @@ bool GenerateCaretAP(CPDF_Document* doc,
 
   auto gs_dict = GenerateExtGStateDict(*annot_dict, blend_name);
   auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
-  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
-                       false /*IsTextMarkupAnnotation*/);
+  if (rot_info.is_rotated) {
+    GenerateAndSetAPDictWithTransform(target, annot_dict, &app_stream,
+                                      std::move(resources_dict),
+                                      rot_info.matrix, rot_info.bbox);
+  } else {
+    GenerateAndSetAPDict(target, annot_dict, &app_stream,
+                         std::move(resources_dict),
+                         false /*IsTextMarkupAnnotation*/);
+  }
   return true;
 }
 
@@ -4109,7 +4121,7 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
     case CPDF_Annot::Subtype::REDACT:
       return GenerateRedactAP(doc, annot_dict, blend_name);
     case CPDF_Annot::Subtype::CARET:
-      return GenerateCaretAP(doc, annot_dict, blend_name);
+      return GenerateCaretAP(&target, annot_dict, blend_name);
     default:
       return false;
   }
