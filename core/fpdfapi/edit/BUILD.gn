@@ -33,12 +33,16 @@ source_set("edit") {
   deps = [
     ":contentstream_write_utils",
     "../../../constants",
-    "../../../skia",
     "../../fxcrt",
     "../font",
     "../page",
     "../parser",
   ]
+  if (pdf_use_skia) {
+    deps += [ "../../../skia" ]
+  } else {
+    deps += [ "../../../skia:redaction_pathops" ]
+  }
   visibility = [ "../../../*" ]
 }
 

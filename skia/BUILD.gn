@@ -245,6 +245,98 @@ config("skia_library_config") {
   }
 }
 
+# The vector redactor needs SkPath, stroke expansion, dash effects, and
+# PathOps, but it does not use Skia as PDFium's rendering backend. Keep that
+# geometry-only dependency separate from :skia: the full target brings font
+# managers, FreeType, codecs, and GPU backends whose build contract is
+# intentionally gated by pdf_use_skia.
+#
+# A static library is deliberate: pathops is a cohesive collection of source
+# files, while the explicitly listed core files are its path/stroke dependency
+# closure. Keep this list narrow so adding an unrelated file to Skia core cannot
+# silently pull rendering or font dependencies into the runtime.
+static_library("redaction_pathops") {
+  visibility = [ "//core/fpdfapi/edit:*" ]
+  check_includes = false
+
+  public = [
+    "//third_party/skia/include/core/SkMatrix.h",
+    "//third_party/skia/include/core/SkPath.h",
+    "//third_party/skia/include/core/SkPathBuilder.h",
+    "//third_party/skia/include/core/SkRect.h",
+    "//third_party/skia/include/core/SkStrokeRec.h",
+    "//third_party/skia/include/pathops/SkPathOps.h",
+    "//third_party/skia/src/utils/SkDashPathPriv.h",
+  ]
+
+  sources = [
+    "//third_party/skia/src/base/SkArenaAlloc.cpp",
+    "//third_party/skia/src/base/SkBezierCurves.cpp",
+    "//third_party/skia/src/base/SkBuffer.cpp",
+    "//third_party/skia/src/base/SkContainers.cpp",
+    "//third_party/skia/src/base/SkCubics.cpp",
+    "//third_party/skia/src/base/SkFloatingPoint.cpp",
+    "//third_party/skia/src/base/SkMalloc.cpp",
+    "//third_party/skia/src/base/SkQuads.cpp",
+    "//third_party/skia/src/base/SkSafeMath.cpp",
+    "//third_party/skia/src/base/SkSemaphore.cpp",
+    "//third_party/skia/src/base/SkTDArray.cpp",
+    "//third_party/skia/src/base/SkThreadID.cpp",
+    "//third_party/skia/src/base/SkUTF.cpp",
+    "//third_party/skia/src/base/SkUtils.cpp",
+    "//third_party/skia/src/core/SkContourMeasure.cpp",
+    "//third_party/skia/src/core/SkCpu.cpp",
+    "//third_party/skia/src/core/SkCubicClipper.cpp",
+    "//third_party/skia/src/core/SkEdgeClipper.cpp",
+    "//third_party/skia/src/core/SkGeometry.cpp",
+    "//third_party/skia/src/core/SkIDChangeListener.cpp",
+    "//third_party/skia/src/core/SkLineClipper.cpp",
+    "//third_party/skia/src/core/SkM44.cpp",
+    "//third_party/skia/src/core/SkMatrix.cpp",
+    "//third_party/skia/src/core/SkMatrixInvert.cpp",
+    "//third_party/skia/src/core/SkOpts.cpp",
+    "//third_party/skia/src/core/SkPath.cpp",
+    "//third_party/skia/src/core/SkPathBuilder.cpp",
+    "//third_party/skia/src/core/SkPathData.cpp",
+    "//third_party/skia/src/core/SkPathDump.cpp",
+    "//third_party/skia/src/core/SkPathIter.cpp",
+    "//third_party/skia/src/core/SkPathMeasure.cpp",
+    "//third_party/skia/src/core/SkPathPriv.cpp",
+    "//third_party/skia/src/core/SkPathRaw.cpp",
+    "//third_party/skia/src/core/SkPathRawShapes.cpp",
+    "//third_party/skia/src/core/SkPath_pathdata.cpp",
+    "//third_party/skia/src/core/SkPoint.cpp",
+    "//third_party/skia/src/core/SkRRect.cpp",
+    "//third_party/skia/src/core/SkRect.cpp",
+    "//third_party/skia/src/core/SkString.cpp",
+    "//third_party/skia/src/core/SkStringUtils.cpp",
+    "//third_party/skia/src/core/SkStroke.cpp",
+    "//third_party/skia/src/core/SkStrokeRec.cpp",
+    "//third_party/skia/src/core/SkStrokerPriv.cpp",
+    "//third_party/skia/src/ports/SkMemory_malloc.cpp",
+    "//third_party/skia/src/utils/SkDashPath.cpp",
+    "//third_party/skia/src/utils/SkDashPathPriv.h",
+    "config/SkPdfiumUserConfig.h",
+    "ext/google_logging.cc",
+  ]
+  sources += skia_pathops_sources
+
+  if (!is_debug) {
+    configs -= [ "//build/config/compiler:default_optimization" ]
+    configs += [ "//build/config/compiler:optimize_max" ]
+  }
+
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [
+    ":skia_config",
+    ":skia_library_config",
+    "//build/config/compiler:no_chromium_code",
+  ]
+  public_configs = [ ":skia_config" ]
+
+  deps = [ ":skia_opts" ]
+}
+
 component("skia") {
   deps = []
 
@@ -523,7 +615,10 @@ skia_source_set("skia_opts") {
     configs += [ "//build/config/compiler:optimize_max" ]
   }
 
-  visibility = [ ":skia" ]
+  visibility = [
+    ":redaction_pathops",
+    ":skia",
+  ]
 }
 
 if (current_cpu == "x64") {
