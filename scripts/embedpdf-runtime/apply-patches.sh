@@ -69,6 +69,12 @@ copy_patch_file() {
 
 "$SOURCE_DIR/scripts/embedpdf-runtime/unapply-patches.sh"
 
+# The redaction-only Skia target uses stroking without SkPaint. Keep the
+# paint-dependent SkStrokeRec methods in a separate compilation unit so the
+# geometry archive does not inherit Skia's renderer/font dependency graph.
+apply_patch_file "$SOURCE_DIR/third_party/skia" \
+  "$PATCH_DIR/skia/geometry-only-stroke.patch"
+
 case "$TARGET" in
   wasm32)
     apply_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/wasm/build.patch"

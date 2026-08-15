@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -18,15 +19,12 @@
 #include "core/fxge/cfx_fillrenderoptions.h"
 #include "core/fxge/cfx_graphstatedata.h"
 #include "third_party/skia/include/core/SkMatrix.h"
-#include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
-#include "third_party/skia/include/core/SkPathEffect.h"
-#include "third_party/skia/include/core/SkPathUtils.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkStrokeRec.h"
-#include "third_party/skia/include/effects/SkDashPathEffect.h"
 #include "third_party/skia/include/pathops/SkPathOps.h"
+#include "third_party/skia/src/utils/SkDashPathPriv.h"
 
 namespace {
 
@@ -279,15 +277,16 @@ std::optional<SkPath> BuildRedactionPath(const RedactRegion& region) {
         SkRect::MakeLTRB(rect.left, rect.bottom, rect.right, rect.top));
   }
 
-  SkPaint guard;
-  guard.setStyle(SkPaint::kStrokeAndFill_Style);
-  guard.setStrokeWidth(2.0f * kRedactionBoundaryGuard);
-  guard.setStrokeJoin(SkPaint::kMiter_Join);
-  guard.setStrokeMiter(4.0f);
-  bool is_fill = false;
-  SkPath expanded =
-      skpathutils::FillPathWithPaint(builder.detach(), guard, &is_fill);
-  if (!is_fill || !expanded.isFinite() || expanded.isEmpty()) {
+  SkStrokeRec guard(SkStrokeRec::kHairline_InitStyle);
+  guard.setStrokeStyle(2.0f * kRedactionBoundaryGuard,
+                       /*strokeAndFill=*/true);
+  guard.setStrokeParams(SkPaint::kButt_Cap, SkPaint::kMiter_Join, 4.0f);
+  SkPathBuilder expanded_builder;
+  if (!guard.applyToPath(&expanded_builder, builder.detach())) {
+    return std::nullopt;
+  }
+  SkPath expanded = expanded_builder.detach();
+  if (!expanded.isFinite() || expanded.isEmpty()) {
     return std::nullopt;
   }
   return expanded;
@@ -326,34 +325,35 @@ std::optional<SkPath> BuildStrokeOutline(const CPDF_PathObject& source,
   width = std::fabs(width);
   const bool is_hairline = width == 0.0f;
 
-  SkPaint paint;
-  paint.setStyle(SkPaint::kStroke_Style);
-  paint.setStrokeWidth(is_hairline ? kHairlineWidth : width);
-  paint.setStrokeMiter(std::max(1.0f, miter));
+  SkPaint::Cap cap = SkPaint::kButt_Cap;
   switch (graph_state.GetLineCap()) {
     case CFX_GraphStateData::LineCap::kButt:
-      paint.setStrokeCap(SkPaint::kButt_Cap);
+      cap = SkPaint::kButt_Cap;
       break;
     case CFX_GraphStateData::LineCap::kRound:
-      paint.setStrokeCap(SkPaint::kRound_Cap);
+      cap = SkPaint::kRound_Cap;
       break;
     case CFX_GraphStateData::LineCap::kSquare:
-      paint.setStrokeCap(SkPaint::kSquare_Cap);
+      cap = SkPaint::kSquare_Cap;
       break;
   }
+  SkPaint::Join join = SkPaint::kMiter_Join;
   switch (graph_state.GetLineJoin()) {
     case CFX_GraphStateData::LineJoin::kMiter:
-      paint.setStrokeJoin(SkPaint::kMiter_Join);
+      join = SkPaint::kMiter_Join;
       break;
     case CFX_GraphStateData::LineJoin::kRound:
-      paint.setStrokeJoin(SkPaint::kRound_Join);
+      join = SkPaint::kRound_Join;
       break;
     case CFX_GraphStateData::LineJoin::kBevel:
-      paint.setStrokeJoin(SkPaint::kBevel_Join);
+      join = SkPaint::kBevel_Join;
       break;
   }
 
-  sk_sp<SkPathEffect> dash_effect;
+  SkStrokeRec stroke_record(SkStrokeRec::kHairline_InitStyle);
+  stroke_record.setStrokeStyle(is_hairline ? kHairlineWidth : width);
+  stroke_record.setStrokeParams(cap, join, std::max(1.0f, miter));
+
   std::vector<float> dashes = graph_state.GetLineDashArray();
   if (!dashes.empty()) {
     bool has_positive_interval = false;
@@ -370,39 +370,58 @@ std::optional<SkPath> BuildStrokeOutline(const CPDF_PathObject& source,
       const std::vector<float> copy = dashes;
       dashes.insert(dashes.end(), copy.begin(), copy.end());
     }
-    dash_effect = SkDashPathEffect::Make(dashes, phase);
-    if (!dash_effect) {
+    if (!SkDashPath::ValidDashPath(phase, dashes)) {
       return std::nullopt;
     }
   }
 
   SkPath path_to_outline = local_path;
+  if (!dashes.empty()) {
+    float initial_dash_length = 0.0f;
+    size_t initial_dash_index = 0;
+    float interval_length = 0.0f;
+    float adjusted_phase = 0.0f;
+    SkDashPath::CalcDashParameters(phase, dashes, &initial_dash_length,
+                                   &initial_dash_index, &interval_length,
+                                   &adjusted_phase);
+
+    SkStrokeRec dash_stroke = stroke_record;
+    if (is_hairline) {
+      dash_stroke.setHairlineStyle();
+    }
+    SkPathBuilder dashed_builder;
+    if (SkDashPath::InternalFilter(
+            &dashed_builder, path_to_outline, &dash_stroke,
+            /*cullRect=*/nullptr, dashes, initial_dash_length,
+            static_cast<int32_t>(initial_dash_index), interval_length,
+            adjusted_phase)) {
+      path_to_outline = dashed_builder.detach();
+      stroke_record = dash_stroke;
+    } else if (is_hairline) {
+      return std::nullopt;
+    }
+  }
+
   if (is_hairline) {
     // A PDF zero-width stroke is a device-space hairline. Apply dashing in
     // the original user space, then transform the centerline and widen it in
     // page space. This avoids turning a scaled or sheared hairline into an
     // arbitrarily thick local-space stroke when it is persisted as a fill.
-    if (dash_effect) {
-      SkStrokeRec stroke_record(SkStrokeRec::kHairline_InitStyle);
-      SkPathBuilder dashed_builder;
-      if (!dash_effect->filterPath(&dashed_builder, path_to_outline,
-                                   &stroke_record)) {
-        return std::nullopt;
-      }
-      path_to_outline = dashed_builder.detach();
-    }
     path_to_outline = path_to_outline.makeTransform(local_to_page);
     if (!path_to_outline.isFinite()) {
       return std::nullopt;
     }
-  } else if (dash_effect) {
-    paint.setPathEffect(std::move(dash_effect));
+    stroke_record.setStrokeStyle(kHairlineWidth);
   }
 
-  bool is_fill = false;
-  SkPath outline =
-      skpathutils::FillPathWithPaint(path_to_outline, paint, &is_fill);
-  if (!is_fill || !outline.isFinite()) {
+  SkPathBuilder outline_builder;
+  if (stroke_record.applyToPath(&outline_builder, path_to_outline)) {
+    path_to_outline = outline_builder.detach();
+  } else if (!stroke_record.isFillStyle()) {
+    return std::nullopt;
+  }
+  SkPath outline = std::move(path_to_outline);
+  if (!outline.isFinite()) {
     return std::nullopt;
   }
   if (!is_hairline) {
