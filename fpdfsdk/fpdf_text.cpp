@@ -29,6 +29,7 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
+#include "core/fxcrt/utf16.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
 namespace {
@@ -38,6 +39,10 @@ static_assert(offsetof(EPDF_CHAR_GEOMETRY, loose_box) == 0);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, tight_box) == 16);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, loose_quad) == 32);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, tight_quad) == 64);
+
+static_assert(sizeof(EPDF_CHAR_MAP_ANCHOR) == 8);
+static_assert(offsetof(EPDF_CHAR_MAP_ANCHOR, char_index) == 0);
+static_assert(offsetof(EPDF_CHAR_MAP_ANCHOR, text_offset) == 4);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, matrix) == 96);
 static_assert(offsetof(EPDF_CHAR_GEOMETRY, flags) == 120);
 
@@ -417,6 +422,76 @@ EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
 
   *geometry = result;
   return true;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV EPDFText_GetTextFull(FPDF_TEXTPAGE text_page,
+                                                   unsigned short* buffer,
+                                                   int buffer_len) {
+  CPDF_TextPage* textpage = CPDFTextPageFromFPDFTextPage(text_page);
+  if (!textpage) {
+    return 0;
+  }
+  const int char_count = textpage->CountChars();
+  WideString str =
+      char_count > 0 ? textpage->GetPageText(0, char_count) : WideString();
+  // True UTF-16LE (surrogate pairs preserved), unlike FPDFText_GetText's
+  // ToUCS2LE which silently skips supplementary code points. Includes the
+  // two-byte terminator in the string data itself.
+  ByteString encoded = str.ToUTF16LE();
+  auto encoded_span =
+      fxcrt::reinterpret_span<const unsigned short>(encoded.span());
+  const int required = pdfium::checked_cast<int>(encoded_span.size());
+  if (buffer && buffer_len >= required) {
+    // SAFETY: required from caller. The two-call contract states that
+    // `buffer` must hold `buffer_len` UTF-16 units.
+    fxcrt::Copy(encoded_span, UNSAFE_BUFFERS(pdfium::span(
+                                  buffer, static_cast<size_t>(buffer_len))));
+  }
+  return required;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFText_GetCharToTextMap(FPDF_TEXTPAGE text_page,
+                          EPDF_CHAR_MAP_ANCHOR* anchors,
+                          int anchors_len) {
+  CPDF_TextPage* textpage = CPDFTextPageFromFPDFTextPage(text_page);
+  if (!textpage) {
+    return -1;
+  }
+  // SAFETY: required from caller. The two-call contract states that
+  // `anchors` must hold `anchors_len` entries.
+  pdfium::span<EPDF_CHAR_MAP_ANCHOR> out =
+      anchors && anchors_len > 0
+          ? UNSAFE_BUFFERS(
+                pdfium::span(anchors, static_cast<size_t>(anchors_len)))
+          : pdfium::span<EPDF_CHAR_MAP_ANCHOR>();
+  const int char_count = textpage->CountChars();
+  int required = 0;
+  int offset = 0;
+  for (int i = 0; i < char_count; ++i) {
+    int units = 1;
+    if (textpage->TextIndexFromCharIndex(i) < 0) {
+      // Non-printing: occupies a character slot, contributes no text.
+      units = 0;
+    } else if (pdfium::IsSupplementary(
+                   static_cast<uint32_t>(
+                       textpage->GetCharInfo(static_cast<size_t>(i))
+                           .unicode()))) {
+      // Mirrors FX_UTF16Encode exactly: a supplementary code point becomes
+      // a surrogate pair in EPDFText_GetTextFull output; every other wchar
+      // (lone surrogate halves and out-of-range values included) is one
+      // truncated code unit.
+      units = 2;
+    }
+    if (units != 1) {
+      if (static_cast<size_t>(required) < out.size()) {
+        out[static_cast<size_t>(required)] = {i + 1, offset + units};
+      }
+      ++required;
+    }
+    offset += units;
+  }
+  return required;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFText_GetMatrix(FPDF_TEXTPAGE text_page,
