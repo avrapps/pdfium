@@ -2460,6 +2460,102 @@ TEST_F(FPDFTextEmbedderTest, Bug384770169) {
   EXPECT_TRUE(saw_actual_text_piece);
 }
 
+TEST_F(FPDFTextEmbedderTest, EPDFTextGetTextFullMatchesGetTextOnBmpText) {
+  // bug_1139.pdf is BMP-only (31 characters, 30 text units — the first
+  // character is non-printing), so the full-fidelity extraction must be
+  // byte-identical to FPDFText_GetText, two-call contract included.
+  ASSERT_TRUE(OpenDocument("bug_1139.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  const int required = EPDFText_GetTextFull(textpage.get(), nullptr, 0);
+  ASSERT_EQ(31, required);  // 30 units + NUL
+
+  unsigned short full[64] = {};
+  ASSERT_EQ(required,
+            EPDFText_GetTextFull(textpage.get(), full, std::size(full)));
+
+  unsigned short legacy[64] = {};
+  ASSERT_EQ(required,
+            FPDFText_GetText(textpage.get(), 0,
+                             FPDFText_CountChars(textpage.get()), legacy));
+  EXPECT_THAT(pdfium::span(full).first(static_cast<size_t>(required)),
+              ElementsAreArray(
+                  pdfium::span(legacy).first(static_cast<size_t>(required))));
+
+  // A too-small buffer reports the requirement and writes nothing.
+  unsigned short tiny[4] = {0xABCD, 0xABCD, 0xABCD, 0xABCD};
+  ASSERT_EQ(required, EPDFText_GetTextFull(textpage.get(), tiny, 4));
+  EXPECT_EQ(0xABCD, tiny[0]);
+}
+
+TEST_F(FPDFTextEmbedderTest, EPDFTextGetCharToTextMapNonPrintingChar) {
+  // bug_1139.pdf: character 0 is non-printing, so the map is the single
+  // anchor {1, 0} — every later character shifts down by one text unit
+  // (the same +1 the searchex conversion tests pin).
+  ASSERT_TRUE(OpenDocument("bug_1139.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  ASSERT_EQ(1, EPDFText_GetCharToTextMap(textpage.get(), nullptr, 0));
+
+  EPDF_CHAR_MAP_ANCHOR anchors[4] = {};
+  ASSERT_EQ(1, EPDFText_GetCharToTextMap(textpage.get(), anchors,
+                                         std::size(anchors)));
+  EXPECT_EQ(1, anchors[0].char_index);
+  EXPECT_EQ(0, anchors[0].text_offset);
+}
+
+TEST_F(FPDFTextEmbedderTest, EPDFTextGetCharToTextMapIdentity) {
+  // Every character contributes exactly one text unit — zero anchors.
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  EXPECT_EQ(0, EPDFText_GetCharToTextMap(textpage.get(), nullptr, 0));
+}
+
+TEST_F(FPDFTextEmbedderTest, EPDFTextAstralToUnicodeSurrogatePair) {
+  // A ToUnicode CMap mapping 'A' to <D83DDE00> stores one character-list
+  // entry PER SURROGATE HALF in lockstep with the text, so the page is
+  // identity-mapped (4 characters, 4 units) and the emoji survives
+  // extraction whole: D83D DE00 'B' '!'.
+  ASSERT_TRUE(OpenDocument("embedpdf_astral_tounicode.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+
+  ScopedFPDFTextPage textpage(FPDFText_LoadPage(page.get()));
+  ASSERT_TRUE(textpage);
+
+  ASSERT_EQ(4, FPDFText_CountChars(textpage.get()));
+
+  const int required = EPDFText_GetTextFull(textpage.get(), nullptr, 0);
+  ASSERT_EQ(5, required);  // 4 units + NUL
+
+  unsigned short buffer[8] = {};
+  ASSERT_EQ(required,
+            EPDFText_GetTextFull(textpage.get(), buffer, std::size(buffer)));
+  static constexpr unsigned short kExpected[] = {0xD83D, 0xDE00, 0x0042,
+                                                 0x0021, 0};
+  EXPECT_THAT(pdfium::span(buffer).first(5u), ElementsAreArray(kExpected));
+
+  EXPECT_EQ(0, EPDFText_GetCharToTextMap(textpage.get(), nullptr, 0));
+}
+
+TEST_F(FPDFTextEmbedderTest, EPDFTextFullAndMapInvalidArgs) {
+  EXPECT_EQ(0, EPDFText_GetTextFull(nullptr, nullptr, 0));
+  EXPECT_EQ(-1, EPDFText_GetCharToTextMap(nullptr, nullptr, 0));
+}
+
 TEST_F(FPDFTextEmbedderTest, Bug420508260) {
   ASSERT_TRUE(OpenDocument("bug_420508260.pdf"));
   ScopedPage page = LoadScopedPage(0);

@@ -45,6 +45,8 @@ fnptr g_c_api_test_fnptr = NULL;  // Extern, so can't know it doesn't change.
 int CheckPDFiumCApi() {
   // epdf_text.h
   CHK(EPDFText_GetCharGeometry);
+  CHK(EPDFText_GetCharToTextMap);
+  CHK(EPDFText_GetTextFull);
 
   // fpdf_annot.h
   CHK(FPDFAnnot_AddFileAttachment);

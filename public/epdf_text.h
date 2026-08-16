@@ -50,6 +50,51 @@ EPDFText_GetCharGeometry(FPDF_TEXTPAGE text_page,
                          int index,
                          EPDF_CHAR_GEOMETRY* geometry);
 
+// Experimental EmbedPDF Extension API.
+// One anchor of the character->text mapping emitted by
+// EPDFText_GetCharToTextMap: from |char_index| onward (until the next
+// anchor) character boundary c maps to text offset
+// |text_offset| + (c - |char_index|).
+typedef struct EPDF_CHAR_MAP_ANCHOR_ {
+  int char_index;
+  int text_offset;
+} EPDF_CHAR_MAP_ANCHOR;
+
+// Experimental EmbedPDF Extension API.
+// Full-fidelity page text: the same extraction as
+// FPDFText_GetText(text_page, 0, FPDFText_CountChars(text_page), ...)
+// except encoded as true UTF-16LE — supplementary-plane characters are
+// emitted as surrogate pairs instead of being silently dropped by the
+// UCS-2 encoder. NUL-terminated.
+//
+// Two-call contract: call with a NULL |buffer| (or too-small
+// |buffer_len|) to learn the required size; the return value is ALWAYS
+// the number of UTF-16 units INCLUDING the terminator, and the buffer is
+// written only when |buffer| is non-null and |buffer_len| is at least
+// that large. Returns 0 for an invalid |text_page|.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFText_GetTextFull(FPDF_TEXTPAGE text_page,
+                     unsigned short* buffer,
+                     int buffer_len);
+
+// Experimental EmbedPDF Extension API.
+// The character->text mapping for EPDFText_GetTextFull output, as anchors
+// in ascending char_index order: one anchor at i+1 whenever character i
+// contributed something other than one UTF-16 unit (a non-printing
+// character contributes 0; a supplementary-plane character contributes
+// 2 — the same rule FX_UTF16Encode applies, so the map and the text can
+// never disagree). Text offsets are UTF-16 units of the
+// EPDFText_GetTextFull output. Zero anchors means identity: character
+// index == text offset everywhere.
+//
+// Two-call contract: the return value is ALWAYS the total anchor count;
+// entries are written up to |anchors_len| (a shorter buffer receives a
+// valid prefix). Returns -1 for an invalid |text_page|.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFText_GetCharToTextMap(FPDF_TEXTPAGE text_page,
+                          EPDF_CHAR_MAP_ANCHOR* anchors,
+                          int anchors_len);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
