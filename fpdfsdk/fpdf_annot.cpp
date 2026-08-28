@@ -2775,6 +2775,18 @@ EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot) {
   return RemoveLinkDictEntry(annot, "Dest");
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(key);
+  return true;
+}
+
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
 FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot) {
   if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FILEATTACHMENT) {

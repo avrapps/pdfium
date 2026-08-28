@@ -1750,6 +1750,27 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveAction(FPDF_ANNOTATION annot
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
+// Remove |key| from |annot|'s dictionary.
+//
+//   annot - handle to an annotation.
+//   key   - the key to remove, encoded in UTF-8.
+//
+// Returns true when the entry is absent afterwards, including when there
+// was none to begin with (idempotent). False on a null |annot| or |key|.
+//
+// Notes:
+//  * Generic top-level entry removal, completing the FPDFAnnot_HasKey /
+//    FPDFAnnot_GetValueType / FPDFAnnot_SetStringValue family. Passing a
+//    NULL value to FPDFAnnot_SetStringValue writes an EMPTY string; this
+//    function is the only way to truly remove an entry (e.g. /State,
+//    /StateModel, /Subj, /Contents).
+//  * Like FPDFAnnot_SetStringValue, no key is off-limits — removing a
+//    structural entry (/Subtype, /Rect) produces a malformed annotation.
+//    Callers are expected to know what they are removing.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_RemoveKey(FPDF_ANNOTATION annot,
+                                                        FPDF_BYTESTRING key);
+
+// Experimental EmbedPDF Extension API.
 // Get the annotation count.
 //
 //   doc    - handle to a document.

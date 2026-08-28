@@ -3276,6 +3276,80 @@ TEST_F(FPDFAnnotEmbedderTest, Bug1212) {
   }
 }
 
+TEST_F(FPDFAnnotEmbedderTest, RemoveKey) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+
+  static const char kStateKey[] = "State";
+  static const char kStateModelKey[] = "StateModel";
+  static const wchar_t kState[] = L"Accepted";
+  static const wchar_t kStateModel[] = L"Review";
+  static const size_t kBufSize = 32;
+  std::vector<FPDF_WCHAR> buf = GetFPDFWideStringBuffer(kBufSize);
+
+  {
+    // A review-status reply per ISO 32000-2 12.5.6.3: a text annotation
+    // carrying /State + /StateModel.
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_TEXT));
+    ASSERT_TRUE(annot);
+
+    ScopedFPDFWideString state = GetFPDFWideString(kState);
+    ScopedFPDFWideString model = GetFPDFWideString(kStateModel);
+    EXPECT_TRUE(FPDFAnnot_SetStringValue(annot.get(), kStateKey, state.get()));
+    EXPECT_TRUE(
+        FPDFAnnot_SetStringValue(annot.get(), kStateModelKey, model.get()));
+
+    std::ranges::fill(buf, 'x');
+    ASSERT_EQ(18u, FPDFAnnot_GetStringValue(annot.get(), kStateKey, buf.data(),
+                                            kBufSize));
+    EXPECT_EQ(kState, GetPlatformWString(buf.data()));
+
+    // Overwriting with an empty string is NOT removal: the entry stays.
+    ScopedFPDFWideString empty = GetFPDFWideString(L"");
+    EXPECT_TRUE(FPDFAnnot_SetStringValue(annot.get(), kStateKey, empty.get()));
+    EXPECT_TRUE(FPDFAnnot_HasKey(annot.get(), kStateKey));
+
+    // RemoveKey truly removes the entry.
+    EXPECT_TRUE(EPDFAnnot_RemoveKey(annot.get(), kStateKey));
+    EXPECT_FALSE(FPDFAnnot_HasKey(annot.get(), kStateKey));
+    std::ranges::fill(buf, 'x');
+    ASSERT_EQ(2u, FPDFAnnot_GetStringValue(annot.get(), kStateKey, buf.data(),
+                                           kBufSize));
+    EXPECT_EQ(L"", GetPlatformWString(buf.data()));
+
+    // Idempotent on an absent key; false only on null inputs.
+    EXPECT_TRUE(EPDFAnnot_RemoveKey(annot.get(), kStateKey));
+    EXPECT_FALSE(EPDFAnnot_RemoveKey(nullptr, kStateKey));
+    EXPECT_FALSE(EPDFAnnot_RemoveKey(annot.get(), nullptr));
+
+    // /StateModel is untouched by the /State removal.
+    EXPECT_TRUE(FPDFAnnot_HasKey(annot.get(), kStateModelKey));
+  }
+
+  // The removal survives a save/reopen round trip.
+  EXPECT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+
+  {
+    ScopedSavedDoc saved_doc = OpenScopedSavedDocument();
+    ASSERT_TRUE(saved_doc);
+    ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+    ASSERT_TRUE(saved_page);
+
+    EXPECT_EQ(1, FPDFPage_GetAnnotCount(saved_page.get()));
+    ScopedFPDFAnnotation annot(FPDFPage_GetAnnot(saved_page.get(), 0));
+    ASSERT_TRUE(annot);
+
+    EXPECT_FALSE(FPDFAnnot_HasKey(annot.get(), kStateKey));
+    std::ranges::fill(buf, 'x');
+    ASSERT_EQ(14u, FPDFAnnot_GetStringValue(annot.get(), kStateModelKey,
+                                            buf.data(), kBufSize));
+    EXPECT_EQ(kStateModel, GetPlatformWString(buf.data()));
+  }
+}
+
 TEST_F(FPDFAnnotEmbedderTest, GetOptionCountCombobox) {
   // Open a file with combobox widget annotations and load its first page.
   ASSERT_TRUE(OpenDocument("combobox_form.pdf"));
