@@ -4897,6 +4897,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRect(FPDF_ANNOTATION annot,
+                                                      const FS_RECTF* rect) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !rect) {
+    return false;
+  }
+
+  annot_dict->SetRectFor(pdfium::annotation::kRect,
+                         CFXFloatRectFromFSRectF(*rect));
+  return true;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAPMatrix(FPDF_ANNOTATION annot,
                       FPDF_ANNOT_APPEARANCEMODE appearanceMode,

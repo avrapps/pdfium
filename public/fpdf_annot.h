@@ -1993,6 +1993,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,
                                                       FS_RECTF* rect);
 
 // Experimental EmbedPDF Extension API.
+// Set the annotation rectangle without modifying any appearance stream.
+// Unlike FPDFAnnot_SetRect(), this function only writes the annotation's
+// /Rect entry; it never changes /AP, an appearance /BBox, or its /Matrix.
+// Appearance preservation or regeneration remains the caller's decision.
+//
+//   annot - handle to an annotation.
+//   rect  - rectangle to write; must not be NULL.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRect(FPDF_ANNOTATION annot,
+                                                      const FS_RECTF* rect);
+
+// Experimental EmbedPDF Extension API.
 // Set the Matrix on an annotation's appearance stream for the given mode.
 // This overwrites any existing Matrix entry on the AP stream.
 //
