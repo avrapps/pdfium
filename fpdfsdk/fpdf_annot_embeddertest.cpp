@@ -4764,6 +4764,117 @@ TEST_F(FPDFAnnotEmbedderTest, RotatedCaretAppearanceCarriesTransform) {
   EXPECT_FLOAT_EQ(1.0f, upright_matrix.d);
 }
 
+TEST_F(FPDFAnnotEmbedderTest, EmbedSetRectPreservesRotatedAppearance) {
+  ASSERT_TRUE(OpenDocument("hello_world.pdf"));
+
+  const FS_RECTF original_rect = {/*left=*/58.57864f, /*top=*/341.42136f,
+                                  /*right=*/341.42136f, /*bottom=*/58.57864f};
+  const FS_RECTF original_unrotated = {/*left=*/100.0f, /*top=*/300.0f,
+                                       /*right=*/300.0f, /*bottom=*/100.0f};
+  const FS_RECTF moved_rect = {/*left=*/38.57864f, /*top=*/341.42136f,
+                               /*right=*/321.42136f, /*bottom=*/58.57864f};
+  const FS_RECTF moved_unrotated = {/*left=*/80.0f, /*top=*/300.0f,
+                                    /*right=*/280.0f, /*bottom=*/100.0f};
+
+  auto expect_rect = [](const CFX_FloatRect& actual, const FS_RECTF& expected) {
+    EXPECT_FLOAT_EQ(expected.left, actual.left);
+    EXPECT_FLOAT_EQ(expected.bottom, actual.bottom);
+    EXPECT_FLOAT_EQ(expected.right, actual.right);
+    EXPECT_FLOAT_EQ(expected.top, actual.top);
+  };
+  auto expect_matrix = [](const CFX_Matrix& actual,
+                          const CFX_Matrix& expected) {
+    EXPECT_FLOAT_EQ(expected.a, actual.a);
+    EXPECT_FLOAT_EQ(expected.b, actual.b);
+    EXPECT_FLOAT_EQ(expected.c, actual.c);
+    EXPECT_FLOAT_EQ(expected.d, actual.d);
+    EXPECT_FLOAT_EQ(expected.e, actual.e);
+    EXPECT_FLOAT_EQ(expected.f, actual.f);
+  };
+
+  int annot_index = -1;
+  CFX_FloatRect original_bbox;
+  CFX_Matrix original_matrix;
+  {
+    ScopedPage page = LoadScopedPage(0);
+    ASSERT_TRUE(page);
+    annot_index = FPDFPage_GetAnnotCount(page.get());
+
+    ScopedFPDFAnnotation annot(
+        FPDFPage_CreateAnnot(page.get(), FPDF_ANNOT_CIRCLE));
+    ASSERT_TRUE(annot);
+    ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &original_rect));
+    ASSERT_TRUE(
+        EPDFAnnot_SetEmbedMetadataNumber(annot.get(), "Rotation", 45.0f));
+    ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect",
+                                               &original_unrotated));
+    ASSERT_TRUE(EPDFAnnot_SetColor(annot.get(), FPDFANNOT_COLORTYPE_Color, 229,
+                                   72, 77));
+    ASSERT_TRUE(EPDFAnnot_SetColor(
+        annot.get(), FPDFANNOT_COLORTYPE_InteriorColor, 255, 213, 0));
+    ASSERT_TRUE(EPDFAnnot_GenerateAppearance(annot.get()));
+
+    CPDF_AnnotContext* context =
+        CPDFAnnotContextFromFPDFAnnotation(annot.get());
+    ASSERT_TRUE(context);
+    const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+    ASSERT_TRUE(annot_dict);
+    RetainPtr<const CPDF_Dictionary> ap_dict =
+        annot_dict->GetDictFor(pdfium::annotation::kAP);
+    ASSERT_TRUE(ap_dict);
+    RetainPtr<const CPDF_Dictionary> stream_dict = ap_dict->GetDictFor("N");
+    ASSERT_TRUE(stream_dict);
+
+    original_bbox = stream_dict->GetRectFor("BBox");
+    original_matrix = stream_dict->GetMatrixFor("Matrix");
+    expect_rect(original_bbox, original_unrotated);
+
+    // This is the exact condition under which upstream FPDFAnnot_SetRect()
+    // replaces a transform-aware AP /BBox with the larger annotation /Rect.
+    EXPECT_TRUE(CFXFloatRectFromFSRectF(moved_rect).Contains(original_bbox));
+
+    ASSERT_TRUE(EPDFAnnot_SetRect(annot.get(), &moved_rect));
+    ASSERT_TRUE(EPDFAnnot_SetEmbedMetadataRect(annot.get(), "UnrotatedRect",
+                                               &moved_unrotated));
+
+    expect_rect(stream_dict->GetRectFor("BBox"), original_unrotated);
+    expect_matrix(stream_dict->GetMatrixFor("Matrix"), original_matrix);
+
+    ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  }
+
+  ASSERT_TRUE(OpenSavedDocument());
+  FPDF_PAGE saved_page = LoadSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  {
+    ScopedFPDFAnnotation saved_annot(
+        FPDFPage_GetAnnot(saved_page, annot_index));
+    ASSERT_TRUE(saved_annot);
+
+    FS_RECTF saved_rect = {};
+    ASSERT_TRUE(EPDFAnnot_GetRect(saved_annot.get(), &saved_rect));
+    EXPECT_FLOAT_EQ(moved_rect.left, saved_rect.left);
+    EXPECT_FLOAT_EQ(moved_rect.bottom, saved_rect.bottom);
+    EXPECT_FLOAT_EQ(moved_rect.right, saved_rect.right);
+    EXPECT_FLOAT_EQ(moved_rect.top, saved_rect.top);
+
+    CPDF_AnnotContext* context =
+        CPDFAnnotContextFromFPDFAnnotation(saved_annot.get());
+    ASSERT_TRUE(context);
+    const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+    ASSERT_TRUE(annot_dict);
+    RetainPtr<const CPDF_Dictionary> ap_dict =
+        annot_dict->GetDictFor(pdfium::annotation::kAP);
+    ASSERT_TRUE(ap_dict);
+    RetainPtr<const CPDF_Dictionary> stream_dict = ap_dict->GetDictFor("N");
+    ASSERT_TRUE(stream_dict);
+
+    expect_rect(stream_dict->GetRectFor("BBox"), original_unrotated);
+    expect_matrix(stream_dict->GetMatrixFor("Matrix"), original_matrix);
+  }
+  CloseSavedPage(saved_page);
+}
+
 TEST_F(FPDFAnnotEmbedderTest, ApplyRedactionRotatedQuadSparesNeighbours) {
   ASSERT_TRUE(OpenDocument("rotated_redact.pdf"));
   ScopedPage page = LoadScopedPage(0);
