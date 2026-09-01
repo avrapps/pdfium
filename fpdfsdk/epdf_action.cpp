@@ -34,6 +34,21 @@ namespace {
 constexpr size_t kMaxActionDepth = 64;
 constexpr size_t kMaxActionNodes = 1024;
 constexpr size_t kMaxJavaScriptCodeUnits = 8 * 1024 * 1024;
+// Hide /T + ResetForm /Fields entries, cumulative across one model.
+constexpr size_t kMaxActionTargets = 2048;
+// URI, file path, named-action, named-destination, and target-name bytes,
+// cumulative across one model.
+constexpr size_t kMaxActionPayloadBytes = 1 << 20;
+// FPDFDest reads at most the page, the view name, and four view parameters;
+// destination array elements beyond that carry no meaning.
+constexpr size_t kMaxDestinationElements = 6;
+
+struct ActionTargetRecord {
+  // Exactly one is meaningful: a field FQN (UTF-8) when |object_number| is
+  // 0, otherwise an indirect annotation/field dictionary object number.
+  ByteString name;
+  uint32_t object_number = 0;
+};
 
 struct ActionNodeRecord {
   ByteString subtype;
@@ -44,6 +59,35 @@ struct ActionNodeRecord {
   ByteString uri;
   ByteString file_path;
   ByteString name;
+  // Hide /T or ResetForm /Fields entries. |targets_valid| == false means an
+  // entry could not be represented; a partial target list must never
+  // execute, so the whole list is withheld while the node's siblings and
+  // /Next chain stay usable.
+  std::vector<ActionTargetRecord> targets;
+  bool targets_valid = true;
+  // Hide /H: true hides (the spec default), false shows.
+  bool hide = true;
+  // ResetForm: whether /Fields was PRESENT. Absent means "reset every
+  // field" and |exclude| is meaningless — presence and emptiness are
+  // different states (PDFium's executor branches on HasFields() first).
+  bool reset_has_fields = false;
+  // ResetForm /Flags bit 0: set = /Fields lists EXCLUDED fields.
+  bool exclude = false;
+  // URI /IsMap.
+  bool is_map = false;
+  // SubmitForm /F resolved to a URL (UTF-8). |submit_url_valid| == false
+  // means the REQUIRED /F was absent, not a URL file specification, or
+  // unrepresentable — the payload is withheld so the reader degrades the
+  // node instead of executing a half payload.
+  ByteString submit_url;
+  bool submit_url_valid = false;
+  // SubmitForm raw /Flags word (ISO 32000-2 Table 240, bits numbered from 1).
+  uint32_t submit_flags = 0;
+  // SubmitForm /CharSet (PDF 2.0); empty when absent.
+  ByteString submit_charset;
+  // SubmitForm: whether /Fields was PRESENT — same presence-vs-empty
+  // distinction as |reset_has_fields|.
+  bool submit_has_fields = false;
   std::vector<EPDF_ACTION_NODE_ID> next;
 };
 
@@ -110,7 +154,12 @@ RetainPtr<const CPDF_Array> SnapshotDestination(const CPDF_Action& action,
   }
 
   auto snapshot = pdfium::MakeRetain<CPDF_Array>();
-  for (size_t i = 0; i < source->size(); ++i) {
+  // Copy only the elements FPDFDest can read; trailing junk in an oversized
+  // destination array neither grows the snapshot nor poisons the payload.
+  const size_t element_count = source->size() < kMaxDestinationElements
+                                   ? source->size()
+                                   : kMaxDestinationElements;
+  for (size_t i = 0; i < element_count; ++i) {
     RetainPtr<const CPDF_Object> value = source->GetDirectObjectAt(i);
     if (!value) {
       return nullptr;
@@ -143,11 +192,151 @@ struct ActionModelData {
 
 namespace {
 
+// Cumulative per-model build budgets. Overflow marks the model INCOMPLETE
+// and drops the node under construction, exactly like the depth and node
+// bounds — a dropped node never leaves a partial payload behind.
+struct BuildBudget {
+  size_t javascript_code_units = 0;
+  size_t target_entries = 0;
+  size_t payload_bytes = 0;
+};
+
+bool ChargePayloadBytes(size_t length,
+                        BuildBudget* budget,
+                        ActionModelData* model) {
+  if (length > kMaxActionPayloadBytes - budget->payload_bytes) {
+    model->warning_flags |= EPDF_ACTION_WARNING_INCOMPLETE;
+    return false;
+  }
+  budget->payload_bytes += length;
+  return true;
+}
+
+// Capture one Hide /T or ResetForm/SubmitForm /Fields entry list. Mirrors
+// CPDF_Action::GetAllFields()'s shape normalization (scalar-or-array,
+// strings and dictionary references) but never skips an unrepresentable
+// entry silently: executing a partial target list would hide or reset only
+// some of the intended objects, so such a list withholds itself via
+// |targets_valid| while the node's siblings and /Next chain stay usable.
+// Returns false only when an aggregate build budget was exhausted; the
+// model is then already marked INCOMPLETE and the caller drops the node.
+bool CaptureActionTargets(const CPDF_Dictionary* dict,
+                          BuildBudget* budget,
+                          ActionModelData* model,
+                          ActionNodeRecord* node) {
+  RetainPtr<const CPDF_Object> fields =
+      node->type == EPDF_ACTION_TYPE_HIDE ? dict->GetDirectObjectFor("T")
+                                          : dict->GetDirectObjectFor("Fields");
+  if (!fields) {
+    // No list: valid and empty. ResetForm presence rides |reset_has_fields|.
+    return true;
+  }
+
+  enum class Appended { kOk, kUnrepresentable, kOverBudget };
+  auto append = [&](const CPDF_Object* entry) {
+    if (!entry) {
+      return Appended::kUnrepresentable;
+    }
+    ActionTargetRecord target;
+    if (entry->IsString() || entry->IsName()) {
+      target.name = entry->GetUnicodeText().ToUTF8();
+    } else if (entry->IsDictionary() && entry->GetObjNum() != 0) {
+      // An indirect annotation/field dictionary reference. A direct inline
+      // dictionary has no durable identity and is unrepresentable.
+      target.object_number = entry->GetObjNum();
+    } else {
+      return Appended::kUnrepresentable;
+    }
+    if (budget->target_entries >= kMaxActionTargets ||
+        !ChargePayloadBytes(target.name.GetLength(), budget, model)) {
+      model->warning_flags |= EPDF_ACTION_WARNING_INCOMPLETE;
+      return Appended::kOverBudget;
+    }
+    ++budget->target_entries;
+    node->targets.push_back(std::move(target));
+    return Appended::kOk;
+  };
+
+  const auto withhold = [node]() {
+    node->targets.clear();
+    node->targets_valid = false;
+  };
+
+  if (const CPDF_Array* array = fields->AsArray()) {
+    for (size_t i = 0; i < array->size(); ++i) {
+      RetainPtr<const CPDF_Object> entry = array->GetDirectObjectAt(i);
+      switch (append(entry.Get())) {
+        case Appended::kOk:
+          break;
+        case Appended::kUnrepresentable:
+          withhold();
+          return true;
+        case Appended::kOverBudget:
+          return false;
+      }
+    }
+    return true;
+  }
+  switch (append(fields.Get())) {
+    case Appended::kOk:
+      return true;
+    case Appended::kUnrepresentable:
+      withhold();
+      return true;
+    case Appended::kOverBudget:
+      return false;
+  }
+  return true;
+}
+
+// Resolve SubmitForm's REQUIRED /F into a URL. The conforming target is a
+// URL file specification — << /FS /URL /F (uri) >> (ISO 32000-2 7.11.5),
+// with /UF preferred over /F when both exist (7.11.2). A bare string or
+// name /F is accepted as a producer-compat extension and read verbatim.
+// Anything else (missing /F, a non-URL file specification, an empty URL)
+// leaves |submit_url_valid| false: the required payload stays withheld and
+// the reader degrades the node — never a half payload. Returns false only
+// when the aggregate payload budget was exhausted (the model is then
+// already marked INCOMPLETE and the caller drops the node).
+bool CaptureSubmitFormUrl(const CPDF_Dictionary* dict,
+                          BuildBudget* budget,
+                          ActionModelData* model,
+                          ActionNodeRecord* node) {
+  RetainPtr<const CPDF_Object> file = dict->GetDirectObjectFor("F");
+  ByteString url;
+  if (file && (file->IsString() || file->IsName())) {
+    url = file->GetUnicodeText().ToUTF8();
+  } else if (file && file->IsDictionary()) {
+    const CPDF_Dictionary* spec = file->AsDictionary();
+    if (spec->GetNameFor("FS") != "URL") {
+      return true;
+    }
+    RetainPtr<const CPDF_Object> uf = spec->GetDirectObjectFor("UF");
+    if (uf && (uf->IsString() || uf->IsName())) {
+      url = uf->GetUnicodeText().ToUTF8();
+    } else {
+      RetainPtr<const CPDF_Object> f = spec->GetDirectObjectFor("F");
+      if (f && (f->IsString() || f->IsName())) {
+        url = f->GetUnicodeText().ToUTF8();
+      }
+    }
+  }
+  if (url.IsEmpty()) {
+    return true;
+  }
+  if (!ChargePayloadBytes(url.GetLength(), budget, model)) {
+    return false;
+  }
+  node->submit_url = std::move(url);
+  node->submit_url_valid = true;
+  return true;
+}
+
 std::optional<EPDF_ACTION_NODE_ID> AppendAction(
     const CPDF_Action& action,
     CPDF_Document* document,
     size_t depth,
-    size_t* javascript_code_units,
+    BuildBudget* budget,
     std::set<const CPDF_Dictionary*>* active_path,
     ActionModelData* model) {
   const CPDF_Dictionary* dict = action.GetDict();
@@ -168,11 +357,11 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
     node.javascript = action.MaybeGetJavaScript();
     if (node.javascript.has_value()) {
       const size_t length = node.javascript->GetLength();
-      if (length > kMaxJavaScriptCodeUnits - *javascript_code_units) {
+      if (length > kMaxJavaScriptCodeUnits - budget->javascript_code_units) {
         model->warning_flags |= EPDF_ACTION_WARNING_INCOMPLETE;
         return std::nullopt;
       }
-      *javascript_code_units += length;
+      budget->javascript_code_units += length;
     }
   }
   if (node.type == EPDF_ACTION_TYPE_GOTO ||
@@ -184,19 +373,57 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
     if (!node.destination && raw_destination &&
         (raw_destination->IsName() || raw_destination->IsString())) {
       node.named_destination = raw_destination->GetString();
+      if (!ChargePayloadBytes(node.named_destination.GetLength(), budget,
+                              model)) {
+        return std::nullopt;
+      }
     }
   }
   if (node.type == EPDF_ACTION_TYPE_URI) {
     node.uri =
         document ? action.GetURI(document) : dict->GetByteStringFor("URI");
+    node.is_map = dict->GetBooleanFor("IsMap", false);
+    if (!ChargePayloadBytes(node.uri.GetLength(), budget, model)) {
+      return std::nullopt;
+    }
   }
   if (node.type == EPDF_ACTION_TYPE_GOTO_REMOTE ||
       node.type == EPDF_ACTION_TYPE_GOTO_EMBEDDED ||
       node.type == EPDF_ACTION_TYPE_LAUNCH) {
     node.file_path = action.GetFilePath().ToUTF8();
+    if (!ChargePayloadBytes(node.file_path.GetLength(), budget, model)) {
+      return std::nullopt;
+    }
   }
   if (node.type == EPDF_ACTION_TYPE_NAMED) {
     node.name = dict->GetNameFor("N");
+    if (!ChargePayloadBytes(node.name.GetLength(), budget, model)) {
+      return std::nullopt;
+    }
+  }
+  if (node.type == EPDF_ACTION_TYPE_HIDE ||
+      node.type == EPDF_ACTION_TYPE_RESET_FORM) {
+    if (node.type == EPDF_ACTION_TYPE_HIDE) {
+      node.hide = action.GetHideStatus();
+    } else {
+      node.reset_has_fields = action.HasFields();
+      node.exclude = (action.GetFlags() & 1) != 0;
+    }
+    if (!CaptureActionTargets(dict, budget, model, &node)) {
+      return std::nullopt;
+    }
+  }
+  if (node.type == EPDF_ACTION_TYPE_SUBMIT_FORM) {
+    node.submit_has_fields = action.HasFields();
+    node.submit_flags = action.GetFlags();
+    node.submit_charset = dict->GetUnicodeTextFor("CharSet").ToUTF8();
+    if (!ChargePayloadBytes(node.submit_charset.GetLength(), budget, model)) {
+      return std::nullopt;
+    }
+    if (!CaptureSubmitFormUrl(dict, budget, model, &node) ||
+        !CaptureActionTargets(dict, budget, model, &node)) {
+      return std::nullopt;
+    }
   }
 
   const EPDF_ACTION_NODE_ID node_id =
@@ -222,8 +449,8 @@ std::optional<EPDF_ACTION_NODE_ID> AppendAction(
       model->warning_flags |= EPDF_ACTION_WARNING_CYCLE_DROPPED;
       continue;
     }
-    std::optional<EPDF_ACTION_NODE_ID> child_id = AppendAction(
-        child, document, depth + 1, javascript_code_units, active_path, model);
+    std::optional<EPDF_ACTION_NODE_ID> child_id =
+        AppendAction(child, document, depth + 1, budget, active_path, model);
     if (child_id.has_value()) {
       model->nodes[node_id].next.push_back(child_id.value());
     }
@@ -243,10 +470,9 @@ ActionModelDataPtr BuildActionModel(const CPDF_Action& action,
     return nullptr;
   }
   auto model = std::make_shared<ActionModelData>();
-  size_t javascript_code_units = 0;
+  BuildBudget budget;
   std::set<const CPDF_Dictionary*> active_path;
-  AppendAction(action, document, 0, &javascript_code_units, &active_path,
-               model.get());
+  AppendAction(action, document, 0, &budget, &active_path, model.get());
   return model;
 }
 
@@ -446,6 +672,159 @@ EPDFAction_GetNodeName(EPDF_ACTION_MODEL model,
       record->name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
 }
 
+namespace {
+
+const epdf::ActionNodeRecord* GetTargetListNode(EPDF_ACTION_MODEL model,
+                                                EPDF_ACTION_NODE_ID node) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || (record->type != EPDF_ACTION_TYPE_HIDE &&
+                  record->type != EPDF_ACTION_TYPE_RESET_FORM &&
+                  record->type != EPDF_ACTION_TYPE_SUBMIT_FORM)) {
+    return nullptr;
+  }
+  return record;
+}
+
+const epdf::ActionTargetRecord* GetActionTarget(EPDF_ACTION_MODEL model,
+                                                EPDF_ACTION_NODE_ID node,
+                                                int index) {
+  const epdf::ActionNodeRecord* record = GetTargetListNode(model, node);
+  if (!record || !record->targets_valid || index < 0 ||
+      static_cast<size_t>(index) >= record->targets.size()) {
+    return nullptr;
+  }
+  return &record->targets[static_cast<size_t>(index)];
+}
+
+}  // namespace
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAction_GetNodeTargetCount(EPDF_ACTION_MODEL model,
+                              EPDF_ACTION_NODE_ID node) {
+  const epdf::ActionNodeRecord* record = GetTargetListNode(model, node);
+  if (!record) {
+    return 0;
+  }
+  if (!record->targets_valid) {
+    return -1;
+  }
+  return pdfium::checked_cast<int>(record->targets.size());
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeTargetName(EPDF_ACTION_MODEL model,
+                             EPDF_ACTION_NODE_ID node,
+                             int index,
+                             void* buffer,
+                             unsigned long buflen) {
+  const epdf::ActionTargetRecord* target = GetActionTarget(model, node, index);
+  if (!target || target->object_number != 0) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      target->name, UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeTargetObjectNumber(EPDF_ACTION_MODEL model,
+                                     EPDF_ACTION_NODE_ID node,
+                                     int index,
+                                     unsigned int* object_number) {
+  const epdf::ActionTargetRecord* target = GetActionTarget(model, node, index);
+  if (!target || target->object_number == 0 || !object_number) {
+    return false;
+  }
+  *object_number = target->object_number;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeHideFlag(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           FPDF_BOOL* hide) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_HIDE || !hide) {
+    return false;
+  }
+  *hide = record->hide;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeResetForm(EPDF_ACTION_MODEL model,
+                            EPDF_ACTION_NODE_ID node,
+                            FPDF_BOOL* has_fields,
+                            FPDF_BOOL* exclude) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_RESET_FORM || !has_fields ||
+      !exclude) {
+    return false;
+  }
+  *has_fields = record->reset_has_fields;
+  *exclude = record->exclude;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeSubmitForm(EPDF_ACTION_MODEL model,
+                             EPDF_ACTION_NODE_ID node,
+                             FPDF_BOOL* has_fields,
+                             unsigned int* flags) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_SUBMIT_FORM ||
+      !record->submit_url_valid || !has_fields || !flags) {
+    return false;
+  }
+  *has_fields = record->submit_has_fields;
+  *flags = record->submit_flags;
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeSubmitFormURL(EPDF_ACTION_MODEL model,
+                                EPDF_ACTION_NODE_ID node,
+                                void* buffer,
+                                unsigned long buflen) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_SUBMIT_FORM ||
+      !record->submit_url_valid) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      record->submit_url,
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeSubmitFormCharSet(EPDF_ACTION_MODEL model,
+                                    EPDF_ACTION_NODE_ID node,
+                                    void* buffer,
+                                    unsigned long buflen) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_SUBMIT_FORM ||
+      record->submit_charset.IsEmpty()) {
+    return 0;
+  }
+  // SAFETY: required from caller.
+  return NulTerminateMaybeCopyAndReturnLength(
+      record->submit_charset,
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeURIIsMap(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           FPDF_BOOL* is_map) {
+  const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
+  if (!record || record->type != EPDF_ACTION_TYPE_URI || !is_map) {
+    return false;
+  }
+  *is_map = record->is_map;
+  return true;
+}
+
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFAction_GetNextCount(EPDF_ACTION_MODEL model, EPDF_ACTION_NODE_ID node) {
   const epdf::ActionNodeRecord* record = epdf::GetNode(model, node);
@@ -485,6 +864,32 @@ EPDFDoc_GetOpenActionModel(FPDF_DOCUMENT document) {
   return root ? epdf::MakeModelFromDictionary(root->GetDictFor("OpenAction"),
                                               doc)
               : nullptr;
+}
+
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDoc_GetOpenActionDest(FPDF_DOCUMENT document) {
+  ScopedFPDFDocumentView document_view(document);
+  CPDF_Document* doc = document_view.Get();
+  const CPDF_Dictionary* root = doc ? doc->GetRoot() : nullptr;
+  if (!root) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Object> open_action =
+      root->GetDirectObjectFor("OpenAction");
+  if (!open_action) {
+    return nullptr;
+  }
+  if (const CPDF_Array* array = open_action->AsArray()) {
+    // The handle points into the live catalog, like FPDFLink_GetDest.
+    return FPDFDestFromCPDFArray(array);
+  }
+  if (open_action->IsString() || open_action->IsName()) {
+    RetainPtr<const CPDF_Array> named =
+        CPDF_NameTree::LookupNamedDest(doc, open_action->GetString());
+    return FPDFDestFromCPDFArray(named.Get());
+  }
+  // The action form reads through EPDFDoc_GetOpenActionModel.
+  return nullptr;
 }
 
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV

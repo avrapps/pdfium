@@ -9,6 +9,7 @@
 
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
@@ -84,6 +85,20 @@ RetainPtr<CPDF_Dictionary> MakeJavaScriptAction(const wchar_t* script) {
   action->SetNewFor<CPDF_Name>("S", "JavaScript");
   action->SetNewFor<CPDF_String>("JS", script);
   return action;
+}
+
+std::string GetTargetName(EPDF_ACTION_MODEL model,
+                          EPDF_ACTION_NODE_ID node,
+                          int index) {
+  const unsigned long length =
+      EPDFAction_GetNodeTargetName(model, node, index, nullptr, 0);
+  if (length == 0) {
+    return std::string();
+  }
+  std::vector<char> buffer(length);
+  EXPECT_EQ(length, EPDFAction_GetNodeTargetName(model, node, index,
+                                                 buffer.data(), length));
+  return std::string(buffer.data());
 }
 
 }  // namespace
@@ -555,4 +570,329 @@ TEST_F(EPDFActionEmbedderTest, NodeFilePathAndNamePayloadsFromSyntheticDicts) {
                                         nullptr, 0));
   EXPECT_EQ(0ul, EPDFAction_GetNodeFilePath(named_model.get(), named_root,
                                             nullptr, 0));
+}
+
+TEST_F(EPDFActionEmbedderTest, HideTargetPayloadsMixedForms) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  ASSERT_TRUE(doc);
+
+  RetainPtr<CPDF_Dictionary> widget = doc->NewIndirect<CPDF_Dictionary>();
+  RetainPtr<CPDF_Dictionary> hide = doc->NewIndirect<CPDF_Dictionary>();
+  hide->SetNewFor<CPDF_Name>("S", "Hide");
+  hide->SetNewFor<CPDF_Boolean>("H", false);
+  RetainPtr<CPDF_Array> targets = hide->SetNewFor<CPDF_Array>("T");
+  targets->AppendNew<CPDF_String>(L"note1");
+  targets->AppendNew<CPDF_Reference>(doc, widget->GetObjNum());
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(hide.Get())));
+  ASSERT_TRUE(model);
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+  ASSERT_EQ(EPDF_ACTION_TYPE_HIDE, EPDFAction_GetNodeType(model.get(), root));
+
+  ASSERT_EQ(2, EPDFAction_GetNodeTargetCount(model.get(), root));
+  EXPECT_EQ("note1", GetTargetName(model.get(), root, 0));
+  unsigned int object_number = 0;
+  EXPECT_FALSE(EPDFAction_GetNodeTargetObjectNumber(model.get(), root, 0,
+                                                    &object_number));
+  ASSERT_TRUE(EPDFAction_GetNodeTargetObjectNumber(model.get(), root, 1,
+                                                   &object_number));
+  EXPECT_EQ(widget->GetObjNum(), object_number);
+  EXPECT_EQ(0ul,
+            EPDFAction_GetNodeTargetName(model.get(), root, 1, nullptr, 0));
+  EXPECT_EQ(0ul,
+            EPDFAction_GetNodeTargetName(model.get(), root, 2, nullptr, 0));
+
+  FPDF_BOOL hide_flag = true;
+  ASSERT_TRUE(EPDFAction_GetNodeHideFlag(model.get(), root, &hide_flag));
+  EXPECT_FALSE(hide_flag);
+
+  // Wrong-type gates answer empty/false rather than lying.
+  FPDF_BOOL has_fields = false;
+  FPDF_BOOL exclude = false;
+  EXPECT_FALSE(
+      EPDFAction_GetNodeResetForm(model.get(), root, &has_fields, &exclude));
+  FPDF_BOOL is_map = false;
+  EXPECT_FALSE(EPDFAction_GetNodeURIIsMap(model.get(), root, &is_map));
+}
+
+TEST_F(EPDFActionEmbedderTest, HideScalarTargetAndDefaultFlag) {
+  auto hide = pdfium::MakeRetain<CPDF_Dictionary>();
+  hide->SetNewFor<CPDF_Name>("S", "Hide");
+  hide->SetNewFor<CPDF_String>("T", L"fieldA");
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(hide.Get())));
+  ASSERT_TRUE(model);
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+  ASSERT_EQ(1, EPDFAction_GetNodeTargetCount(model.get(), root));
+  EXPECT_EQ("fieldA", GetTargetName(model.get(), root, 0));
+
+  FPDF_BOOL hide_flag = false;
+  ASSERT_TRUE(EPDFAction_GetNodeHideFlag(model.get(), root, &hide_flag));
+  EXPECT_TRUE(hide_flag);
+
+  // A JavaScript node carries no target list at all.
+  RetainPtr<CPDF_Dictionary> script = MakeJavaScriptAction(L"noop();");
+  ScopedEPDFActionModel script_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(script.Get())));
+  ASSERT_TRUE(script_model);
+  EXPECT_EQ(0, EPDFAction_GetNodeTargetCount(script_model.get(), 0));
+  EXPECT_FALSE(EPDFAction_GetNodeHideFlag(script_model.get(), 0, &hide_flag));
+}
+
+TEST_F(EPDFActionEmbedderTest, PartialHideTargetListIsWithheld) {
+  auto hide = pdfium::MakeRetain<CPDF_Dictionary>();
+  hide->SetNewFor<CPDF_Name>("S", "Hide");
+  RetainPtr<CPDF_Array> targets = hide->SetNewFor<CPDF_Array>("T");
+  targets->AppendNew<CPDF_String>(L"kept");
+  // A direct inline dictionary has no durable identity. Executing the
+  // remaining targets would hide only part of what the author intended, so
+  // the whole list is withheld while the node and its chain stay readable.
+  targets->AppendNew<CPDF_Dictionary>();
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(hide.Get())));
+  ASSERT_TRUE(model);
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+  ASSERT_EQ(EPDF_ACTION_TYPE_HIDE, EPDFAction_GetNodeType(model.get(), root));
+  EXPECT_EQ(-1, EPDFAction_GetNodeTargetCount(model.get(), root));
+  EXPECT_EQ(0ul,
+            EPDFAction_GetNodeTargetName(model.get(), root, 0, nullptr, 0));
+  unsigned int object_number = 0;
+  EXPECT_FALSE(EPDFAction_GetNodeTargetObjectNumber(model.get(), root, 0,
+                                                    &object_number));
+  // Semantic withholding is per-node, not a resource fault: the model as a
+  // whole remains complete.
+  EXPECT_FALSE(EPDFAction_GetWarningFlags(model.get()) &
+               EPDF_ACTION_WARNING_INCOMPLETE);
+  EXPECT_TRUE(EPDFAction_IsComplete(model.get()));
+}
+
+TEST_F(EPDFActionEmbedderTest, ResetFormThreeStates) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  ASSERT_TRUE(doc);
+  RetainPtr<CPDF_Dictionary> field = doc->NewIndirect<CPDF_Dictionary>();
+
+  // /Fields ABSENT: reset everything; flags are meaningless.
+  auto reset_all = pdfium::MakeRetain<CPDF_Dictionary>();
+  reset_all->SetNewFor<CPDF_Name>("S", "ResetForm");
+  reset_all->SetNewFor<CPDF_Number>("Flags", 1);
+  ScopedEPDFActionModel all_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(reset_all.Get())));
+  ASSERT_TRUE(all_model);
+  FPDF_BOOL has_fields = true;
+  FPDF_BOOL exclude = false;
+  ASSERT_TRUE(
+      EPDFAction_GetNodeResetForm(all_model.get(), 0, &has_fields, &exclude));
+  EXPECT_FALSE(has_fields);
+  EXPECT_TRUE(exclude);
+  EXPECT_EQ(0, EPDFAction_GetNodeTargetCount(all_model.get(), 0));
+
+  // /Fields present but EMPTY: a different state from absent.
+  auto reset_none = pdfium::MakeRetain<CPDF_Dictionary>();
+  reset_none->SetNewFor<CPDF_Name>("S", "ResetForm");
+  reset_none->SetNewFor<CPDF_Array>("Fields");
+  ScopedEPDFActionModel none_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(reset_none.Get())));
+  ASSERT_TRUE(none_model);
+  ASSERT_TRUE(
+      EPDFAction_GetNodeResetForm(none_model.get(), 0, &has_fields, &exclude));
+  EXPECT_TRUE(has_fields);
+  EXPECT_FALSE(exclude);
+  EXPECT_EQ(0, EPDFAction_GetNodeTargetCount(none_model.get(), 0));
+
+  // Non-empty exclusion list mixing a name and a field reference.
+  auto reset_some = pdfium::MakeRetain<CPDF_Dictionary>();
+  reset_some->SetNewFor<CPDF_Name>("S", "ResetForm");
+  reset_some->SetNewFor<CPDF_Number>("Flags", 1);
+  RetainPtr<CPDF_Array> fields = reset_some->SetNewFor<CPDF_Array>("Fields");
+  fields->AppendNew<CPDF_String>(L"calc1");
+  fields->AppendNew<CPDF_Reference>(doc, field->GetObjNum());
+  ScopedEPDFActionModel some_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(reset_some.Get())));
+  ASSERT_TRUE(some_model);
+  ASSERT_TRUE(
+      EPDFAction_GetNodeResetForm(some_model.get(), 0, &has_fields, &exclude));
+  EXPECT_TRUE(has_fields);
+  EXPECT_TRUE(exclude);
+  ASSERT_EQ(2, EPDFAction_GetNodeTargetCount(some_model.get(), 0));
+  EXPECT_EQ("calc1", GetTargetName(some_model.get(), 0, 0));
+  unsigned int object_number = 0;
+  ASSERT_TRUE(EPDFAction_GetNodeTargetObjectNumber(some_model.get(), 0, 1,
+                                                   &object_number));
+  EXPECT_EQ(field->GetObjNum(), object_number);
+}
+
+TEST_F(EPDFActionEmbedderTest, UriIsMapPayload) {
+  auto uri = pdfium::MakeRetain<CPDF_Dictionary>();
+  uri->SetNewFor<CPDF_Name>("S", "URI");
+  uri->SetNewFor<CPDF_String>("URI", "https://example.test/map");
+  uri->SetNewFor<CPDF_Boolean>("IsMap", true);
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(uri.Get())));
+  ASSERT_TRUE(model);
+  FPDF_BOOL is_map = false;
+  ASSERT_TRUE(EPDFAction_GetNodeURIIsMap(model.get(), 0, &is_map));
+  EXPECT_TRUE(is_map);
+
+  auto plain = pdfium::MakeRetain<CPDF_Dictionary>();
+  plain->SetNewFor<CPDF_Name>("S", "URI");
+  plain->SetNewFor<CPDF_String>("URI", "https://example.test/");
+  ScopedEPDFActionModel plain_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(plain.Get())));
+  ASSERT_TRUE(plain_model);
+  is_map = true;
+  ASSERT_TRUE(EPDFAction_GetNodeURIIsMap(plain_model.get(), 0, &is_map));
+  EXPECT_FALSE(is_map);
+
+  RetainPtr<CPDF_Dictionary> named = pdfium::MakeRetain<CPDF_Dictionary>();
+  named->SetNewFor<CPDF_Name>("S", "Named");
+  named->SetNewFor<CPDF_Name>("N", "NextPage");
+  ScopedEPDFActionModel named_model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(named.Get())));
+  ASSERT_TRUE(named_model);
+  EXPECT_FALSE(EPDFAction_GetNodeURIIsMap(named_model.get(), 0, &is_map));
+}
+
+TEST_F(EPDFActionEmbedderTest, TargetBudgetOverflowDropsNodeAndMarksIncomplete) {
+  auto hide = pdfium::MakeRetain<CPDF_Dictionary>();
+  hide->SetNewFor<CPDF_Name>("S", "Hide");
+  RetainPtr<CPDF_Array> targets = hide->SetNewFor<CPDF_Array>("T");
+  for (int i = 0; i < 2049; ++i) {
+    targets->AppendNew<CPDF_String>("t");
+  }
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(hide.Get())));
+  ASSERT_TRUE(model);
+  // The node under construction is dropped whole — never a partial list.
+  EXPECT_EQ(0, EPDFAction_GetNodeCount(model.get()));
+  EXPECT_EQ(EPDF_ACTION_NODE_INVALID, EPDFAction_GetRootNode(model.get()));
+  EXPECT_TRUE(EPDFAction_GetWarningFlags(model.get()) &
+              EPDF_ACTION_WARNING_INCOMPLETE);
+  EXPECT_FALSE(EPDFAction_IsComplete(model.get()));
+}
+
+TEST_F(EPDFActionEmbedderTest, PayloadByteBudgetOverflowDropsNode) {
+  const std::string big((1 << 20) + 1, 'a');
+  auto uri = pdfium::MakeRetain<CPDF_Dictionary>();
+  uri->SetNewFor<CPDF_Name>("S", "URI");
+  uri->SetNewFor<CPDF_String>("URI", ByteString(big.c_str()));
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(uri.Get())));
+  ASSERT_TRUE(model);
+  EXPECT_EQ(0, EPDFAction_GetNodeCount(model.get()));
+  EXPECT_TRUE(EPDFAction_GetWarningFlags(model.get()) &
+              EPDF_ACTION_WARNING_INCOMPLETE);
+  EXPECT_FALSE(EPDFAction_IsComplete(model.get()));
+}
+
+TEST_F(EPDFActionEmbedderTest, OpenActionDestinationForms) {
+  // Absent /OpenAction: both readers answer null.
+  ScopedFPDFDocument empty(FPDF_CreateNewDocument());
+  ASSERT_TRUE(empty);
+  EXPECT_FALSE(EPDFDoc_GetOpenActionDest(empty.get()));
+  EXPECT_FALSE(EPDFDoc_GetOpenActionModel(empty.get()));
+  EXPECT_FALSE(EPDFDoc_GetOpenActionDest(nullptr));
+
+  // Destination form: the dest reads, the action model stays null.
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  const uint32_t page_objnum = EPDFPage_GetObjectNumber(page.get());
+  ASSERT_GT(page_objnum, 0u);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  ASSERT_TRUE(doc);
+  RetainPtr<CPDF_Array> open_action =
+      doc->GetMutableRoot()->SetNewFor<CPDF_Array>("OpenAction");
+  open_action->AppendNew<CPDF_Reference>(doc, page_objnum);
+  open_action->AppendNew<CPDF_Name>("XYZ");
+  open_action->AppendNew<CPDF_Number>(10);
+  open_action->AppendNew<CPDF_Number>(700);
+  open_action->AppendNew<CPDF_Number>(1.5f);
+
+  FPDF_DEST dest = EPDFDoc_GetOpenActionDest(document.get());
+  ASSERT_TRUE(dest);
+  EXPECT_FALSE(EPDFDoc_GetOpenActionModel(document.get()));
+  EXPECT_EQ(page_objnum,
+            EPDFDest_GetPageObjectNumber(document.get(), dest));
+  FPDF_BOOL has_x = false;
+  FPDF_BOOL has_y = false;
+  FPDF_BOOL has_zoom = false;
+  FS_FLOAT x = 0;
+  FS_FLOAT y = 0;
+  FS_FLOAT zoom = 0;
+  ASSERT_TRUE(
+      FPDFDest_GetLocationInPage(dest, &has_x, &has_y, &has_zoom, &x, &y,
+                                 &zoom));
+  EXPECT_TRUE(has_x);
+  EXPECT_TRUE(has_y);
+  EXPECT_TRUE(has_zoom);
+  EXPECT_FLOAT_EQ(10.0f, x);
+  EXPECT_FLOAT_EQ(700.0f, y);
+  EXPECT_FLOAT_EQ(1.5f, zoom);
+
+  // A named value without a name tree resolves to nothing rather than lying.
+  doc->GetMutableRoot()->SetNewFor<CPDF_Name>("OpenAction", "missing");
+  EXPECT_FALSE(EPDFDoc_GetOpenActionDest(document.get()));
+
+  // Action form: the model reads, the dest stays null.
+  doc->GetMutableRoot()->SetFor("OpenAction", MakeJavaScriptAction(L"open();"));
+  ScopedEPDFActionModel action_model(
+      EPDFDoc_GetOpenActionModel(document.get()));
+  EXPECT_TRUE(action_model);
+  EXPECT_FALSE(EPDFDoc_GetOpenActionDest(document.get()));
+}
+
+TEST_F(EPDFActionEmbedderTest, DestinationArrayJunkBeyondViewIsIgnored) {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(document);
+  ScopedFPDFPage page(FPDFPage_New(document.get(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  const uint32_t page_objnum = EPDFPage_GetObjectNumber(page.get());
+  ASSERT_GT(page_objnum, 0u);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document.get());
+  ASSERT_TRUE(doc);
+
+  RetainPtr<CPDF_Dictionary> go_to = doc->NewIndirect<CPDF_Dictionary>();
+  go_to->SetNewFor<CPDF_Name>("S", "GoTo");
+  RetainPtr<CPDF_Array> destination = go_to->SetNewFor<CPDF_Array>("D");
+  destination->AppendNew<CPDF_Reference>(doc, page_objnum);
+  destination->AppendNew<CPDF_Name>("XYZ");
+  destination->AppendNew<CPDF_Number>(1);
+  destination->AppendNew<CPDF_Number>(2);
+  destination->AppendNew<CPDF_Number>(3);
+  for (int i = 0; i < 5; ++i) {
+    destination->AppendNew<CPDF_Number>(99);
+  }
+
+  ScopedEPDFActionModel model(
+      EPDFAction_LoadModel(FPDFActionFromCPDFDictionary(go_to.Get())));
+  ASSERT_TRUE(model);
+  const EPDF_ACTION_NODE_ID root = EPDFAction_GetRootNode(model.get());
+  ASSERT_EQ(EPDF_ACTION_TYPE_GOTO, EPDFAction_GetNodeType(model.get(), root));
+
+  FPDF_DEST dest = EPDFAction_GetNodeDest(document.get(), model.get(), root);
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(page_objnum,
+            EPDFDest_GetPageObjectNumber(document.get(), dest));
+  FPDF_BOOL has_x = false;
+  FPDF_BOOL has_y = false;
+  FPDF_BOOL has_zoom = false;
+  FS_FLOAT x = 0;
+  FS_FLOAT y = 0;
+  FS_FLOAT zoom = 0;
+  ASSERT_TRUE(
+      FPDFDest_GetLocationInPage(dest, &has_x, &has_y, &has_zoom, &x, &y,
+                                 &zoom));
+  EXPECT_FLOAT_EQ(1.0f, x);
+  EXPECT_FLOAT_EQ(2.0f, y);
+  EXPECT_FLOAT_EQ(3.0f, zoom);
 }

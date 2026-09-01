@@ -17,8 +17,9 @@ extern "C" {
 //
 // Detached PDF action model. A model contains one root action and its
 // normalized /Next descendants. Type, subtype, script, chain, destination,
-// URI, file path, and named-action payloads are copied at build time and stay
-// valid after the document is closed or mutated. The getters that take an
+// URI (with /IsMap), file path, named-action, Hide /T + /H, and ResetForm
+// /Fields + /Flags payloads are copied at build time and stay valid after
+// the document is closed or mutated. The getters that take an
 // FPDF_DOCUMENT still require the originating document to be open: it
 // validates destination page identity and is used to resolve a named
 // destination when EPDFAction_LoadModel() had no document owner available.
@@ -139,6 +140,95 @@ EPDFAction_GetNodeName(EPDF_ACTION_MODEL model,
                        void* buffer,
                        unsigned long buflen);
 
+// Number of Hide /T, ResetForm /Fields, or SubmitForm /Fields entries
+// captured for |node|. Returns 0 for other node types, and -1 when an entry
+// could not be represented: a partial target list must never execute, so
+// consumers treat -1 as an unreadable payload and degrade the node.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFAction_GetNodeTargetCount(EPDF_ACTION_MODEL model,
+                              EPDF_ACTION_NODE_ID node);
+
+// Copy target |index|'s field name as UTF-8, including the trailing NUL.
+// Returns the required byte length, or 0 when the entry is an object
+// reference rather than a name, the index is out of range, or the node
+// carries no target list. |buffer| may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeTargetName(EPDF_ACTION_MODEL model,
+                             EPDF_ACTION_NODE_ID node,
+                             int index,
+                             void* buffer,
+                             unsigned long buflen);
+
+// Get target |index|'s indirect object number (an annotation or field
+// dictionary reference). Returns false when the entry is a name rather than
+// an object reference, the index is out of range, or the node carries no
+// target list. |object_number| is only written on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeTargetObjectNumber(EPDF_ACTION_MODEL model,
+                                     EPDF_ACTION_NODE_ID node,
+                                     int index,
+                                     unsigned int* object_number);
+
+// Hide /H for a hide-type |node|: true hides (the spec default), false
+// shows. Returns false for other node types; |hide| is only written on
+// success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeHideFlag(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           FPDF_BOOL* hide);
+
+// ResetForm state for a reset-form-type |node|: |has_fields| reports whether
+// /Fields was PRESENT (absent means "reset every field" and |exclude| is
+// meaningless); |exclude| is /Flags bit 0 (set = /Fields lists EXCLUDED
+// fields). Returns false for other node types; out-params are only written
+// on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeResetForm(EPDF_ACTION_MODEL model,
+                            EPDF_ACTION_NODE_ID node,
+                            FPDF_BOOL* has_fields,
+                            FPDF_BOOL* exclude);
+
+// SubmitForm state for a submit-form-type |node|. Returns true only when
+// the REQUIRED /F resolved to a URL — a << /FS /URL >> file specification
+// (ISO 32000-2 7.11.5, /UF preferred over /F per 7.11.2), or a bare
+// string/name /F accepted as a producer-compat extension. Returns false
+// otherwise, including for a submit-form node whose payload was withheld —
+// consumers degrade such a node instead of executing a half payload.
+// |has_fields| reports whether /Fields was PRESENT (same presence-vs-empty
+// distinction as ResetForm); |flags| is the raw /Flags word (ISO 32000-2
+// Table 240, bits numbered from 1). Out-params are only written on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeSubmitForm(EPDF_ACTION_MODEL model,
+                             EPDF_ACTION_NODE_ID node,
+                             FPDF_BOOL* has_fields,
+                             unsigned int* flags);
+
+// Copy the resolved submission URL of a submit-form-type |node| as UTF-8,
+// including the trailing NUL. Returns the required byte length, or 0 when
+// the node is not a submit-form action or its payload was withheld.
+// |buffer| may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeSubmitFormURL(EPDF_ACTION_MODEL model,
+                                EPDF_ACTION_NODE_ID node,
+                                void* buffer,
+                                unsigned long buflen);
+
+// Copy the /CharSet of a submit-form-type |node| (PDF 2.0) as UTF-8,
+// including the trailing NUL. Returns 0 when absent or for other node
+// types. |buffer| may be NULL to query the length.
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAction_GetNodeSubmitFormCharSet(EPDF_ACTION_MODEL model,
+                                    EPDF_ACTION_NODE_ID node,
+                                    void* buffer,
+                                    unsigned long buflen);
+
+// URI /IsMap for a uri-type |node| (default false). Returns false for other
+// node types; |is_map| is only written on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAction_GetNodeURIIsMap(EPDF_ACTION_MODEL model,
+                           EPDF_ACTION_NODE_ID node,
+                           FPDF_BOOL* is_map);
+
 FPDF_EXPORT int FPDF_CALLCONV EPDFAction_GetNextCount(EPDF_ACTION_MODEL model,
                                                       EPDF_ACTION_NODE_ID node);
 
@@ -169,9 +259,19 @@ FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFDoc_GetNamedJavaScriptActionModel(FPDF_DOCUMENT document, int index);
 
 // Return the action form of catalog /OpenAction. Returns NULL when absent,
-// malformed, or when /OpenAction is a destination rather than an action.
+// malformed, or when /OpenAction is a destination rather than an action
+// (read the destination form with EPDFDoc_GetOpenActionDest()).
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
 EPDFDoc_GetOpenActionModel(FPDF_DOCUMENT document);
+
+// Return the destination form of catalog /OpenAction as an explicit
+// FPDF_DEST — a named value resolves through the catalog, the same
+// normalization as FPDFLink_GetDest. Returns NULL when /OpenAction is
+// absent, malformed, or an action dictionary. The handle points into the
+// live document, like FPDFLink_GetDest, and is only valid while the
+// document stays open.
+FPDF_EXPORT FPDF_DEST FPDF_CALLCONV
+EPDFDoc_GetOpenActionDest(FPDF_DOCUMENT document);
 
 // Return one catalog /AA action selected by EPDF_DOCUMENT_ACTION_*.
 FPDF_EXPORT EPDF_ACTION_MODEL FPDF_CALLCONV
