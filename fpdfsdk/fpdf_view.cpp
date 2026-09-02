@@ -67,6 +67,7 @@
 #include "fpdfsdk/cpdfsdk_pageview.h"
 #include "fpdfsdk/cpdfsdk_renderpage.h"
 #include "fpdfsdk/fpdfsdk_pending_security.h"
+#include "core/fpdfdoc/epdf_signature_status.h"
 #include "fxjs/ijs_runtime.h"
 #include "public/fpdf_formfill.h"
 
@@ -1263,6 +1264,10 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
   // Cleanup pending security BEFORE deletion
   EPDF_CleanupPendingSecurity(document);
+
+  // Cleanup runtime signature-validation status BEFORE deletion, so no stale
+  // signature-dictionary pointers survive the close.
+  EPDF_CleanupSignatureStatus(document);
 
   // Take it back across the API and throw it away,
   std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));

@@ -23,6 +23,7 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fxcrt/fx_extension.h"
+#include "core/fpdfdoc/epdf_signature_status_compose.h"
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
@@ -182,6 +183,11 @@ bool DoDocSave(FPDF_DOCUMENT document,
   if (!doc) {
     return false;
   }
+
+  // EmbedPDF Extension: restore any in-memory signature validation-status layer
+  // edits to their original bytes before serialization, so runtime status never
+  // reaches disk and signed appearances stay byte-identical.
+  EPDF_RestoreSignatureLayers();
 
 #ifdef PDF_ENABLE_XFA
   auto* context = static_cast<CPDFXFA_Context*>(doc->GetExtension());

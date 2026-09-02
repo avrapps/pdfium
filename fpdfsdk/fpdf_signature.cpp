@@ -17,6 +17,7 @@
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "core/fpdfdoc/epdf_signature_status.h"
 
 namespace {
 
@@ -254,4 +255,53 @@ FPDFSignatureObj_GetDocMDPPermission(FPDF_SIGNATURE signature) {
   }
 
   return permission;
+}
+
+// EmbedPDF Extension (custom fork API; not present in upstream PDFium).
+// Runtime-only validation status. These functions never mutate the PDF; they
+// only read/write the process-wide runtime side table in epdf_signature_status.
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFSignature_SetValidationStatus(
+    FPDF_SIGNATURE signature,
+    FPDF_SIGNATURE_VALIDATION_STATUS status) {
+  const CPDF_Dictionary* signature_dict =
+      CPDFDictionaryFromFPDFSignature(signature);
+  if (!signature_dict) {
+    return false;
+  }
+  if (status != FPDF_SIGNATURE_STATUS_UNKNOWN &&
+      status != FPDF_SIGNATURE_STATUS_VALID &&
+      status != FPDF_SIGNATURE_STATUS_INVALID) {
+    return false;
+  }
+  EPDF_SetSignatureStatus(signature_dict, status);
+  return true;
+}
+
+FPDF_EXPORT FPDF_SIGNATURE_VALIDATION_STATUS FPDF_CALLCONV
+FPDFSignature_GetValidationStatus(FPDF_SIGNATURE signature) {
+  const CPDF_Dictionary* signature_dict =
+      CPDFDictionaryFromFPDFSignature(signature);
+  return static_cast<FPDF_SIGNATURE_VALIDATION_STATUS>(
+      EPDF_GetSignatureStatus(signature_dict));
+}
+
+// Called from FPDF_CloseDocument(). Re-collects this document's signature
+// dictionaries and erases their runtime-status entries so no stale pointers
+// survive the close.
+void EPDF_CleanupSignatureStatus(FPDF_DOCUMENT document) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc) {
+    return;
+  }
+  std::vector<RetainPtr<const CPDF_Dictionary>> signatures =
+      CollectSignatures(doc);
+  if (signatures.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(GetSignatureStatusMutex());
+  auto& map = GetSignatureStatusMap();
+  for (const auto& sig : signatures) {
+    map.erase(sig.Get());
+  }
 }

@@ -279,6 +279,58 @@ component("pdfium") {
   }
 }
 
+# EmbedPDF Extension: standalone shared library (libpdfium.dylib / .so / .dll)
+# that bundles the complete PDFium (including its custom libc++, abseil, icu),
+# so the desktop consumers (e.g. the Falcon PDFViewer macOS/JVM target) can link
+# a single self-contained dynamic library. Build with:
+#   ninja -C <out> pdfium_shared
+shared_library("pdfium_shared") {
+  output_name = "pdfium"
+  configs += [ ":pdfium_strict_config" ]
+  public_configs = [ ":pdfium_public_config" ]
+
+  deps = [
+    "constants",
+    "core/fpdfapi/page",
+    "core/fpdfapi/parser",
+    "core/fpdfdoc",
+    "core/fxcodec",
+    "core/fxcrt",
+    "core/fxge",
+    "fpdfsdk",
+    "fpdfsdk/formfiller",
+    "fxjs",
+  ]
+
+  public_deps = [
+    ":pdfium_public_headers_impl",
+    "core/fxcrt",
+  ]
+
+  if (pdf_enable_xfa) {
+    deps += [
+      "fpdfsdk/fpdfxfa",
+      "xfa/fxfa",
+      "xfa/fxfa/parser",
+    ]
+  }
+
+  if (is_win) {
+    libs = [
+      "advapi32.lib",
+      "gdi32.lib",
+      "user32.lib",
+    ]
+  }
+
+  if (is_mac) {
+    frameworks = [
+      "AppKit.framework",
+      "CoreFoundation.framework",
+    ]
+  }
+}
+
 # Targets below this are only visible within this file.
 visibility = [ ":*" ]
 

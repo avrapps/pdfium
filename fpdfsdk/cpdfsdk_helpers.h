@@ -57,6 +57,10 @@ CPDF_Page* CPDFPageFromFPDFPage(FPDF_PAGE page);
 FPDF_DOCUMENT FPDFDocumentFromCPDFDocument(CPDF_Document* doc);
 CPDF_Document* CPDFDocumentFromFPDFDocument(FPDF_DOCUMENT doc);
 
+// EmbedPDF Extension: purge runtime signature-validation status for a document
+// on close. Defined in fpdf_signature.cpp (which owns CollectSignatures).
+void EPDF_CleanupSignatureStatus(FPDF_DOCUMENT document);
+
 // Conversions to/from incomplete FPDF_ API types.
 inline FPDF_ACTION FPDFActionFromCPDFDictionary(const CPDF_Dictionary* action) {
   return reinterpret_cast<FPDF_ACTION>(const_cast<CPDF_Dictionary*>(action));

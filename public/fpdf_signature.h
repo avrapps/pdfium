@@ -148,6 +148,46 @@ FPDFSignatureObj_GetTime(FPDF_SIGNATURE signature,
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 FPDFSignatureObj_GetDocMDPPermission(FPDF_SIGNATURE signature);
 
+// EmbedPDF Extension (custom fork API; not present in upstream PDFium).
+//
+// Runtime-only validation status for a signature. This value is viewer state:
+// it is NEVER stored in the PDF, never serialized, and never modifies the
+// signed document bytes. It is used purely to drive inline rendering of a
+// validation-status icon over the signature's existing appearance.
+typedef enum FPDF_SIGNATURE_VALIDATION_STATUS {
+  FPDF_SIGNATURE_STATUS_UNKNOWN = 0,
+  FPDF_SIGNATURE_STATUS_VALID = 1,
+  FPDF_SIGNATURE_STATUS_INVALID = 2,
+} FPDF_SIGNATURE_VALIDATION_STATUS;
+
+// EmbedPDF Extension (custom fork API; not present in upstream PDFium).
+// Function: FPDFSignature_SetValidationStatus
+//          Set the runtime validation status of a signature object. This only
+//          affects in-memory viewer state and how the signature is rendered;
+//          it does NOT modify the PDF in any way.
+// Parameters:
+//          signature   -   Handle to the signature object. Returned by
+//                          FPDF_GetSignatureObject().
+//          status      -   The validation status to associate with the
+//                          signature at runtime.
+// Return value:
+//          Returns TRUE on success, FALSE on error (e.g. null signature).
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFSignature_SetValidationStatus(
+    FPDF_SIGNATURE signature,
+    FPDF_SIGNATURE_VALIDATION_STATUS status);
+
+// EmbedPDF Extension (custom fork API; not present in upstream PDFium).
+// Function: FPDFSignature_GetValidationStatus
+//          Get the runtime validation status of a signature object.
+// Parameters:
+//          signature   -   Handle to the signature object. Returned by
+//                          FPDF_GetSignatureObject().
+// Return value:
+//          Returns the runtime status. Defaults to FPDF_SIGNATURE_STATUS_UNKNOWN
+//          when it has never been set (or on a null signature).
+FPDF_EXPORT FPDF_SIGNATURE_VALIDATION_STATUS FPDF_CALLCONV
+FPDFSignature_GetValidationStatus(FPDF_SIGNATURE signature);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

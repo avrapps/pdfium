@@ -13,6 +13,7 @@
 #include "build/build_config.h"
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
+#include "constants/form_fields.h"
 #include "core/fpdfapi/page/cpdf_form.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
@@ -25,6 +26,8 @@
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fpdfdoc/cpdf_generateap.h"
+#include "core/fpdfdoc/epdf_signature_status.h"
+#include "core/fpdfdoc/epdf_signature_status_compose.h"
 #include "core/fxcrt/check.h"
 #include "core/fxge/cfx_fillrenderoptions.h"
 #include "core/fxge/cfx_graphstatedata.h"
@@ -221,6 +224,16 @@ CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
     return nullptr;
   }
 
+  // EmbedPDF Extension: for a digital-signature widget, rewrite the appearance's
+  // n1/n3/n4 layers in memory to reflect the current runtime validation status
+  // (Adobe/iText/Foxit validity-layer swap). If the status changed since the
+  // last render, drop the cached parsed appearance so the FRM form and its
+  // child layer forms re-parse from the edited streams. Save-safe: original
+  // layer bytes are stashed and restored before serialization.
+  if (EPDF_MaybeComposeSignatureStatus(pStream.Get())) {
+    ap_map_.clear();
+  }
+
   auto it = ap_map_.find(pStream);
   if (it != ap_map_.end()) {
     return it->second.get();
@@ -233,6 +246,32 @@ CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
   CPDF_Form* pResult = pNewForm.get();
   ap_map_[pStream] = std::move(pNewForm);
   return pResult;
+}
+
+bool CPDF_Annot::EPDF_MaybeComposeSignatureStatus(const CPDF_Stream* ap_stream) {
+  // Only signature fields. Resolve /FT from the annot dict or its /Parent
+  // (merged field/widget vs. separate field).
+  const CPDF_Dictionary* field = annot_dict_.Get();
+  ByteString ft = field->GetNameFor(pdfium::form_fields::kFT);
+  if (ft != pdfium::form_fields::kSig) {
+    RetainPtr<const CPDF_Dictionary> parent = annot_dict_->GetDictFor("Parent");
+    if (!parent ||
+        parent->GetNameFor(pdfium::form_fields::kFT) !=
+            pdfium::form_fields::kSig) {
+      return false;
+    }
+    field = parent.Get();
+  }
+
+  const int status = EPDF_GetSignatureStatus(field);
+  const bool changed = (status != epdf_last_signature_status_);
+  epdf_last_signature_status_ = status;
+
+  // Rewrite the signature appearance's n1/n3/n4 layers in memory to reflect the
+  // runtime status (Adobe/iText/Foxit validity-layer swap). Save-safe: the
+  // original layer bytes are stashed and restored before any serialization.
+  EPDF_ApplySignatureStatusLayers(ap_stream, status);
+  return changed;
 }
 
 void CPDF_Annot::SetPopupAnnotOpenState(bool bOpenState) {

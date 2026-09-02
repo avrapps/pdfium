@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string>
 #include <vector>
 
+#include "public/cpp/fpdf_scopers.h"
+#include "public/fpdf_save.h"
 #include "public/fpdf_signature.h"
+#include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/fx_string_testhelpers.h"
 
@@ -201,4 +205,152 @@ TEST_F(FPDFSignatureEmbedderTest, GetDocMDPPermission) {
 
   // FPDFSignatureObj_GetDocMDPPermission() negative testing.
   EXPECT_EQ(0U, FPDFSignatureObj_GetDocMDPPermission(nullptr));
+}
+
+// EmbedPDF Extension: runtime validation-status API tests.
+
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusDefaultsToUnknown) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+  FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document(), 0);
+  ASSERT_TRUE(signature);
+
+  // A signature that has never had its status set reports UNKNOWN.
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_UNKNOWN,
+            FPDFSignature_GetValidationStatus(signature));
+
+  // Null signature reports UNKNOWN.
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_UNKNOWN,
+            FPDFSignature_GetValidationStatus(nullptr));
+}
+
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusSetGetRoundTrip) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+  FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document(), 0);
+  ASSERT_TRUE(signature);
+
+  // VALID.
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature,
+                                                FPDF_SIGNATURE_STATUS_VALID));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_VALID,
+            FPDFSignature_GetValidationStatus(signature));
+
+  // INVALID.
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature,
+                                                FPDF_SIGNATURE_STATUS_INVALID));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_INVALID,
+            FPDFSignature_GetValidationStatus(signature));
+
+  // Back to UNKNOWN.
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature,
+                                                FPDF_SIGNATURE_STATUS_UNKNOWN));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_UNKNOWN,
+            FPDFSignature_GetValidationStatus(signature));
+}
+
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusRejectsBadInput) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+  FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document(), 0);
+  ASSERT_TRUE(signature);
+
+  // Null signature is rejected.
+  EXPECT_FALSE(FPDFSignature_SetValidationStatus(nullptr,
+                                                 FPDF_SIGNATURE_STATUS_VALID));
+
+  // Out-of-range enum value is rejected and leaves state unchanged.
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature,
+                                                FPDF_SIGNATURE_STATUS_VALID));
+  EXPECT_FALSE(FPDFSignature_SetValidationStatus(
+      signature, static_cast<FPDF_SIGNATURE_VALIDATION_STATUS>(99)));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_VALID,
+            FPDFSignature_GetValidationStatus(signature));
+}
+
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusMultipleSignaturesIndependent) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+  FPDF_SIGNATURE signature0 = FPDF_GetSignatureObject(document(), 0);
+  FPDF_SIGNATURE signature1 = FPDF_GetSignatureObject(document(), 1);
+  ASSERT_TRUE(signature0);
+  ASSERT_TRUE(signature1);
+  ASSERT_NE(signature0, signature1);
+
+  // Give the two signatures different statuses; they must not interfere.
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature0,
+                                                FPDF_SIGNATURE_STATUS_VALID));
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature1,
+                                                FPDF_SIGNATURE_STATUS_INVALID));
+
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_VALID,
+            FPDFSignature_GetValidationStatus(signature0));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_INVALID,
+            FPDFSignature_GetValidationStatus(signature1));
+
+  // Re-fetching the same signatures yields the same, still-independent state.
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_VALID, FPDFSignature_GetValidationStatus(
+                                             FPDF_GetSignatureObject(
+                                                 document(), 0)));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_INVALID, FPDFSignature_GetValidationStatus(
+                                               FPDF_GetSignatureObject(
+                                                   document(), 1)));
+}
+
+// Critical security guarantee: setting the runtime validation status must not
+// change the PDF bytes. We save the document once as a baseline, then set a
+// status and save again; the serialized output must be byte-identical.
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusDoesNotModifyPdf) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+
+  // Baseline save (no status set).
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  const std::string baseline = GetString();
+  ASSERT_FALSE(baseline.empty());
+
+  // Set a runtime status on every signature.
+  const int count = FPDF_GetSignatureCount(document());
+  ASSERT_GT(count, 0);
+  for (int i = 0; i < count; ++i) {
+    FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document(), i);
+    ASSERT_TRUE(signature);
+    EXPECT_TRUE(FPDFSignature_SetValidationStatus(
+        signature, i % 2 == 0 ? FPDF_SIGNATURE_STATUS_VALID
+                              : FPDF_SIGNATURE_STATUS_INVALID));
+  }
+
+  // Save again and compare bytes.
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  const std::string after_set = GetString();
+
+  EXPECT_EQ(baseline, after_set);
+}
+
+// Runtime status is per-document and does not leak to a separately opened
+// instance of the same file, proving it is not stored in the PDF.
+TEST_F(FPDFSignatureEmbedderTest, ValidationStatusIsRuntimeOnly) {
+  ASSERT_TRUE(OpenDocument("two_signatures.pdf"));
+  FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document(), 0);
+  ASSERT_TRUE(signature);
+  EXPECT_TRUE(FPDFSignature_SetValidationStatus(signature,
+                                                FPDF_SIGNATURE_STATUS_VALID));
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_VALID,
+            FPDFSignature_GetValidationStatus(signature));
+
+  // Save the (unmodified) document and open it as a second, independent
+  // instance. Its signatures start at UNKNOWN because the status lives only in
+  // the first document's runtime state, never in the file.
+  ClearString();
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  std::string saved = GetString();
+  ASSERT_FALSE(saved.empty());
+
+  FPDF_FILEACCESS file_access = {};
+  file_access.m_FileLen = saved.size();
+  file_access.m_GetBlock = GetBlockFromString;
+  file_access.m_Param = &saved;
+  ScopedFPDFDocument other(FPDF_LoadCustomDocument(&file_access, nullptr));
+  ASSERT_TRUE(other);
+  FPDF_SIGNATURE other_sig = FPDF_GetSignatureObject(other.get(), 0);
+  ASSERT_TRUE(other_sig);
+  EXPECT_EQ(FPDF_SIGNATURE_STATUS_UNKNOWN,
+            FPDFSignature_GetValidationStatus(other_sig));
 }

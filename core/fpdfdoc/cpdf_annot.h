@@ -25,6 +25,7 @@ class CFX_RenderDevice;
 class CPDF_Array;
 class CPDF_Dictionary;
 class CPDF_Document;
+class CPDF_Stream;
 class CPDF_Form;
 class CPDF_Page;
 class CPDF_RenderContext;
@@ -233,6 +234,13 @@ class CPDF_Annot {
   bool ShouldGenerateAP() const;
   bool ShouldDrawAnnotation() const;
 
+  // EmbedPDF Extension: if this annotation is a digital-signature widget with a
+  // runtime validation status, rewrite the appearance's n1/n3/n4 layers in
+  // memory (from |ap_stream|) to reflect it. Returns true if the status changed
+  // since the last call (caller should drop the cached appearance). Save-safe
+  // (originals restored before serialization). No-op for non-signature annots.
+  bool EPDF_MaybeComposeSignatureStatus(const CPDF_Stream* ap_stream);
+
   CFX_FloatRect RectForDrawing() const;
 
   RetainPtr<CPDF_Dictionary> const annot_dict_;
@@ -245,6 +253,9 @@ class CPDF_Annot {
   // |open_state_| is only set for popup annotations.
   bool open_state_ = false;
   bool has_generated_ap_;
+  // EmbedPDF Extension: last runtime signature status applied to the appearance
+  // layers (-1 = never applied), used to detect changes and refresh the cache.
+  int epdf_last_signature_status_ = -1;
 };
 
 // Get the AP in an annotation dict for a given appearance mode.
