@@ -249,14 +249,15 @@ bool FindFontFromDoc(const CPDF_Dictionary* form_dict,
   CPDF_DictionaryLocker locker(font_dict);
   for (const auto& it : locker) {
     const ByteString& key = it.first;
-    RetainPtr<CPDF_Dictionary> element =
-        ToDictionary(it.second->GetMutableDirect());
+    RetainPtr<const CPDF_Dictionary> element =
+        ToDictionary(it.second->GetDirect());
     if (!ValidateDictType(element.Get(), "Font")) {
       continue;
     }
 
     auto* pData = CPDF_DocPageData::FromDocument(document);
-    font = pData->GetFont(std::move(element));
+    font = pData->GetFont(
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(element.Get())));
     if (!font) {
       continue;
     }
@@ -349,14 +350,15 @@ RetainPtr<CPDF_Font> GetNativeFont(const CPDF_Dictionary* form_dict,
   CPDF_DictionaryLocker locker(font_dict);
   for (const auto& it : locker) {
     const ByteString& key = it.first;
-    RetainPtr<CPDF_Dictionary> element =
-        ToDictionary(it.second->GetMutableDirect());
+    RetainPtr<const CPDF_Dictionary> element =
+        ToDictionary(it.second->GetDirect());
     if (!ValidateDictType(element.Get(), "Font")) {
       continue;
     }
 
     auto* pData = CPDF_DocPageData::FromDocument(document);
-    RetainPtr<CPDF_Font> pFind = pData->GetFont(std::move(element));
+    RetainPtr<CPDF_Font> pFind = pData->GetFont(
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(element.Get())));
     if (!pFind) {
       continue;
     }
@@ -588,23 +590,25 @@ CFieldTree::Node* CFieldTree::FindNode(const WideString& full_name) {
 
 CPDF_InteractiveForm::CPDF_InteractiveForm(CPDF_Document* document)
     : document_(document), field_tree_(std::make_unique<CFieldTree>()) {
-  RetainPtr<CPDF_Dictionary> pRoot = document_->GetMutableRoot();
+  const CPDF_Dictionary* pRoot = document_->GetRoot();
   if (!pRoot) {
     return;
   }
 
-  form_dict_ = pRoot->GetMutableDictFor("AcroForm");
-  if (!form_dict_) {
+  RetainPtr<const CPDF_Dictionary> form_dict = pRoot->GetDictFor("AcroForm");
+  if (!form_dict) {
     return;
   }
+  form_dict_ =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(form_dict.Get()));
 
-  RetainPtr<CPDF_Array> fields = form_dict_->GetMutableArrayFor("Fields");
+  RetainPtr<const CPDF_Array> fields = form_dict->GetArrayFor("Fields");
   if (!fields) {
     return;
   }
 
   for (size_t i = 0; i < fields->size(); ++i) {
-    LoadField(fields->GetMutableDictAt(i), 0);
+    LoadField(fields->GetDictAt(i), 0);
   }
 }
 
@@ -789,23 +793,24 @@ RetainPtr<CPDF_Font> CPDF_InteractiveForm::GetFormFont(
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> pDR = form_dict_->GetMutableDictFor("DR");
+  RetainPtr<const CPDF_Dictionary> pDR = form_dict_->GetDictFor("DR");
   if (!pDR) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> font_dict = pDR->GetMutableDictFor("Font");
+  RetainPtr<const CPDF_Dictionary> font_dict = pDR->GetDictFor("Font");
   if (!ValidateFontResourceDict(font_dict.Get())) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> element =
-      font_dict->GetMutableDictFor(alias.AsStringView());
+  RetainPtr<const CPDF_Dictionary> element =
+      font_dict->GetDictFor(alias.AsStringView());
   if (!ValidateDictType(element.Get(), "Font")) {
     return nullptr;
   }
 
-  return GetFontForElement(std::move(element));
+  return GetFontForElement(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(element.Get())));
 }
 
 RetainPtr<CPDF_Font> CPDF_InteractiveForm::GetFontForElement(
@@ -851,18 +856,36 @@ CPDF_InteractiveForm::GetControlsForField(const CPDF_FormField* field) {
   return control_lists_[pdfium::WrapUnowned(field)];
 }
 
-void CPDF_InteractiveForm::LoadField(RetainPtr<CPDF_Dictionary> field_dict,
-                                     int nLevel) {
+// EmbedPDF: layer documents resolve references held by frozen base objects
+// through the base holder, which returns stale instances once an object has
+// been promoted into the layer. Rebinding by object number restores the
+// document's current view. Identity on plain documents. See header.
+RetainPtr<const CPDF_Dictionary> CPDF_InteractiveForm::ResolveCurrentDict(
+    RetainPtr<const CPDF_Dictionary> dict) const {
+  if (!dict || dict->GetObjNum() == 0) {
+    return dict;
+  }
+  RetainPtr<const CPDF_Dictionary> current =
+      ToDictionary(document_->GetIndirectObject(dict->GetObjNum()));
+  return current ? current : dict;
+}
+
+void CPDF_InteractiveForm::LoadField(
+    RetainPtr<const CPDF_Dictionary> field_dict,
+    int nLevel) {
   if (nLevel > kMaxRecursion) {
     return;
   }
   if (!field_dict) {
     return;
   }
+  // EmbedPDF: bind to the document's current view so layer promotions win
+  // over frozen base instances reached through base-held references.
+  field_dict = ResolveCurrentDict(std::move(field_dict));
 
   uint32_t dwParentObjNum = field_dict->GetObjNum();
-  RetainPtr<CPDF_Array> kids =
-      field_dict->GetMutableArrayFor(pdfium::form_fields::kKids);
+  RetainPtr<const CPDF_Array> kids =
+      field_dict->GetArrayFor(pdfium::form_fields::kKids);
   if (!kids) {
     AddTerminalField(std::move(field_dict));
     return;
@@ -879,103 +902,132 @@ void CPDF_InteractiveForm::LoadField(RetainPtr<CPDF_Dictionary> field_dict,
     return;
   }
   for (size_t i = 0; i < kids->size(); i++) {
-    RetainPtr<CPDF_Dictionary> pChildDict = kids->GetMutableDictAt(i);
-    if (pChildDict && pChildDict->GetObjNum() != dwParentObjNum) {
+    RetainPtr<const CPDF_Dictionary> pChildDict = kids->GetDictAt(i);
+    if (pChildDict && pChildDict.Get() != field_dict.Get() &&
+        (dwParentObjNum == 0 || pChildDict->GetObjNum() != dwParentObjNum)) {
       LoadField(std::move(pChildDict), nLevel + 1);
     }
   }
 }
 
 void CPDF_InteractiveForm::FixPageFields(CPDF_Page* page) {
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> annots = page->GetAnnotsArray();
   if (!annots) {
     return;
   }
 
   for (size_t i = 0; i < annots->size(); i++) {
-    RetainPtr<CPDF_Dictionary> annot = annots->GetMutableDictAt(i);
+    RetainPtr<const CPDF_Dictionary> annot = annots->GetDictAt(i);
     if (annot && annot->GetNameFor("Subtype") == "Widget") {
       LoadField(std::move(annot), 0);
     }
   }
 }
 
+// EmbedPDF: recover form fields that are reachable from a page's /Annots
+// array but missing from the /AcroForm /Fields tree (a common producer
+// bug); used by the EPDFForm_* model build instead of the page-load hook
+// FixPageFields(), which requires an expensive CPDF_Page. See header.
+void CPDF_InteractiveForm::ReconcileWidget(
+    RetainPtr<const CPDF_Dictionary> widget_dict) {
+  widget_dict = ResolveCurrentDict(std::move(widget_dict));
+  if (!widget_dict) {
+    return;
+  }
+  if (GetControlByDict(widget_dict.Get())) {
+    return;
+  }
+
+  // A widget that carries no field type anywhere on its /Parent chain is
+  // not a form control; leave it alone.
+  if (!CPDF_FormField::GetFieldAttrForDict(widget_dict.Get(),
+                                           pdfium::form_fields::kFT)) {
+    return;
+  }
+
+  // Climb to the field root, cycle-guarded, so every sibling widget of the
+  // same field lands on one logical field.
+  RetainPtr<const CPDF_Dictionary> root = widget_dict;
+  std::vector<const CPDF_Dictionary*> visited = {root.Get()};
+  for (int i = 0; i < kMaxRecursion; ++i) {
+    RetainPtr<const CPDF_Dictionary> parent =
+        ResolveCurrentDict(root->GetDictFor(pdfium::form_fields::kParent));
+    if (!parent || pdfium::Contains(visited, parent.Get())) {
+      break;
+    }
+    visited.push_back(parent.Get());
+    root = std::move(parent);
+  }
+  LoadField(root, 0);
+
+  // If the widget is still unlinked (e.g. its parent does not list it in
+  // /Kids), load it directly. AddTerminalField() resolves the owning field
+  // through the inheritance-aware attribute lookup, so the control still
+  // attaches to the field with the correct fully qualified name.
+  if (!GetControlByDict(widget_dict.Get())) {
+    LoadField(std::move(widget_dict), 0);
+  }
+}
+
 void CPDF_InteractiveForm::AddTerminalField(
-    RetainPtr<CPDF_Dictionary> field_dict) {
-  if (!field_dict->KeyExist(pdfium::form_fields::kFT)) {
-    // Key "FT" is required for terminal fields, it is also inheritable.
-    RetainPtr<const CPDF_Dictionary> pParentDict =
-        field_dict->GetDictFor(pdfium::form_fields::kParent);
-    if (!pParentDict || !pParentDict->KeyExist(pdfium::form_fields::kFT)) {
+    RetainPtr<const CPDF_Dictionary> field_dict) {
+  RetainPtr<const CPDF_Dictionary> field_storage_dict = field_dict;
+  if (!CPDF_FormField::GetFieldAttrForDict(field_storage_dict.Get(),
+                                           pdfium::form_fields::kFT)) {
+    RetainPtr<const CPDF_Array> kids =
+        field_dict->GetArrayFor(pdfium::form_fields::kKids);
+    field_storage_dict.Reset();
+    if (kids) {
+      for (size_t i = 0; i < kids->size(); ++i) {
+        // EmbedPDF: rebind to the layer's current view (see
+        // ResolveCurrentDict).
+        RetainPtr<const CPDF_Dictionary> kid =
+            ResolveCurrentDict(kids->GetDictAt(i));
+        if (CPDF_FormField::GetFieldAttrForDict(kid.Get(),
+                                                pdfium::form_fields::kFT)) {
+          field_storage_dict = std::move(kid);
+          break;
+        }
+      }
+    }
+    if (!field_storage_dict) {
       return;
     }
   }
 
-  WideString field_name = CPDF_FormField::GetFullNameForDict(field_dict.Get());
+  WideString field_name =
+      CPDF_FormField::GetFullNameForDict(field_storage_dict.Get());
   if (field_name.IsEmpty()) {
     return;
   }
 
   CPDF_FormField* field = field_tree_->GetField(field_name);
   if (!field) {
-    RetainPtr<CPDF_Dictionary> pParent(field_dict);
-    if (!field_dict->KeyExist(pdfium::form_fields::kT) &&
-        field_dict->GetNameFor("Subtype") == "Widget") {
-      pParent = field_dict->GetMutableDictFor(pdfium::form_fields::kParent);
-      if (!pParent) {
-        pParent = field_dict;
-      }
-    }
-
-    if (pParent && pParent != field_dict &&
-        !pParent->KeyExist(pdfium::form_fields::kFT)) {
-      if (field_dict->KeyExist(pdfium::form_fields::kFT)) {
-        RetainPtr<const CPDF_Object> pFTValue =
-            field_dict->GetDirectObjectFor(pdfium::form_fields::kFT);
-        if (pFTValue) {
-          pParent->SetFor(pdfium::form_fields::kFT, pFTValue->Clone());
-        }
-      }
-
-      if (field_dict->KeyExist(pdfium::form_fields::kFf)) {
-        RetainPtr<const CPDF_Object> pFfValue =
-            field_dict->GetDirectObjectFor(pdfium::form_fields::kFf);
-        if (pFfValue) {
-          pParent->SetFor(pdfium::form_fields::kFf, pFfValue->Clone());
-        }
-      }
-    }
-
-    auto new_field = std::make_unique<CPDF_FormField>(this, std::move(pParent));
+    auto new_field = std::make_unique<CPDF_FormField>(
+        this, pdfium::WrapRetain(
+                  const_cast<CPDF_Dictionary*>(field_storage_dict.Get())));
     field = new_field.get();
-    RetainPtr<const CPDF_Object> t_obj =
-        field_dict->GetObjectFor(pdfium::form_fields::kT);
-    if (ToReference(t_obj)) {
-      RetainPtr<CPDF_Object> t_obj_clone = t_obj->CloneDirectObject();
-      if (t_obj_clone && t_obj_clone->IsString()) {
-        field_dict->SetFor(pdfium::form_fields::kT, std::move(t_obj_clone));
-      } else {
-        field_dict->SetNewFor<CPDF_String>(pdfium::form_fields::kT,
-                                           ByteString());
-      }
-    }
     if (!field_tree_->SetField(field_name, std::move(new_field))) {
       return;
     }
   }
 
-  RetainPtr<CPDF_Array> kids =
-      field_dict->GetMutableArrayFor(pdfium::form_fields::kKids);
+  RetainPtr<const CPDF_Array> kids =
+      field_dict->GetArrayFor(pdfium::form_fields::kKids);
   if (!kids) {
     if (field_dict->GetNameFor("Subtype") == "Widget") {
-      AddControl(field, std::move(field_dict));
+      AddControl(field, pdfium::WrapRetain(
+                            const_cast<CPDF_Dictionary*>(field_dict.Get())));
     }
     return;
   }
   for (size_t i = 0; i < kids->size(); i++) {
-    RetainPtr<CPDF_Dictionary> kid = kids->GetMutableDictAt(i);
+    // EmbedPDF: rebind to the layer's current view (see ResolveCurrentDict).
+    RetainPtr<const CPDF_Dictionary> kid =
+        ResolveCurrentDict(kids->GetDictAt(i));
     if (kid && kid->GetNameFor("Subtype") == "Widget") {
-      AddControl(field, std::move(kid));
+      AddControl(field,
+                 pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(kid.Get())));
     }
   }
 }
@@ -1034,20 +1086,22 @@ bool CPDF_InteractiveForm::CheckRequiredFields(
 }
 
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
-    const WideString& pdf_path) const {
+    const WideString& pdf_path,
+    bool skip_empty_required) const {
   std::vector<CPDF_FormField*> fields;
   CFieldTree::Node* pRoot = field_tree_->GetRoot();
   const size_t nCount = pRoot->CountFields();
   for (size_t i = 0; i < nCount; ++i) {
     fields.push_back(pRoot->GetFieldAtIndex(i));
   }
-  return ExportToFDF(pdf_path, fields, true);
+  return ExportToFDF(pdf_path, fields, true, skip_empty_required);
 }
 
 std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
     const WideString& pdf_path,
     const std::vector<CPDF_FormField*>& fields,
-    bool bIncludeOrExclude) const {
+    bool bIncludeOrExclude,
+    bool skip_empty_required) const {
   std::unique_ptr<CFDF_Document> doc = CFDF_Document::CreateNewDoc();
   if (!doc) {
     return nullptr;
@@ -1082,11 +1136,16 @@ std::unique_ptr<CFDF_Document> CPDF_InteractiveForm::ExportToFDF(
       continue;
     }
 
-    if ((dwFlags & pdfium::form_flags::kRequired) != 0 &&
-        field->GetFieldDict()
-            ->GetByteStringFor(pdfium::form_fields::kV)
-            .IsEmpty()) {
-      continue;
+    // EmbedPDF: |skip_empty_required| makes the historic omit-empty-required
+    // submission behavior optional so interchange exports stay faithful.
+    if (skip_empty_required && (dwFlags & pdfium::form_flags::kRequired) != 0) {
+      RetainPtr<const CPDF_Object> value =
+          field->GetFieldAttr(pdfium::form_fields::kV);
+      if (!value || value->IsNull() ||
+          (value->IsArray() ? value->AsArray()->IsEmpty()
+                            : value->GetString().IsEmpty())) {
+        continue;
+      }
     }
 
     WideString fullname =

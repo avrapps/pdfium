@@ -1,4 +1,7 @@
-name: Release EmbedPDF PDF Runtime Libraries
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release CloudPDF Runtime Libraries
 
 on:
   workflow_dispatch:
@@ -130,6 +133,8 @@ jobs:
       - name: Install Emscripten
         if: matrix.target == 'wasm32'
         shell: bash
+        env:
+          DEPOT_TOOLS_PYTHON_BYPASS: '1'
         run: |
           mkdir -p third_party
           if [[ -d third_party/emsdk ]]; then
@@ -170,7 +175,7 @@ jobs:
         run: scripts/embedpdf-runtime/package-target.sh "${{ matrix.target }}"
       - uses: actions/upload-artifact@v6
         with:
-          name: libembedpdf-pdf-runtime-${{ matrix.target }}
+          name: libembedpdf-runtime-${{ matrix.target }}
           path: out/embedpdf-runtime-artifacts/*.tar.gz
 
   ios-universal:

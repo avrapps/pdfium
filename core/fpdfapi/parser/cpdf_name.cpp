@@ -8,6 +8,7 @@
 
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
+#include "core/fxcrt/check.h"
 #include "core/fxcrt/fx_stream.h"
 
 CPDF_Name::CPDF_Name(WeakPtr<ByteStringPool> pPool, const ByteString& str)
@@ -32,6 +33,7 @@ ByteString CPDF_Name::GetString() const {
 }
 
 void CPDF_Name::SetString(const ByteString& str) {
+  DCHECK(!IsFrozen());
   name_ = str;
 }
 

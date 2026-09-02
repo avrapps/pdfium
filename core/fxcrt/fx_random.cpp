@@ -9,6 +9,7 @@
 #include <array>
 
 #include "build/build_config.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/fx_system.h"
@@ -33,8 +34,10 @@ struct MTContext {
   std::array<uint32_t, MT_N> mt;
 };
 
-bool g_bHaveGlobalSeed = false;
-uint32_t g_nGlobalSeed = 0;
+// EmbedPDF: thread-confined runtime - per-thread RNG seed state so concurrent
+// workers don't race on the lazy global-seed initialization.
+EPDF_TLS bool g_bHaveGlobalSeed = false;
+EPDF_TLS uint32_t g_nGlobalSeed = 0;
 
 #if BUILDFLAG(IS_WIN)
 bool GenerateSeedFromCryptoRandom(uint32_t* pSeed) {

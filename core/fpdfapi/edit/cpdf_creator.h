@@ -11,9 +11,11 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "core/fxcrt/fx_stream.h"
+#include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/mask.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -36,6 +38,14 @@ class CPDF_Creator {
     kRemoveSecurity = (1 << 2),
     // TODO(crbug.com/42270430): Implement font subsetting.
     kSubsetNewFonts = (1 << 3),
+    kIncrementalAppendOnly = (1 << 4),
+  };
+
+  enum class FailureReason {
+    kNone,
+    kAppendOnlyOffsetTooLarge,
+    kArchiveError,
+    kOther,
   };
 
   CPDF_Creator(CPDF_Document* doc,
@@ -43,10 +53,14 @@ class CPDF_Creator {
   ~CPDF_Creator();
 
   bool Create(Mask<CreateFlags> flags, int32_t file_version);
+  FailureReason GetFailureReason() const { return failure_reason_; }
+
+  static ByteString FormatXrefOffset10ForTesting(FX_FILESIZE offset);
 
   // Experimental EmbedPDF Extension: Set encryption for documents that weren't
   // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
-  // and security_handler_ (for GetCryptoHandler() used in stream/string encryption).
+  // and security_handler_ (for GetCryptoHandler() used in stream/string
+  // encryption).
   void SetEncryption(RetainPtr<CPDF_Dictionary> encrypt_dict,
                      RetainPtr<CPDF_SecurityHandler> security_handler);
 
@@ -83,6 +97,7 @@ class CPDF_Creator {
   bool WriteOldObjs();
   bool WriteNewObjs();
   bool WriteIndirectObj(uint32_t objnum, const CPDF_Object* pObj);
+  bool CheckEmittedOffset(FX_FILESIZE offset);
 
   void RemoveSecurity();
 
@@ -101,11 +116,14 @@ class CPDF_Creator {
   FX_FILESIZE xref_start_ = 0;
   std::map<uint32_t, FX_FILESIZE> object_offsets_;
   std::vector<uint32_t> new_obj_num_array_;  // Sorted, ascending.
+  std::set<uint32_t> objects_with_refs_;
   RetainPtr<CPDF_Array> id_array_;
   int32_t file_version_ = 0;
   bool security_changed_ = false;
   bool is_incremental_ = false;
   bool is_original_ = false;
+  bool is_incremental_append_only_ = false;
+  FailureReason failure_reason_ = FailureReason::kNone;
 };
 
 #endif  // CORE_FPDFAPI_EDIT_CPDF_CREATOR_H_

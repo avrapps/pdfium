@@ -14,6 +14,7 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
+#include "core/fxcrt/unowned_ptr.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <memory>
@@ -34,6 +35,7 @@ class CPDF_DocRenderData : public CPDF_Document::RenderDataIface {
   static CPDF_DocRenderData* FromDocument(const CPDF_Document* doc);
 
   CPDF_DocRenderData();
+  explicit CPDF_DocRenderData(CPDF_DocRenderData* fallback);
   ~CPDF_DocRenderData() override;
 
   CPDF_DocRenderData(const CPDF_DocRenderData&) = delete;
@@ -53,7 +55,11 @@ class CPDF_DocRenderData : public CPDF_Document::RenderDataIface {
   RetainPtr<CPDF_TransferFunc> CreateTransferFunc(
       RetainPtr<const CPDF_Object> pObj) const;
 
+  bool CanUseFallbackForObject(const CPDF_Object* object) const;
+
  private:
+  UnownedPtr<CPDF_DocRenderData> fallback_;
+
   // TODO(tsepez): investigate this map outliving its font keys.
   std::map<CPDF_Font*, ObservedPtr<CPDF_Type3Cache>> type3_face_map_;
   std::map<RetainPtr<const CPDF_Object>,

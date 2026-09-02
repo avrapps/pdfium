@@ -36,9 +36,8 @@ CPDF_ContentParser::CPDF_ContentParser(CPDF_Page* pPage)
     return;
   }
 
-  RetainPtr<CPDF_Object> pContent =
-      pPage->GetMutableDict()->GetMutableDirectObjectFor(
-          pdfium::page_object::kContents);
+  RetainPtr<const CPDF_Object> pContent =
+      pPage->GetDict()->GetDirectObjectFor(pdfium::page_object::kContents);
   if (!pContent) {
     HandlePageContentFailure();
     return;
@@ -94,14 +93,17 @@ CPDF_ContentParser::CPDF_ContentParser(
     }
   }
 
-  RetainPtr<CPDF_Dictionary> pResources =
-      page_object_holder_->GetMutableDict()->GetMutableDictFor("Resources");
+  RetainPtr<const CPDF_Dictionary> pResources =
+      page_object_holder_->GetDict()->GetDictFor("Resources");
   parser_ = std::make_unique<CPDF_StreamContentParser>(
       page_object_holder_->GetDocument(),
-      page_object_holder_->GetMutablePageResources(),
-      page_object_holder_->GetMutableResources(), pParentMatrix,
-      page_object_holder_, std::move(pResources), form_bbox, pGraphicStates,
-      recursion_state);
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          page_object_holder_->GetPageResources().Get())),
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          page_object_holder_->GetResources().Get())),
+      pParentMatrix, page_object_holder_,
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(pResources.Get())),
+      form_bbox, pGraphicStates, recursion_state);
   parser_->GetCurStates()->set_current_transformation_matrix(form_matrix);
   parser_->GetCurStates()->set_parent_matrix(form_matrix);
   if (ClipPath.HasRef()) {
@@ -214,8 +216,11 @@ CPDF_ContentParser::Stage CPDF_ContentParser::Parse() {
     recursion_state_.parsed_set.clear();
     parser_ = std::make_unique<CPDF_StreamContentParser>(
         page_object_holder_->GetDocument(),
-        page_object_holder_->GetMutablePageResources(), nullptr, nullptr,
-        page_object_holder_, page_object_holder_->GetMutableResources(),
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+            page_object_holder_->GetPageResources().Get())),
+        nullptr, nullptr, page_object_holder_,
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+            page_object_holder_->GetResources().Get())),
         page_object_holder_->GetBBox(), nullptr, &recursion_state_);
     parser_->GetCurStates()->mutable_color_state().SetDefault();
   }

@@ -1,0 +1,100 @@
+%PDF-1.7
+% ò¤ô
+% A document with form widgets but NO /AcroForm dictionary at all, plus a
+% radio group whose second widget is absent from its parent's /Kids.
+% Exercises every EPDFForm_Repair fix: AcroForm bootstrap, /Fields linking,
+% and /Kids linking.
+1 0 obj <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+2 0 obj <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+3 0 obj <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 300]
+  /Annots [4 0 R 6 0 R 7 0 R]
+>>
+endobj
+4 0 obj <<
+  /Type /Annot
+  /Subtype /Widget
+  /FT /Tx
+  /T (orphan_text)
+  /V (hi)
+  /Rect [20 250 280 280]
+>>
+endobj
+% Radio parent: /Kids lists only widget 6; widget 7 references it via
+% /Parent but is only reachable through the page's /Annots.
+5 0 obj <<
+  /FT /Btn
+  /T (gap_radio)
+  /Ff 32768
+  /V /Off
+  /Kids [6 0 R]
+>>
+endobj
+6 0 obj <<
+  /Type /Annot
+  /Subtype /Widget
+  /Parent 5 0 R
+  /AS /Off
+  /Rect [20 200 40 220]
+  /AP << /N << /a 8 0 R /Off 9 0 R >> >>
+>>
+endobj
+7 0 obj <<
+  /Type /Annot
+  /Subtype /Widget
+  /Parent 5 0 R
+  /AS /Off
+  /Rect [60 200 80 220]
+  /AP << /N << /b 8 0 R /Off 9 0 R >> >>
+>>
+endobj
+8 0 obj <<
+  /Type /XObject
+  /Subtype /Form
+  /BBox [0 0 20 20]
+  /Length 3
+>>
+stream
+q Q
+endstream
+endobj
+9 0 obj <<
+  /Type /XObject
+  /Subtype /Form
+  /BBox [0 0 20 20]
+  /Length 3
+>>
+stream
+q Q
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000255 00000 n 
+0000000308 00000 n 
+0000000371 00000 n 
+0000000478 00000 n 
+0000000727 00000 n 
+0000000814 00000 n 
+0000000961 00000 n 
+0000001108 00000 n 
+0000001216 00000 n 
+trailer <<
+  /Root 1 0 R
+  /Size 10
+>>
+startxref
+1324
+%%EOF

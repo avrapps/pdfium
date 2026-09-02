@@ -29,6 +29,8 @@ class CPDF_Stream final : public CPDF_Object {
   // CPDF_Object:
   Type GetType() const override;
   RetainPtr<CPDF_Object> Clone() const override;
+  RetainPtr<CPDF_Object> CloneForHolder(
+      CPDF_IndirectObjectHolder* holder) const override;
   WideString GetUnicodeText() const override;
   CPDF_Stream* AsMutableStream() override;
   bool WriteTo(IFX_ArchiveStream* archive,
@@ -90,6 +92,10 @@ class CPDF_Stream final : public CPDF_Object {
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
       std::set<const CPDF_Object*>* pVisited) const override;
+  RetainPtr<CPDF_Object> CloneForHolderNonCyclic(
+      CPDF_IndirectObjectHolder* holder,
+      std::set<const CPDF_Object*>* pVisited) const override;
+  void FreezeChildren(std::set<const CPDF_Object*>* visited) override;
 
   void SetLengthInDict(int length);
 

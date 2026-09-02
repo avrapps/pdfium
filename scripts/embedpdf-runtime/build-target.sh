@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 TARGET="${1:-}"
 PDF_IS_COMPLETE_LIB=true
+# EmbedPDF: thread-confined runtime. Off by default; enabled per-target below
+# for the native server builds. wasm isolates globals per-instance, so it stays
+# off there.
+EMBEDPDF_TLS_GLOBALS=false
 
 if [[ -z "$TARGET" ]]; then
   echo "usage: $0 <target>" >&2
@@ -101,6 +108,13 @@ case "$TARGET" in
     ;;
 esac
 
+# EmbedPDF: enable per-thread PDFium globals for the native server targets so
+# the server worker pool can render in parallel in-process. wasm stays off
+# (each instance already isolates globals via its own linear memory).
+if [[ "$TARGET" != "wasm32" ]]; then
+  EMBEDPDF_TLS_GLOBALS=true
+fi
+
 PDF_RUNTIME_TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-$GN_TARGET_OS}" \
   "$SOURCE_DIR/scripts/embedpdf-runtime/ensure-deps.sh"
 
@@ -139,6 +153,7 @@ pdf_is_standalone=true
 use_debug_fission=false
 pdf_is_complete_lib=$PDF_IS_COMPLETE_LIB
 pdf_use_partition_alloc=false
+embedpdf_thread_local_globals=$EMBEDPDF_TLS_GLOBALS
 symbol_level=0
 target_os="$GN_TARGET_OS"
 target_cpu="$GN_TARGET_CPU"${EXTRA_ARGS:-}

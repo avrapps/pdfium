@@ -11,12 +11,31 @@
 
 class CPDF_Document;
 
+enum class ObjectTreeReferenceResolveMode {
+  // Resolve references through the holder stored on each CPDF_Reference. This
+  // preserves the historical traversal behavior for ordinary documents.
+  kReferenceHolder,
+
+  // Resolve all references through the document being traversed. This is needed
+  // when the document can override referenced objects, such as a layer document
+  // whose overlay should take precedence over the frozen base graph.
+  kEffectiveDocument,
+};
+
 // Traverses `document` starting with its trailer, if it has one, or starting at
 // the catalog, which always exists. The trailer should have a reference to the
 // catalog. The traversal avoids cycles.
+//
+// In `kReferenceHolder` mode, references are followed through their
+// CPDF_IndirectObjectHolder. In `kEffectiveDocument` mode, references are
+// resolved through `document` so any overlay it provides is honored.
+//
 // Returns all the PDF objects (not CPDF_Objects) the traversal reached as a set
 // of object numbers.
-std::set<uint32_t> GetObjectsWithReferences(const CPDF_Document* document);
+std::set<uint32_t> GetObjectsWithReferences(
+    const CPDF_Document* document,
+    ObjectTreeReferenceResolveMode resolve_mode =
+        ObjectTreeReferenceResolveMode::kReferenceHolder);
 
 // Same as GetObjectsWithReferences(), but only returns the objects with
 // multiple references. References that would create a cycle are ignored.
@@ -41,6 +60,8 @@ std::set<uint32_t> GetObjectsWithReferences(const CPDF_Document* document);
 // references (B). Since (B) -> (C) -> (B) creates a cycle, the (C) -> (B)
 // reference does not count.
 std::set<uint32_t> GetObjectsWithMultipleReferences(
-    const CPDF_Document* document);
+    const CPDF_Document* document,
+    ObjectTreeReferenceResolveMode resolve_mode =
+        ObjectTreeReferenceResolveMode::kReferenceHolder);
 
 #endif  // CORE_FPDFAPI_PARSER_OBJECT_TREE_TRAVERSAL_UTIL_H_

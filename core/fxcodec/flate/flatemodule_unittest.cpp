@@ -72,3 +72,117 @@ TEST(FlateModule, Encode) {
     ++i;
   }
 }
+
+namespace {
+
+DataVector<uint8_t> MakePatternedData(size_t size) {
+  DataVector<uint8_t> data(size);
+  for (size_t i = 0; i < size; ++i) {
+    data[i] = static_cast<uint8_t>((i * 31 + i / 997) & 0xff);
+  }
+  return data;
+}
+
+}  // namespace
+
+TEST(FlateModule, DecodeToSinkRoundTrip) {
+  // Larger than the sink chunk size (1 MiB) so multiple chunks are emitted.
+  const DataVector<uint8_t> original =
+      MakePatternedData(3 * 1024 * 1024 + 123);
+  const DataVector<uint8_t> compressed = FlateModule::Encode(original);
+  ASSERT_FALSE(compressed.empty());
+
+  DataVector<uint8_t> decoded;
+  size_t sink_calls = 0;
+  uint64_t total = 0;
+  FlateModule::SinkDecodeStatus status = FlateModule::FlateDecodeToSink(
+      compressed, /*max_decoded_bytes=*/0,
+      [&](pdfium::span<const uint8_t> chunk) {
+        ++sink_calls;
+        decoded.insert(decoded.end(), chunk.begin(), chunk.end());
+        return true;
+      },
+      &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kSuccess, status);
+  EXPECT_EQ(original.size(), total);
+  EXPECT_GE(sink_calls, 3u);
+  EXPECT_TRUE(decoded == original);
+}
+
+TEST(FlateModule, DecodeToSinkEmptyStream) {
+  const DataVector<uint8_t> compressed = FlateModule::Encode({});
+  size_t sink_calls = 0;
+  uint64_t total = 1;  // Poison; must be reset to 0.
+  FlateModule::SinkDecodeStatus status = FlateModule::FlateDecodeToSink(
+      compressed, /*max_decoded_bytes=*/0,
+      [&](pdfium::span<const uint8_t>) {
+        ++sink_calls;
+        return true;
+      },
+      &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kSuccess, status);
+  EXPECT_EQ(0u, total);
+  EXPECT_EQ(0u, sink_calls);
+}
+
+TEST(FlateModule, DecodeToSinkLimitExceeded) {
+  const DataVector<uint8_t> original = MakePatternedData(3 * 1024 * 1024);
+  const DataVector<uint8_t> compressed = FlateModule::Encode(original);
+
+  // A tiny cap trips before the first full chunk can be delivered.
+  size_t sink_calls = 0;
+  uint64_t total = 0;
+  FlateModule::SinkDecodeStatus status = FlateModule::FlateDecodeToSink(
+      compressed, /*max_decoded_bytes=*/100,
+      [&](pdfium::span<const uint8_t>) {
+        ++sink_calls;
+        return true;
+      },
+      &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kLimitExceeded, status);
+  EXPECT_EQ(0u, total);
+  EXPECT_EQ(0u, sink_calls);
+
+  // A one-chunk cap delivers the first chunk, then trips on the second.
+  uint64_t delivered = 0;
+  status = FlateModule::FlateDecodeToSink(
+      compressed, /*max_decoded_bytes=*/1024 * 1024,
+      [&](pdfium::span<const uint8_t> chunk) {
+        delivered += chunk.size();
+        return true;
+      },
+      &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kLimitExceeded, status);
+  EXPECT_EQ(delivered, total);
+  EXPECT_LE(total, 1024u * 1024u);
+}
+
+TEST(FlateModule, DecodeToSinkSinkAbort) {
+  const DataVector<uint8_t> original = MakePatternedData(64);
+  const DataVector<uint8_t> compressed = FlateModule::Encode(original);
+
+  uint64_t total = 0;
+  FlateModule::SinkDecodeStatus status = FlateModule::FlateDecodeToSink(
+      compressed, /*max_decoded_bytes=*/0,
+      [](pdfium::span<const uint8_t>) { return false; }, &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kSinkError, status);
+  EXPECT_EQ(0u, total);
+}
+
+TEST(FlateModule, DecodeToSinkGarbageInput) {
+  // Matches FlateOrLZWDecode(): undecodable input yields the successfully
+  // inflated prefix — here, nothing — rather than a distinct error.
+  static const char kGarbage[] = "preposterous nonsense";
+  size_t sink_calls = 0;
+  uint64_t total = 0;
+  FlateModule::SinkDecodeStatus status = FlateModule::FlateDecodeToSink(
+      pdfium::as_bytes(pdfium::span(kGarbage)), /*max_decoded_bytes=*/0,
+      [&](pdfium::span<const uint8_t>) {
+        ++sink_calls;
+        return true;
+      },
+      &total);
+  EXPECT_EQ(FlateModule::SinkDecodeStatus::kSuccess, status);
+  EXPECT_EQ(0u, total);
+  EXPECT_EQ(0u, sink_calls);
+}

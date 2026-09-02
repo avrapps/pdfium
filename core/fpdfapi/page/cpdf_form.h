@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFAPI_PAGE_CPDF_FORM_H_
 #define CORE_FPDFAPI_PAGE_CPDF_FORM_H_
 
+#include <stdint.h>
+
 #include <set>
 #include <utility>
 
@@ -32,9 +34,10 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   };
 
   // Helper method to choose the first non-null resources dictionary.
-  static CPDF_Dictionary* ChooseResourcesDict(CPDF_Dictionary* pResources,
-                                              CPDF_Dictionary* pParentResources,
-                                              CPDF_Dictionary* pPageResources);
+  static const CPDF_Dictionary* ChooseResourcesDict(
+      const CPDF_Dictionary* pResources,
+      const CPDF_Dictionary* pParentResources,
+      const CPDF_Dictionary* pPageResources);
 
   CPDF_Form(CPDF_Document* document,
             RetainPtr<CPDF_Dictionary> pPageResources,
@@ -63,14 +66,26 @@ class CPDF_Form final : public CPDF_PageObjectHolder,
   // Never returns nullptr.
   RetainPtr<const CPDF_Stream> GetStream() const;
 
+  // Rebinds this parsed form to a private clone of its backing stream. Call
+  // before serializing per-placement edits so another use of the same Form
+  // XObject cannot be changed or overwrite this form's sanitized content.
+  bool CloneBackingStreamForWrite();
+
  private:
+  // CPDF_PageObjectHolder:
+  void EnsureMutableBackingObjectForDict() override;
+
+  void RebindFormStream(RetainPtr<CPDF_Stream> stream,
+                        bool reset_parsed_content);
   void ParseContentInternal(const CPDF_AllStates* pGraphicStates,
                             const CFX_Matrix* pParentMatrix,
                             CPDF_Type3Char* pType3Char,
                             RecursionState* recursion_state);
 
   RecursionState recursion_state_;
-  RetainPtr<CPDF_Stream> const form_stream_;
+  RetainPtr<CPDF_Dictionary> const fallback_resources_;
+  mutable RetainPtr<CPDF_Stream> form_stream_;
+  mutable uint64_t form_stream_epoch_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_FORM_H_

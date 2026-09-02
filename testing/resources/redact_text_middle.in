@@ -1,0 +1,58 @@
+{{header}}
+{{object 1 0}} <<
+  /Type /Catalog
+  /Pages 2 0 R
+>>
+endobj
+{{object 2 0}} <<
+  /Type /Pages
+  /Count 1
+  /Kids [3 0 R]
+>>
+endobj
+{{object 3 0}} <<
+  /Type /Page
+  /Parent 2 0 R
+  /MediaBox [0 0 300 200]
+  /Resources <<
+    /Font <<
+      /F1 4 0 R
+    >>
+  >>
+  /Contents 5 0 R
+  /Annots [6 0 R]
+>>
+endobj
+{{object 4 0}} <<
+  /Type /Font
+  /Subtype /Type1
+  /BaseFont /Courier
+>>
+endobj
+{{object 5 0}} <<
+  {{streamlen}}
+>>
+stream
+BT
+/F1 20 Tf
+50 100 Td
+(hello secret world) Tj
+ET
+endstream
+endobj
+{{object 6 0}} <<
+  /Type /Annot
+  /Subtype /Redact
+  /NM (Redact-secret)
+  /F 4
+  /C [1 0 0]
+  /IC [0 0 0]
+  /OverlayText (REDACT)
+  /QuadPoints [120 122 195 122 120 94 195 94]
+  /Rect [120 94 195 122]
+>>
+endobj
+{{xref}}
+{{trailer}}
+{{startxref}}
+%%EOF

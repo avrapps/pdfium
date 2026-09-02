@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -61,6 +64,8 @@ remove_copied_file "$PATCH_DIR/win/resources.rc" "$SOURCE_DIR/resources.rc"
 # Reverse every known runtime patch. Each reverse is independently optional so
 # this script is safe to run before any target build, regardless of which target
 # was built last.
+reverse_patch_file "$SOURCE_DIR/third_party/skia" \
+  "$PATCH_DIR/skia/geometry-only-stroke.patch"
 reverse_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/win/build.patch"
 reverse_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/mac/build.patch"
 reverse_patch_file "$SOURCE_DIR/build" "$PATCH_DIR/wasm/build.patch"
@@ -77,3 +82,4 @@ remove_patch_backup "$SOURCE_DIR/build/config/BUILDCONFIG.gn.orig"
 remove_patch_backup "$SOURCE_DIR/build/config/compiler/BUILD.gn.orig"
 remove_patch_backup "$SOURCE_DIR/build/toolchain/apple/toolchain.gni.orig"
 remove_patch_backup "$SOURCE_DIR/build/toolchain/wasm/BUILD.gn.orig"
+remove_patch_backup "$SOURCE_DIR/BUILD.gn.orig"

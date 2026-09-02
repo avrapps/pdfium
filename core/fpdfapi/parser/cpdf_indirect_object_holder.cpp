@@ -12,6 +12,7 @@
 
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fxcrt/check.h"
 
 namespace {
@@ -37,7 +38,7 @@ RetainPtr<const CPDF_Object> CPDF_IndirectObjectHolder::GetIndirectObject(
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::GetMutableIndirectObject(
     uint32_t objnum) {
   return pdfium::WrapRetain(
-      const_cast<CPDF_Object*>(GetIndirectObjectInternal(objnum)));
+      const_cast<CPDF_Object*>(GetOrParseIndirectObjectInternal(objnum)));
 }
 
 const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(
@@ -50,9 +51,47 @@ const CPDF_Object* CPDF_IndirectObjectHolder::GetIndirectObjectInternal(
   return FilterInvalidObjNum(it->second.Get());
 }
 
+RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::FindLocalIndirectObject(
+    uint32_t objnum) const {
+  auto it = indirect_objs_.find(objnum);
+  if (it == indirect_objs_.end()) {
+    return nullptr;
+  }
+
+  return pdfium::WrapRetain(
+      const_cast<CPDF_Object*>(FilterInvalidObjNum(it->second.Get())));
+}
+
+void CPDF_IndirectObjectHolder::AddPromotedObject(
+    uint32_t objnum,
+    RetainPtr<CPDF_Object> object) {
+  DCHECK(objnum);
+  DCHECK(objnum != CPDF_Object::kInvalidObjNum);
+  CHECK(object);
+
+  DCHECK_PDF_HOLDER_MUTABLE();
+  DCHECK(!frozen_);
+  object->SetObjNum(objnum);
+  indirect_objs_[objnum] = std::move(object);
+  last_obj_num_ = std::max(last_obj_num_, objnum);
+}
+
 RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::GetOrParseIndirectObject(
     uint32_t objnum) {
   return pdfium::WrapRetain(GetOrParseIndirectObjectInternal(objnum));
+}
+
+void CPDF_IndirectObjectHolder::Freeze() {
+  if (frozen_) {
+    return;
+  }
+
+  frozen_ = true;
+  for (const auto& item : indirect_objs_) {
+    if (item.second) {
+      item.second->Freeze();
+    }
+  }
 }
 
 CPDF_Object* CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
@@ -67,6 +106,7 @@ CPDF_Object* CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
     return const_cast<CPDF_Object*>(
         FilterInvalidObjNum(insert_result.first->second.Get()));
   }
+  DCHECK(!frozen_);
   RetainPtr<CPDF_Object> pNewObj = ParseIndirectObject(objnum);
   if (!pNewObj) {
     indirect_objs_.erase(insert_result.first);
@@ -88,6 +128,8 @@ RetainPtr<CPDF_Object> CPDF_IndirectObjectHolder::ParseIndirectObject(
 
 uint32_t CPDF_IndirectObjectHolder::AddIndirectObject(
     RetainPtr<CPDF_Object> pObj) {
+  DCHECK_PDF_HOLDER_MUTABLE();
+  DCHECK(!frozen_);
   CHECK(!pObj->GetObjNum());
   pObj->SetObjNum(++last_obj_num_);
   indirect_objs_[last_obj_num_] = std::move(pObj);
@@ -108,6 +150,8 @@ bool CPDF_IndirectObjectHolder::ReplaceIndirectObjectIfHigherGeneration(
     return false;
   }
 
+  DCHECK_PDF_HOLDER_MUTABLE();
+  DCHECK(!frozen_);
   pObj->SetObjNum(objnum);
   obj_holder = std::move(pObj);
   last_obj_num_ = std::max(last_obj_num_, objnum);
@@ -120,5 +164,7 @@ void CPDF_IndirectObjectHolder::DeleteIndirectObject(uint32_t objnum) {
     return;
   }
 
+  DCHECK_PDF_HOLDER_MUTABLE();
+  DCHECK(!frozen_);
   indirect_objs_.erase(it);
 }

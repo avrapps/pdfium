@@ -7,6 +7,8 @@
 #ifndef CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_
 #define CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_
 
+#include <stdint.h>
+
 #include <memory>
 
 #include "core/fxcrt/retain_ptr.h"
@@ -19,7 +21,9 @@ class IPDF_Page;
 
 class CPDF_AnnotContext {
  public:
-  CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict, IPDF_Page* pPage);
+  CPDF_AnnotContext(RetainPtr<CPDF_Dictionary> pAnnotDict,
+                    IPDF_Page* pPage,
+                    int annot_index = -1);
   ~CPDF_AnnotContext();
 
   void SetForm(RetainPtr<CPDF_Stream> pStream);
@@ -27,16 +31,25 @@ class CPDF_AnnotContext {
   CPDF_Form* GetForm() const { return annot_form_.get(); }
 
   // Never nullptr.
-  RetainPtr<CPDF_Dictionary> GetMutableAnnotDict() { return annot_dict_; }
-  const CPDF_Dictionary* GetAnnotDict() const { return annot_dict_.Get(); }
+  RetainPtr<CPDF_Dictionary> GetMutableAnnotDict();
+  const CPDF_Dictionary* GetAnnotDict() const;
 
   // Never nullptr.
   IPDF_Page* GetPage() const { return page_; }
 
+  // Index at the time the annotation handle was created, or -1 when the
+  // handle was not created from a page annotation lookup.
+  int GetAnnotIndex() const { return annot_index_; }
+
  private:
-  std::unique_ptr<CPDF_Form> annot_form_;
-  RetainPtr<CPDF_Dictionary> const annot_dict_;
+  void RefreshAnnotDictIfNeeded() const;
+  void EnsureMutableBackingForAnnotDict();
+
+  mutable std::unique_ptr<CPDF_Form> annot_form_;
+  mutable RetainPtr<CPDF_Dictionary> annot_dict_;
   UnownedPtr<IPDF_Page> const page_;
+  const int annot_index_ = -1;
+  mutable uint64_t annot_dict_epoch_ = 0;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_ANNOTCONTEXT_H_

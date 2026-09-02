@@ -1,4 +1,5 @@
-// Copyright (c) 2026 CloudPDF / EmbedPDF
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 //
 // Cloudy (scalloped) border path generator for PDF annotations.
 // Derived from Apache PDFBox's CloudyBorder.java:

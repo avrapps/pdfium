@@ -14,6 +14,9 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pageobjectholder.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
+#include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/check_op.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
@@ -23,10 +26,10 @@ CPDF_Form::RecursionState::RecursionState() = default;
 CPDF_Form::RecursionState::~RecursionState() = default;
 
 // static
-CPDF_Dictionary* CPDF_Form::ChooseResourcesDict(
-    CPDF_Dictionary* pResources,
-    CPDF_Dictionary* pParentResources,
-    CPDF_Dictionary* pPageResources) {
+const CPDF_Dictionary* CPDF_Form::ChooseResourcesDict(
+    const CPDF_Dictionary* pResources,
+    const CPDF_Dictionary* pParentResources,
+    const CPDF_Dictionary* pPageResources) {
   if (pResources) {
     return pResources;
   }
@@ -45,17 +48,19 @@ CPDF_Form::CPDF_Form(CPDF_Document* doc,
                      RetainPtr<CPDF_Dictionary> pPageResources,
                      RetainPtr<CPDF_Stream> pFormStream,
                      CPDF_Dictionary* pParentResources)
-    : CPDF_PageObjectHolder(doc,
-                            pFormStream->GetMutableDict(),
-                            pPageResources,
-                            pdfium::WrapRetain(ChooseResourcesDict(
-                                pFormStream->GetMutableDict()
-                                    ->GetMutableDictFor("Resources")
-                                    .Get(),
-                                pParentResources,
-                                pPageResources.Get()))),
+    : CPDF_PageObjectHolder(
+          doc,
+          pdfium::WrapRetain(
+              const_cast<CPDF_Dictionary*>(pFormStream->GetDict().Get())),
+          pPageResources,
+          nullptr),
+      fallback_resources_(
+          pParentResources ? pdfium::WrapRetain(pParentResources)
+                           : std::move(pPageResources)),
       form_stream_(std::move(pFormStream)) {
-  LoadTransparencyInfo();
+  CPDF_DocumentViewScope document_view(doc);
+  RebindFormStream(form_stream_, /*reset_parsed_content=*/false);
+  form_stream_epoch_ = doc ? doc->GetOverlayEpoch() : 0;
 }
 
 CPDF_Form::~CPDF_Form() = default;
@@ -78,13 +83,16 @@ void CPDF_Form::ParseContentInternal(const CPDF_AllStates* pGraphicStates,
                                      const CFX_Matrix* pParentMatrix,
                                      CPDF_Type3Char* pType3Char,
                                      RecursionState* recursion_state) {
+  CPDF_DocumentViewScope document_view(GetDocument());
+  RetainPtr<const CPDF_Stream> stream = GetStream();
+
   if (GetParseState() == ParseState::kParsed) {
     return;
   }
 
   if (GetParseState() == ParseState::kNotParsed) {
     StartParse(std::make_unique<CPDF_ContentParser>(
-        GetStream(), this, pGraphicStates, pParentMatrix, pType3Char,
+        std::move(stream), this, pGraphicStates, pParentMatrix, pType3Char,
         recursion_state ? recursion_state : &recursion_state_));
   }
   DCHECK_EQ(GetParseState(), ParseState::kParsing);
@@ -118,11 +126,114 @@ CFX_FloatRect CPDF_Form::CalcBoundingBox() const {
 }
 
 RetainPtr<CPDF_Stream> CPDF_Form::GetMutableFormStream() {
+  CPDF_Document* doc = GetDocument();
+  if (!doc || !form_stream_) {
+    return form_stream_;
+  }
+
+  // Rebind a cached base stream to the effective layer object before asking
+  // the document for a mutable version.
+  (void)GetStream();
+  const uint32_t objnum = form_stream_->GetObjNum();
+  DCHECK(objnum);
+  RetainPtr<CPDF_Object> live = doc->GetMutableIndirectObject(objnum);
+  if (live && live.Get() != form_stream_.Get()) {
+    RebindFormStream(pdfium::WrapRetain(live->AsMutableStream()),
+                     /*reset_parsed_content=*/false);
+  }
+  form_stream_epoch_ = doc->GetOverlayEpoch();
   return form_stream_;
 }
 
+void CPDF_Form::EnsureMutableBackingObjectForDict() {
+  RetainPtr<CPDF_Stream> live_stream = GetMutableFormStream();
+  if (live_stream) {
+    dict_ = live_stream->GetMutableDict();
+  }
+}
+
 RetainPtr<const CPDF_Stream> CPDF_Form::GetStream() const {
+  CPDF_Document* doc = GetDocument();
+  if (!doc || !form_stream_) {
+    return form_stream_;
+  }
+
+  const uint64_t current_epoch = doc->GetOverlayEpoch();
+  if (form_stream_epoch_ == current_epoch) {
+    return form_stream_;
+  }
+  form_stream_epoch_ = current_epoch;
+
+  const uint32_t objnum = form_stream_->GetObjNum();
+  if (objnum != 0) {
+    RetainPtr<const CPDF_Object> effective = doc->GetIndirectObject(objnum);
+    const CPDF_Stream* effective_stream =
+        effective ? effective->AsStream() : nullptr;
+    if (effective_stream && effective_stream != form_stream_.Get()) {
+      const_cast<CPDF_Form*>(this)->RebindFormStream(
+          pdfium::WrapRetain(const_cast<CPDF_Stream*>(effective_stream)),
+          /*reset_parsed_content=*/true);
+    }
+  }
   return form_stream_;
+}
+
+bool CPDF_Form::CloneBackingStreamForWrite() {
+  CPDF_Document* doc = GetDocument();
+  RetainPtr<const CPDF_Stream> source = GetStream();
+  if (!doc || !source) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Stream> clone = ToStream(source->CloneForHolder(doc));
+  if (!clone) {
+    return false;
+  }
+
+  // The form dictionary clone keeps indirect resource references by design.
+  // Make the effective resource dictionary private too, since content
+  // generation may add or prune resource names for the sanitized stream.
+  if (resources_) {
+    RetainPtr<CPDF_Dictionary> cloned_resources =
+        ToDictionary(resources_->CloneForHolder(doc));
+    if (!cloned_resources) {
+      return false;
+    }
+    clone->GetMutableDict()->SetFor("Resources", std::move(cloned_resources));
+  }
+
+  if (doc->AddIndirectObject(clone) == 0) {
+    return false;
+  }
+  RebindFormStream(std::move(clone), /*reset_parsed_content=*/false);
+  return true;
+}
+
+void CPDF_Form::RebindFormStream(RetainPtr<CPDF_Stream> stream,
+                                 bool reset_parsed_content) {
+  CHECK(stream);
+  form_stream_ = std::move(stream);
+  dict_ = form_stream_->GetMutableDict();
+
+  RetainPtr<const CPDF_Dictionary> stream_resources =
+      dict_->GetDictFor("Resources");
+  resources_ = stream_resources
+                   ? pdfium::WrapRetain(
+                         const_cast<CPDF_Dictionary*>(stream_resources.Get()))
+                   : fallback_resources_;
+
+  const uint64_t current_epoch =
+      GetDocument() ? GetDocument()->GetOverlayEpoch() : 0;
+  dict_epoch_ = current_epoch;
+  resources_epoch_ = current_epoch;
+
+  if (reset_parsed_content) {
+    ResetParsedContent();
+    recursion_state_.parsed_set.clear();
+  }
+
+  transparency_ = CPDF_Transparency();
+  LoadTransparencyInfo();
 }
 
 std::optional<std::pair<RetainPtr<CFX_DIBitmap>, CFX_Matrix>>

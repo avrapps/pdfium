@@ -22,6 +22,9 @@ class CPDF_Reference final : public CPDF_Object {
   // CPDF_Object:
   Type GetType() const override;
   RetainPtr<CPDF_Object> Clone() const override;
+  RetainPtr<CPDF_Object> CloneForHolder(
+      CPDF_IndirectObjectHolder* holder) const override;
+  RetainPtr<CPDF_Object> GetMutableDirect() override;
   ByteString GetString() const override;
   float GetNumber() const override;
   int GetInteger() const override;
@@ -45,6 +48,9 @@ class CPDF_Reference final : public CPDF_Object {
   const CPDF_Dictionary* GetDictInternal() const override;
   RetainPtr<CPDF_Object> CloneNonCyclic(
       bool bDirect,
+      std::set<const CPDF_Object*>* pVisited) const override;
+  RetainPtr<CPDF_Object> CloneForHolderNonCyclic(
+      CPDF_IndirectObjectHolder* holder,
       std::set<const CPDF_Object*>* pVisited) const override;
 
   const CPDF_Object* FastGetDirect() const;

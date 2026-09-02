@@ -1,5 +1,5 @@
-// Copyright 2025
-// Use of this source code is governed by a BSD-style license.
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 
 #include "core/fpdfapi/edit/cpdf_text_redactor.h"
 
@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fpdfapi/edit/cpdf_path_redactor.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
 #include "core/fpdfapi/font/cpdf_cidfont.h"
@@ -42,112 +43,26 @@
 
 namespace {
 
-// Represents a single subpath within a complex path (e.g., one letter in a vector logo).
-struct Subpath {
-  std::vector<CFX_Path::Point> points;
-  CFX_FloatRect bounding_box;
-};
-
-// Calculate bounding box for a set of path points.
-CFX_FloatRect CalculateSubpathBoundingBox(const std::vector<CFX_Path::Point>& points) {
-  if (points.empty())
-    return CFX_FloatRect();
-  
-  float min_x = points[0].point_.x;
-  float max_x = points[0].point_.x;
-  float min_y = points[0].point_.y;
-  float max_y = points[0].point_.y;
-  
-  for (const auto& pt : points) {
-    min_x = std::min(min_x, pt.point_.x);
-    max_x = std::max(max_x, pt.point_.x);
-    min_y = std::min(min_y, pt.point_.y);
-    max_y = std::max(max_y, pt.point_.y);
-  }
-  
-  return CFX_FloatRect(min_x, min_y, max_x, max_y);
-}
-
-// Extract individual subpaths from a complex path.
-// Each subpath starts with a kMove point and ends at the next kMove or end of path.
-std::vector<Subpath> ExtractSubpaths(const CFX_Path& path) {
-  std::vector<Subpath> subpaths;
-  const std::vector<CFX_Path::Point>& points = path.GetPoints();
-  
-  if (points.empty())
-    return subpaths;
-  
-  Subpath current;
-  for (size_t i = 0; i < points.size(); ++i) {
-    const auto& pt = points[i];
-    
-    // A kMove point starts a new subpath (unless it's the first point or current is empty)
-    if (pt.type_ == CFX_Path::Point::Type::kMove && !current.points.empty()) {
-      // Finish current subpath
-      current.bounding_box = CalculateSubpathBoundingBox(current.points);
-      subpaths.push_back(std::move(current));
-      current = Subpath();
-    }
-    
-    current.points.push_back(pt);
-  }
-  
-  // Don't forget the last subpath
-  if (!current.points.empty()) {
-    current.bounding_box = CalculateSubpathBoundingBox(current.points);
-    subpaths.push_back(std::move(current));
-  }
-  
-  return subpaths;
-}
-
-// Rebuild a CFX_Path from a vector of subpaths.
-void RebuildPath(CPDF_Path& path, const std::vector<Subpath>& subpaths) {
-  // Create a new path and copy points from remaining subpaths
-  CPDF_Path new_path;
-  new_path.Emplace();
-  
-  for (const auto& subpath : subpaths) {
-    for (const auto& pt : subpath.points) {
-      if (pt.close_figure_) {
-        new_path.AppendPointAndClose(pt.point_, pt.type_);
-      } else {
-        new_path.AppendPoint(pt.point_, pt.type_);
-      }
-    }
-  }
-  
-  path = new_path;
-}
-
-// Check if a subpath's bounding box (transformed to page space) is inside any redaction rect.
-bool IsSubpathInsideAnyRedactRect(const CFX_FloatRect& subpath_bbox,
-                                   const CFX_Matrix& total_transform,
-                                   pdfium::span<const CFX_FloatRect> page_rects) {
-  CFX_FloatRect bbox_page = total_transform.TransformRect(subpath_bbox);
-  bbox_page.Normalize();
-  
-  for (const auto& redact_rect : page_rects) {
-    if (bbox_page.left >= redact_rect.left &&
-        bbox_page.right <= redact_rect.right &&
-        bbox_page.bottom >= redact_rect.bottom &&
-        bbox_page.top <= redact_rect.top) {
-      return true;
-    }
-  }
-  return false;
-}
-
 static void AddBlackOverlayPaths(CPDF_Page* page,
-                                 pdfium::span<const CFX_FloatRect> rects_page_space) {
-  if (!page || rects_page_space.empty())
+                                 pdfium::span<const RedactRegion> regions) {
+  if (!page || regions.empty())
     return;
 
-  for (const auto& r : rects_page_space) {
+  for (const RedactRegion& region : regions) {
     auto po = std::make_unique<CPDF_PathObject>();
     po->set_stroke(false);
     po->set_filltype(CFX_FillRenderOptions::FillType::kWinding);
-    po->path().AppendFloatRect(r);        // left/bottom/right/top in PAGE USER SPACE
+    if (region.has_quad) {
+      // Fill the exact oriented mark (ring order US → UE → LE → LS).
+      po->path().AppendPoint(region.quad[0], CFX_Path::Point::Type::kMove);
+      po->path().AppendPoint(region.quad[1], CFX_Path::Point::Type::kLine);
+      po->path().AppendPoint(region.quad[3], CFX_Path::Point::Type::kLine);
+      po->path().AppendPointAndClose(region.quad[2],
+                                     CFX_Path::Point::Type::kLine);
+    } else {
+      // left/bottom/right/top in PAGE USER SPACE
+      po->path().AppendFloatRect(region.bbox);
+    }
     po->SetPathMatrix(CFX_Matrix());      // identity
     po->CalcBoundingBox();
     po->SetDirty(true);
@@ -171,15 +86,139 @@ inline bool IntersectsAny(const CFX_FloatRect& box,
   return false;
 }
 
+/* ── oriented-region geometry ─────────────────────────────────────────────
+ * Region and glyph quads are stored in FS_QUADPOINTSF SLOT order
+ * (upper-start, upper-end, lower-start, lower-end); the convex RING visits
+ * slots {0, 1, 3, 2}. Intersection is a separating-axis test with the same
+ * open-interval semantics as `Intersects` above: touching edges don't hit. */
+
+constexpr int kQuadRing[4] = {0, 1, 3, 2};
+constexpr float kRegionQuadTolerance = 1e-4f;
+
+std::array<CFX_PointF, 4> QuadFromRect(const CFX_FloatRect& r) {
+  return {CFX_PointF(r.left, r.top), CFX_PointF(r.right, r.top),
+          CFX_PointF(r.left, r.bottom), CFX_PointF(r.right, r.bottom)};
+}
+
+CFX_FloatRect BBoxOfQuadCorners(const std::array<CFX_PointF, 4>& q) {
+  for (const CFX_PointF& p : q) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
+      return CFX_FloatRect();
+    }
+  }
+  CFX_FloatRect bbox(q[0]);
+  for (size_t i = 1; i < q.size(); ++i) {
+    bbox.UpdateRect(q[i]);
+  }
+  return bbox;
+}
+
+bool ProjectionsSeparated(const std::array<CFX_PointF, 4>& a,
+                          const std::array<CFX_PointF, 4>& b,
+                          const CFX_PointF& axis) {
+  if (axis.x == 0 && axis.y == 0)
+    return false;  // degenerate edge — not a separating candidate
+  float a_min = 0, a_max = 0, b_min = 0, b_max = 0;
+  for (int i = 0; i < 4; ++i) {
+    const float pa = a[i].x * axis.x + a[i].y * axis.y;
+    const float pb = b[i].x * axis.x + b[i].y * axis.y;
+    if (i == 0) {
+      a_min = a_max = pa;
+      b_min = b_max = pb;
+    } else {
+      a_min = std::min(a_min, pa);
+      a_max = std::max(a_max, pa);
+      b_min = std::min(b_min, pb);
+      b_max = std::max(b_max, pb);
+    }
+  }
+  return a_max <= b_min || b_max <= a_min;  // open interval: touch == miss
+}
+
+bool HasSeparatingAxis(const std::array<CFX_PointF, 4>& a,
+                       const std::array<CFX_PointF, 4>& b) {
+  for (int i = 0; i < 4; ++i) {
+    const CFX_PointF& p = a[kQuadRing[i]];
+    const CFX_PointF& q = a[kQuadRing[(i + 1) % 4]];
+    const CFX_PointF axis(-(q.y - p.y), q.x - p.x);
+    if (ProjectionsSeparated(a, b, axis))
+      return true;
+  }
+  return false;
+}
+
+bool ConvexQuadsIntersect(const std::array<CFX_PointF, 4>& a,
+                          const std::array<CFX_PointF, 4>& b) {
+  return !HasSeparatingAxis(a, b) && !HasSeparatingAxis(b, a);
+}
+
+bool FiniteCorners(const std::array<CFX_PointF, 4>& q) {
+  for (const CFX_PointF& p : q) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y))
+      return false;
+  }
+  return true;
+}
+
+// Well-formed zigzag reading: same validation the AP generators apply —
+// finite, usable edge lengths, opposite edges parallel same-direction,
+// consistent winding on both ends.
+bool CornersWellFormed(const std::array<CFX_PointF, 4>& q) {
+  if (!FiniteCorners(q))
+    return false;
+  const CFX_PointF upper = q[1] - q[0];
+  const CFX_PointF lower = q[3] - q[2];
+  const CFX_PointF start_side = q[2] - q[0];
+  const CFX_PointF end_side = q[3] - q[1];
+  const float len_u = std::hypot(upper.x, upper.y);
+  const float len_l = std::hypot(lower.x, lower.y);
+  const float len_s = std::hypot(start_side.x, start_side.y);
+  const float len_e = std::hypot(end_side.x, end_side.y);
+  if (len_u <= kRegionQuadTolerance || len_l <= kRegionQuadTolerance ||
+      len_s <= kRegionQuadTolerance || len_e <= kRegionQuadTolerance) {
+    return false;
+  }
+  if (upper.x * lower.x + upper.y * lower.y <= 0)
+    return false;
+  if (start_side.x * end_side.x + start_side.y * end_side.y <= 0)
+    return false;
+  const float start_area = upper.x * start_side.y - upper.y * start_side.x;
+  const float end_area = lower.x * end_side.y - lower.y * end_side.x;
+  if (std::fabs(start_area) <= kRegionQuadTolerance * len_u * len_s)
+    return false;
+  if (std::fabs(end_area) <= kRegionQuadTolerance * len_l * len_e)
+    return false;
+  return std::signbit(start_area) == std::signbit(end_area);
+}
+
+bool CornersAxisAligned(const std::array<CFX_PointF, 4>& q) {
+  const float scale = std::max(
+      {1.0f, std::hypot(q[1].x - q[0].x, q[1].y - q[0].y),
+       std::hypot(q[3].x - q[2].x, q[3].y - q[2].y),
+       std::hypot(q[2].x - q[0].x, q[2].y - q[0].y),
+       std::hypot(q[3].x - q[1].x, q[3].y - q[1].y)});
+  const float tol = kRegionQuadTolerance * scale;
+  return std::fabs(q[0].y - q[1].y) <= tol && std::fabs(q[2].y - q[3].y) <= tol &&
+         std::fabs(q[0].x - q[2].x) <= tol && std::fabs(q[1].x - q[3].x) <= tol;
+}
+
+std::vector<CFX_FloatRect> BBoxesOfRegions(
+    pdfium::span<const RedactRegion> regions) {
+  std::vector<CFX_FloatRect> bboxes;
+  bboxes.reserve(regions.size());
+  for (const RedactRegion& r : regions)
+    bboxes.push_back(r.bbox);
+  return bboxes;
+}
+
 // Compute a glyph's bbox in PAGE USER SPACE.
 //
 // Note: CPDF_TextObject::GetItemInfo() origin_ is already adjusted for vertical
 // writing, so we do not apply any extra vertical origin shift here.
-CFX_FloatRect GlyphBBoxInPage(const CPDF_TextObject* to,
-                              CPDF_Font* font,
-                              uint32_t code,
-                              const CPDF_TextObject::Item& it,
-                              const CFX_Matrix& parent_to_page) {
+CFX_FloatRect GlyphLocalBox(const CPDF_TextObject* to,
+                            CPDF_Font* font,
+                            uint32_t code,
+                            const CPDF_TextObject::Item& it) {
   FX_RECT r_font_units = font->GetCharBBox(code);
   const float fs = to->GetFontSize();
 
@@ -192,6 +231,15 @@ CFX_FloatRect GlyphBBoxInPage(const CPDF_TextObject* to,
   glyph_box.right += it.origin_.x;
   glyph_box.bottom += it.origin_.y;
   glyph_box.top += it.origin_.y;
+  return glyph_box;
+}
+
+CFX_FloatRect GlyphBBoxInPage(const CPDF_TextObject* to,
+                              CPDF_Font* font,
+                              uint32_t code,
+                              const CPDF_TextObject::Item& it,
+                              const CFX_Matrix& parent_to_page) {
+  CFX_FloatRect glyph_box = GlyphLocalBox(to, font, code, it);
 
   // Text matrix to page space (for this text object), then parent to page.
   const CFX_Matrix tm = to->GetTextMatrix();
@@ -277,7 +325,8 @@ void FlushSegment(RedactionState* s, float kerning_mth) {
 }
 
 RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
-                                    pdfium::span<const CFX_FloatRect> page_rects,
+                                    pdfium::span<const RedactRegion> regions,
+                                    pdfium::span<const CFX_FloatRect> region_bboxes,
                                     const CFX_Matrix& parent_to_page) {
   CPDF_Font* font = to->GetFont();
   if (!font)
@@ -286,6 +335,33 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
   const CPDF_CIDFont* cid = font->AsCIDFont();
   const bool is_vert = cid && cid->IsVertWriting();
   const float fs = to->GetFontSize();
+
+  // Oriented dispatch. The legacy AABB test stays byte-identical for the
+  // axis-aligned world (rect-only regions × upright text); a rotated marked
+  // region OR rotated text switches glyph decisions to exact quad-vs-quad
+  // intersection, so a rotated mark neither leaks its own glyphs nor
+  // destroys the neighbouring line that merely shares its bounding box.
+  bool any_region_quad = false;
+  for (const RedactRegion& region : regions) {
+    if (region.has_quad) {
+      any_region_quad = true;
+      break;
+    }
+  }
+  const CFX_Matrix tm_for_orientation = to->GetTextMatrix();
+  auto local_to_page = [&](const CFX_PointF& p) {
+    return parent_to_page.Transform(tm_for_orientation.Transform(p));
+  };
+  const CFX_PointF basis_o = local_to_page(CFX_PointF(0, 0));
+  const CFX_PointF basis_x = local_to_page(CFX_PointF(1, 0)) - basis_o;
+  const CFX_PointF basis_y = local_to_page(CFX_PointF(0, 1)) - basis_o;
+  const float len_x = std::hypot(basis_x.x, basis_x.y);
+  const float len_y = std::hypot(basis_y.x, basis_y.y);
+  const bool object_upright =
+      len_x > 0 && len_y > 0 && basis_x.x > 0 && basis_y.y > 0 &&
+      std::fabs(basis_x.y) <= kRegionQuadTolerance * len_x &&
+      std::fabs(basis_y.x) <= kRegionQuadTolerance * len_y;
+  const bool oriented = any_region_quad || !object_upright;
 
   bool any_kept = false;
   bool any_removed = false;
@@ -309,9 +385,33 @@ RedactOutcome RedactTextObjectMulti(CPDF_TextObject* to,
     }
 
     // Decide keep/remove by intersection.
-    const CFX_FloatRect gbox =
-        GlyphBBoxInPage(to, font, it.char_code_, it, parent_to_page);
-    const bool hit = IntersectsAny(gbox, page_rects);
+    bool hit;
+    if (!oriented) {
+      const CFX_FloatRect gbox =
+          GlyphBBoxInPage(to, font, it.char_code_, it, parent_to_page);
+      hit = IntersectsAny(gbox, region_bboxes);
+    } else {
+      // The glyph's exact oriented cell: the SAME local box the AABB path
+      // uses, with its corners transformed individually instead of collapsed.
+      const CFX_FloatRect local = GlyphLocalBox(to, font, it.char_code_, it);
+      const std::array<CFX_PointF, 4> glyph_quad = {
+          local_to_page(CFX_PointF(local.left, local.top)),
+          local_to_page(CFX_PointF(local.right, local.top)),
+          local_to_page(CFX_PointF(local.left, local.bottom)),
+          local_to_page(CFX_PointF(local.right, local.bottom))};
+      const CFX_FloatRect glyph_bbox = BBoxOfQuadCorners(glyph_quad);
+      hit = false;
+      for (const RedactRegion& region : regions) {
+        if (!Intersects(glyph_bbox, region.bbox))
+          continue;
+        const std::array<CFX_PointF, 4> region_quad =
+            region.has_quad ? region.quad : QuadFromRect(region.bbox);
+        if (ConvexQuadsIntersect(glyph_quad, region_quad)) {
+          hit = true;
+          break;
+        }
+      }
+    }
 
     if (hit) {
       // Merge the removed glyph's advance into the pending kerning pool.
@@ -480,24 +580,18 @@ static bool DecodeJpegSMask(RetainPtr<const CPDF_Stream> stream,
   return true;
 }
 
-// Returns true if the image stream was overwritten.
-static bool RedactImageObject(CPDF_Page* page,
-                              CPDF_ImageObject* iobj,
-                              pdfium::span<const CFX_FloatRect> page_rects,
-                              const CFX_Matrix& parent_to_page,
-                              bool fill_black) {
-  if (!iobj)
-    return false;
-  CPDF_Image* image = iobj->GetImage();
-  if (!image)
-    return false;
-
-  CPDF_Document* doc = page->GetDocument();
-  const int W = image->GetPixelWidth();
-  const int H = image->GetPixelHeight();
-  if (W <= 0 || H <= 0)
-    return false;
-
+// Sanitizes an intersecting image. Once intersection is established, any
+// decode or stream-replacement failure is reported as a hard failure so the
+// caller cannot flatten a successful-looking overlay over recoverable pixels.
+static RedactResult RedactImageObject(
+    CPDF_Page* page,
+    CPDF_ImageObject* iobj,
+    pdfium::span<const CFX_FloatRect> page_rects,
+    const CFX_Matrix& parent_to_page,
+    bool fill_black) {
+  if (!page || !iobj) {
+    return {.succeeded = false};
+  }
   // Object -> page for this placement.
   // Order matters: apply image's internal matrix first, THEN the form placement.
   const CFX_Matrix img_to_page = iobj->matrix() * parent_to_page;
@@ -513,13 +607,26 @@ static bool RedactImageObject(CPDF_Page* page,
       break;
     }
   }
-  if (!touches)
-    return false;
+  if (!touches) {
+    return {};
+  }
+
+  CPDF_Image* image = iobj->GetImage();
+  CPDF_Document* doc = page->GetDocument();
+  if (!image || !doc) {
+    return {.succeeded = false};
+  }
+  const int W = image->GetPixelWidth();
+  const int H = image->GetPixelHeight();
+  if (W <= 0 || H <= 0) {
+    return {.succeeded = false};
+  }
 
   // Try to load the image via standard DIB path
   RetainPtr<CFX_DIBBase> dib = image->LoadDIBBase();
-  if (!dib)
-    return false;
+  if (!dib) {
+    return {.succeeded = false};
+  }
 
   const int bpp        = dib->GetBPP();
   const bool is_mask   = dib->IsMaskFormat();
@@ -554,8 +661,9 @@ static bool RedactImageObject(CPDF_Page* page,
     }
   }
 
-  if (!(is_1bit || is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32))
-    return false;
+  if (!(is_1bit || is_gray8 || is_rgb24 || is_bgra32 || is_bgrx32)) {
+    return {.succeeded = false};
+  }
 
   // If the image has an SMask, keep it so we preserve transparency.
   RetainPtr<const CPDF_Stream> orig_smask_stream;
@@ -571,8 +679,9 @@ static bool RedactImageObject(CPDF_Page* page,
   // Map page-space rects into image pixel space (bottom-up).
   std::vector<CFX_FloatRect> img_rects;
   PageRectsToImageGrid(img_to_page, W, H, page_rects, &img_rects);
-  if (img_rects.empty())
-    return false;
+  if (img_rects.empty()) {
+    return {};
+  }
 
   struct IRect { int x0, y0, x1, y1; };
   std::vector<IRect> boxes;
@@ -586,8 +695,9 @@ static bool RedactImageObject(CPDF_Page* page,
     if (b.x1 > b.x0 && b.y1 > b.y0)
       boxes.push_back(b);
   }
-  if (boxes.empty())
-    return false;
+  if (boxes.empty()) {
+    return {};
+  }
 
   const uint8_t fill_val = fill_black ? 0x00 : 0xFF;
 
@@ -719,8 +829,9 @@ static bool RedactImageObject(CPDF_Page* page,
     }
   }
 
-  if (total_redacted_px == 0)
-    return false;
+  if (total_redacted_px == 0) {
+    return {.succeeded = false};
+  }
 
   // Ensure redaction regions are fully opaque in the SMask/alpha plane.
   if (process_alpha) {
@@ -765,7 +876,8 @@ static bool RedactImageObject(CPDF_Page* page,
     page->ClearRenderContext();
     iobj->SetDirty(true);
   }
-  return ok;
+  return ok ? RedactResult{.changed = true}
+            : RedactResult{.succeeded = false};
 }
 
 // Redact all text objects inside a holder (page or form). If `recurse_forms` is
@@ -773,14 +885,21 @@ static bool RedactImageObject(CPDF_Page* page,
 //
 // `to_page` transforms holder-local space to PAGE USER SPACE.
 // Redact all page objects inside a holder (page or form).
-bool RedactHolder(CPDF_Page* page_for_cache,
-                  CPDF_PageObjectHolder* holder,
-                  pdfium::span<const CFX_FloatRect> page_rects,
-                  const CFX_Matrix& to_page,
-                  bool recurse_forms,
-                  bool fill_black) {
-  bool changed = false;
+RedactResult RedactHolder(CPDF_Page* page_for_cache,
+                          CPDF_PageObjectHolder* holder,
+                          pdfium::span<const RedactRegion> regions,
+                          pdfium::span<const CFX_FloatRect> region_bboxes,
+                          const CPDF_PathRedactor& path_redactor,
+                          const CFX_Matrix& to_page,
+                          bool recurse_forms,
+                          bool fill_black) {
+  RedactResult result;
   std::vector<CPDF_PageObject*> to_remove;
+  struct PendingPathInsertion {
+    CPDF_PathObject* after = nullptr;
+    std::unique_ptr<CPDF_PathObject> object;
+  };
+  std::vector<PendingPathInsertion> path_insertions;
 
   for (auto it = holder->begin(); it != holder->end(); ++it) {
     CPDF_PageObject* po = it->get();
@@ -788,87 +907,56 @@ bool RedactHolder(CPDF_Page* page_for_cache,
       continue;
 
     if (CPDF_TextObject* to = po->AsText()) {
-      const RedactOutcome out = RedactTextObjectMulti(to, page_rects, to_page);
+      const RedactOutcome out =
+          RedactTextObjectMulti(to, regions, region_bboxes, to_page);
       if (out == RedactOutcome::kRemovedAll) {
         to_remove.push_back(po);
-        changed = true;
+        result.changed = true;
       } else if (out == RedactOutcome::kModified) {
-        changed = true;
+        result.changed = true;
       }
       continue;
     }
 
     if (CPDF_ImageObject* io = po->AsImage()) {
-      if (RedactImageObject(page_for_cache, io, page_rects, to_page, fill_black)) {
-        changed = true;
+      const RedactResult image_result = RedactImageObject(
+          page_for_cache, io, region_bboxes, to_page, fill_black);
+      result.changed |= image_result.changed;
+      if (!image_result.succeeded) {
+        result.succeeded = false;
+        return result;
       }
       continue;
     }
 
     if (CPDF_PathObject* path = po->AsPath()) {
-      // Order matters: apply path's internal matrix first, THEN the form placement.
-      CFX_Matrix total_transform = path->matrix() * to_page;
-      
-      // Extract subpaths from the path (e.g., individual letters in a vector logo)
-      const CFX_Path* cfx_path = path->path().GetObject();
-      if (!cfx_path) {
-        continue;
+      PathRedactionResult path_result = path_redactor.Redact(path, to_page);
+      if (!path_result.succeeded) {
+        result.succeeded = false;
+        return result;
       }
-      
-      std::vector<Subpath> subpaths = ExtractSubpaths(*cfx_path);
-      
-      if (subpaths.empty()) {
-        continue;
+      if (path_result.remove_original) {
+        to_remove.push_back(path);
       }
-      
-      // Check each subpath individually against redaction rects
-      std::vector<Subpath> remaining_subpaths;
-      bool any_removed = false;
-      
-      for (const auto& subpath : subpaths) {
-        if (IsSubpathInsideAnyRedactRect(subpath.bounding_box, total_transform, page_rects)) {
-          // This subpath should be redacted
-          any_removed = true;
-        } else {
-          // Keep this subpath
-          remaining_subpaths.push_back(subpath);
-        }
+      if (path_result.trailing_object) {
+        path_insertions.push_back(
+            {.after = path, .object = std::move(path_result.trailing_object)});
       }
-      
-      if (any_removed) {
-        if (remaining_subpaths.empty()) {
-          // All subpaths were redacted - remove the entire path object
-          to_remove.push_back(path);
-        } else {
-          // Some subpaths remain - rebuild the path with only the remaining subpaths
-          RebuildPath(path->path(), remaining_subpaths);
-          path->CalcBoundingBox();
-          path->SetDirty(true);
-        }
-        changed = true;
-      }
+      result.changed |= path_result.changed;
       continue;
     }
 
     if (CPDF_ShadingObject* shading = po->AsShading()) {
-      // Shading objects have a bounding box - check if it's fully inside any redaction rect
-      CFX_FloatRect shading_bbox = shading->GetRect();
-      
-      // Transform to page space
-      CFX_FloatRect bbox_page = to_page.TransformRect(shading_bbox);
-      bbox_page.Normalize();
-      
-      // Check if the shading bbox is fully inside any redaction rect
-      for (const auto& redact_rect : page_rects) {
-        if (bbox_page.left >= redact_rect.left &&
-            bbox_page.right <= redact_rect.right &&
-            bbox_page.bottom >= redact_rect.bottom &&
-            bbox_page.top <= redact_rect.top) {
-          to_remove.push_back(shading);
-          changed = true;
-          break;
-        }
+      PathRedactionResult shading_result =
+          path_redactor.RedactShading(shading, to_page);
+      if (!shading_result.succeeded) {
+        result.succeeded = false;
+        return result;
       }
+      if (shading_result.remove_original) {
+        to_remove.push_back(shading);
+      }
+      result.changed |= shading_result.changed;
       continue;
     }
 
@@ -880,12 +968,23 @@ bool RedactHolder(CPDF_Page* page_for_cache,
 
         const CFX_Matrix placement = fo->form_matrix();
         const CFX_Matrix next_to_page = to_page * placement;
-        const bool form_changed = RedactHolder(page_for_cache, form, page_rects, next_to_page, true, fill_black);
+        const RedactResult form_result =
+            RedactHolder(page_for_cache, form, regions, region_bboxes,
+                         path_redactor, next_to_page, true, fill_black);
 
-        if (form_changed) {
+        if (!form_result.succeeded) {
+          result.succeeded = false;
+          return result;
+        }
+        if (form_result.changed) {
+          if (!form->CloneBackingStreamForWrite()) {
+            result.succeeded = false;
+            return result;
+          }
           CPDF_PageContentGenerator form_gen(form);
           form_gen.GenerateContent();
-          changed = true;
+          fo->SetDirty(true);
+          result.changed = true;
         }
       }
     }
@@ -896,62 +995,120 @@ bool RedactHolder(CPDF_Page* page_for_cache,
     for (CPDF_PageObject* obj : to_remove) {
       holder->RemovePageObject(obj);
     }
-    changed = true;
+    result.changed = true;
   }
 
-  return changed;
+  for (PendingPathInsertion& insertion : path_insertions) {
+    size_t index = 0;
+    while (index < holder->GetPageObjectCount() &&
+           holder->GetPageObjectByIndex(index) != insertion.after) {
+      ++index;
+    }
+    if (index == holder->GetPageObjectCount() ||
+        !holder->InsertPageObjectAtIndex(index + 1,
+                                         std::move(insertion.object))) {
+      result.succeeded = false;
+      return result;
+    }
+  }
+
+  return result;
 }
 
 }  // namespace
 
-bool RedactTextInRect(CPDF_Page* page,
-                      const CFX_FloatRect& page_space_rect_in,
-                      bool recurse_forms,
-                      bool draw_black_boxes) {
-  if (!page)
-    return false;
-
-  CFX_FloatRect r = page_space_rect_in;
-  r.Normalize();
-  const CFX_Matrix identity;
-
-  const CFX_FloatRect rects[] = {r};
-  const bool changed =
-      RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
-                   /*fill_black=*/draw_black_boxes);
-
-  if (draw_black_boxes) {
-    AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top
+std::optional<RedactRegion> RedactRegionFromQuadCorners(
+    const std::array<CFX_PointF, 4>& corners) {
+  if (!FiniteCorners(corners)) {
+    return std::nullopt;
   }
-
-  // Adding a stream is a change; reflect that.
-  return changed || draw_black_boxes;
+  RedactRegion region;
+  region.bbox = BBoxOfQuadCorners(corners);
+  region.bbox.Normalize();
+  if (CornersWellFormed(corners) && !CornersAxisAligned(corners)) {
+    region.has_quad = true;
+    region.quad = corners;
+  }
+  return region;
 }
 
-bool RedactTextInRects(CPDF_Page* page,
-                       pdfium::span<const CFX_FloatRect> page_space_rects_in,
-                       bool recurse_forms,
-                       bool draw_black_boxes) {
-  if (!page || page_space_rects_in.empty())
+bool RedactRegionIntersectsRect(const RedactRegion& region,
+                                const CFX_FloatRect& rect) {
+  CFX_FloatRect r = rect;
+  r.Normalize();
+  if (!Intersects(r, region.bbox))
     return false;
+  if (!region.has_quad)
+    return true;
+  return ConvexQuadsIntersect(QuadFromRect(r), region.quad);
+}
 
-  // Normalize copies.
-  std::vector<CFX_FloatRect> rects;
-  rects.reserve(page_space_rects_in.size());
-  for (const auto& rr : page_space_rects_in) {
-    CFX_FloatRect r = rr;
-    r.Normalize();
-    rects.push_back(r);
+RedactResult RedactTextInRegions(CPDF_Page* page,
+                                 pdfium::span<const RedactRegion> regions_in,
+                                 bool recurse_forms,
+                                 bool draw_black_boxes) {
+  if (!page || regions_in.empty()) {
+    return {.succeeded = false};
+  }
+
+  // Normalized copies (quads validated by the region constructors).
+  std::vector<RedactRegion> regions(regions_in.begin(), regions_in.end());
+  for (RedactRegion& region : regions)
+    region.bbox.Normalize();
+  const std::vector<CFX_FloatRect> bboxes = BBoxesOfRegions(regions);
+  const CPDF_PathRedactor path_redactor{pdfium::span(regions)};
+  if (!path_redactor.IsValid()) {
+    return {.succeeded = false};
   }
 
   const CFX_Matrix identity;
-  const bool changed =
-      RedactHolder(page, page, pdfium::span(rects), identity, recurse_forms,
+  RedactResult result =
+      RedactHolder(page, page, pdfium::span(regions), pdfium::span(bboxes),
+                   path_redactor, identity, recurse_forms,
                    /*fill_black=*/draw_black_boxes);
-
-  if (draw_black_boxes) {
-    AddBlackOverlayPaths(page, pdfium::span(rects));  // paint on top
+  if (!result.succeeded) {
+    return result;
   }
 
-  return changed || draw_black_boxes;
+  if (draw_black_boxes) {
+    AddBlackOverlayPaths(page, pdfium::span(regions));  // paint on top
+    result.changed = true;
+  }
+
+  return result;
+}
+
+RedactResult RedactTextInRect(CPDF_Page* page,
+                              const CFX_FloatRect& page_space_rect_in,
+                              bool recurse_forms,
+                              bool draw_black_boxes) {
+  if (!page) {
+    return {.succeeded = false};
+  }
+
+  RedactRegion region;
+  region.bbox = page_space_rect_in;
+  const RedactRegion regions[] = {region};
+  return RedactTextInRegions(page, pdfium::span(regions), recurse_forms,
+                             draw_black_boxes);
+}
+
+RedactResult RedactTextInRects(
+    CPDF_Page* page,
+    pdfium::span<const CFX_FloatRect> page_space_rects_in,
+    bool recurse_forms,
+    bool draw_black_boxes) {
+  if (!page || page_space_rects_in.empty()) {
+    return {.succeeded = false};
+  }
+
+  std::vector<RedactRegion> regions;
+  regions.reserve(page_space_rects_in.size());
+  for (const CFX_FloatRect& rect : page_space_rects_in) {
+    RedactRegion region;
+    region.bbox = rect;
+    regions.push_back(region);
+  }
+  return RedactTextInRegions(page, pdfium::span(regions), recurse_forms,
+                             draw_black_boxes);
 }

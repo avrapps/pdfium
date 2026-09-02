@@ -1,6 +1,5 @@
-// Copyright 2025 The EmbedPDF Authors
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2025 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 
 // Experimental EmbedPDF outline/destination/action helpers and APIs.
 // These functions are factored out of fpdf_doc.cpp to keep that file small.

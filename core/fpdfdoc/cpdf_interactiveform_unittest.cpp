@@ -10,6 +10,8 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -57,18 +59,67 @@ TEST_F(CPDFInteractiveFormTest, LoadFieldsWithReferencedNames) {
   bad_stream_field_dict->SetNewFor<CPDF_Reference>("T", doc.get(),
                                                    bad_stream->GetObjNum());
 
-  // Let `interactive_form` parse the dictionaries above and fix them up.
-  CPDF_InteractiveForm interactive_form(doc.get());
+  const uint32_t last_obj_num = doc->GetLastObjNum();
 
-  auto good_string_field_t = good_string_field_dict->GetStringFor("T");
-  ASSERT_TRUE(good_string_field_t);
-  EXPECT_EQ("good_string", good_string_field_t->GetString());
+  // Let `interactive_form` parse the dictionaries above.
+  std::unique_ptr<CPDF_InteractiveForm> interactive_form;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    interactive_form = std::make_unique<CPDF_InteractiveForm>(doc.get());
+  }
 
-  auto bad_name_field_t = bad_name_field_dict->GetStringFor("T");
-  ASSERT_TRUE(bad_name_field_t);
-  EXPECT_TRUE(bad_name_field_t->GetString().IsEmpty());
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+  EXPECT_TRUE(ToReference(good_string_field_dict->GetObjectFor("T")));
+  EXPECT_TRUE(ToReference(bad_name_field_dict->GetObjectFor("T")));
+  EXPECT_TRUE(ToReference(bad_stream_field_dict->GetObjectFor("T")));
 
-  auto bad_stream_field_t = bad_stream_field_dict->GetStringFor("T");
-  ASSERT_TRUE(bad_stream_field_t);
-  EXPECT_TRUE(bad_stream_field_t->GetString().IsEmpty());
+  EXPECT_EQ(
+      1u, interactive_form->CountFields(WideString::FromASCII("good_string")));
+  EXPECT_EQ(0u,
+            interactive_form->CountFields(WideString::FromASCII("bad_name")));
+  EXPECT_EQ(1u, interactive_form->CountFields(WideString()));
+}
+
+TEST_F(CPDFInteractiveFormTest, LoadFieldDoesNotCopyInheritedTypeToParent) {
+  auto doc = std::make_unique<CPDF_TestDocument>();
+  doc->CreateNewDoc();
+  RetainPtr<CPDF_Dictionary> root = doc->GetMutableRoot();
+  ASSERT_TRUE(root);
+
+  auto acroform_dict = root->SetNewFor<CPDF_Dictionary>("AcroForm");
+  auto fields_array = acroform_dict->SetNewFor<CPDF_Array>("Fields");
+
+  auto parent_dict = doc->NewIndirect<CPDF_Dictionary>();
+  parent_dict->SetNewFor<CPDF_String>("T", "Parent");
+  fields_array->AppendNew<CPDF_Reference>(doc.get(), parent_dict->GetObjNum());
+
+  auto kids = parent_dict->SetNewFor<CPDF_Array>("Kids");
+  auto widget_dict = kids->AppendNew<CPDF_Dictionary>();
+  widget_dict->SetNewFor<CPDF_Name>("Type", "Annot");
+  widget_dict->SetNewFor<CPDF_Name>("Subtype", "Widget");
+  widget_dict->SetNewFor<CPDF_Name>("FT", "Tx");
+  widget_dict->SetNewFor<CPDF_Number>("Ff", 123);
+  widget_dict->SetNewFor<CPDF_Reference>("Parent", doc.get(),
+                                         parent_dict->GetObjNum());
+
+  ASSERT_FALSE(parent_dict->KeyExist("FT"));
+  ASSERT_FALSE(parent_dict->KeyExist("Ff"));
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+
+  std::unique_ptr<CPDF_InteractiveForm> interactive_form;
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    interactive_form = std::make_unique<CPDF_InteractiveForm>(doc.get());
+  }
+
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+  EXPECT_FALSE(parent_dict->KeyExist("FT"));
+  EXPECT_FALSE(parent_dict->KeyExist("Ff"));
+  EXPECT_EQ(1u,
+            interactive_form->CountFields(WideString::FromASCII("Parent")));
+  CPDF_FormField* field =
+      interactive_form->GetField(0, WideString::FromASCII("Parent"));
+  ASSERT_TRUE(field);
+  EXPECT_EQ(FormFieldType::kTextField, field->GetFieldType());
+  EXPECT_EQ(1, field->CountControls());
 }

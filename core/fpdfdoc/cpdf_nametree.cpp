@@ -455,8 +455,8 @@ RetainPtr<const CPDF_Array> LookupOldStyleNamedDest(CPDF_Document* doc,
 
 }  // namespace
 
-CPDF_NameTree::CPDF_NameTree(RetainPtr<CPDF_Dictionary> pRoot)
-    : root_(std::move(pRoot)) {
+CPDF_NameTree::CPDF_NameTree(RetainPtr<CPDF_Dictionary> pRoot, bool read_only)
+    : root_(std::move(pRoot)), read_only_(read_only) {
   DCHECK(root_);
 }
 
@@ -481,7 +481,34 @@ std::unique_ptr<CPDF_NameTree> CPDF_NameTree::Create(CPDF_Document* doc,
   }
 
   return pdfium::WrapUnique(
-      new CPDF_NameTree(std::move(pCategory)));  // Private ctor.
+      new CPDF_NameTree(std::move(pCategory), /*read_only=*/false));
+}
+
+// static
+std::unique_ptr<CPDF_NameTree> CPDF_NameTree::CreateForReading(
+    CPDF_Document* doc,
+    ByteStringView category) {
+  const CPDF_Dictionary* root = doc->GetRoot();
+  if (!root) {
+    return nullptr;
+  }
+
+  RetainPtr<const CPDF_Dictionary> names = root->GetDictFor("Names");
+  if (!names) {
+    return nullptr;
+  }
+
+  RetainPtr<const CPDF_Dictionary> category_dict = names->GetDictFor(category);
+  if (!category_dict) {
+    return nullptr;
+  }
+
+  // CPDF_NameTree stores a mutable pointer because the same class also backs
+  // AddValueAndName() / DeleteValueAndName(). `read_only_` prevents mutation
+  // through trees constructed by this const traversal path.
+  return pdfium::WrapUnique(new CPDF_NameTree(
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(category_dict.Get())),
+      /*read_only=*/true));
 }
 
 // static
@@ -509,14 +536,14 @@ std::unique_ptr<CPDF_NameTree> CPDF_NameTree::CreateWithRootNameArray(
                                       pCategory->GetObjNum());
   }
 
-  return pdfium::WrapUnique(new CPDF_NameTree(pCategory));  // Private ctor.
+  return pdfium::WrapUnique(new CPDF_NameTree(pCategory, /*read_only=*/false));
 }
 
 // static
 std::unique_ptr<CPDF_NameTree> CPDF_NameTree::CreateForTesting(
     CPDF_Dictionary* pRoot) {
   return pdfium::WrapUnique(
-      new CPDF_NameTree(pdfium::WrapRetain(pRoot)));  // Private ctor.
+      new CPDF_NameTree(pdfium::WrapRetain(pRoot), /*read_only=*/false));
 }
 
 // static
@@ -524,7 +551,7 @@ RetainPtr<const CPDF_Array> CPDF_NameTree::LookupNamedDest(
     CPDF_Document* doc,
     const ByteString& name) {
   RetainPtr<const CPDF_Array> dest_array;
-  std::unique_ptr<CPDF_NameTree> name_tree = Create(doc, "Dests");
+  std::unique_ptr<CPDF_NameTree> name_tree = CreateForReading(doc, "Dests");
   if (name_tree) {
     dest_array = name_tree->LookupNewStyleNamedDest(name);
   }
@@ -541,6 +568,7 @@ size_t CPDF_NameTree::GetCount() const {
 
 bool CPDF_NameTree::AddValueAndName(RetainPtr<CPDF_Object> pObj,
                                     const WideString& name) {
+  CHECK(!read_only_);
   NodeToInsert node_to_insert;
   // Handle the corner case where the root node is empty. i.e. No kids and no
   // names. In which case, just insert into it and skip all the searches.
@@ -601,6 +629,7 @@ bool CPDF_NameTree::AddValueAndName(RetainPtr<CPDF_Object> pObj,
 }
 
 bool CPDF_NameTree::DeleteValueAndName(size_t nIndex) {
+  CHECK(!read_only_);
   std::optional<IndexSearchResult> result =
       SearchNameNodeByIndex(root_.Get(), nIndex);
   if (!result) {

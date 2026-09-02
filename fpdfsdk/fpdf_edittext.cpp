@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -84,15 +86,6 @@ static_assert(static_cast<int>(TextRenderingMode::MODE_LAST) ==
 namespace {
 
 constexpr uint32_t kMaxBfCharBfRangeEntries = 100;
-
-// Turn a quad into its axis-aligned bounding box in page space.
-CFX_FloatRect BBoxOfQuad(const FS_QUADPOINTSF& q) {
-  const float l = std::min(std::min(q.x1, q.x2), std::min(q.x3, q.x4));
-  const float r = std::max(std::max(q.x1, q.x2), std::max(q.x3, q.x4));
-  const float b = std::min(std::min(q.y1, q.y2), std::min(q.y3, q.y4));
-  const float t = std::max(std::max(q.y1, q.y2), std::max(q.y3, q.y4));
-  return CFX_FloatRect(l, b, r, t);
-}
 
 ByteString BaseFontNameForType(const CFX_Font* font, int font_type) {
   ByteString name = font_type == FPDF_FONT_TYPE1 ? font->GetPsName()
@@ -1117,7 +1110,9 @@ EPDFText_RedactInRect(FPDF_PAGE page, const FS_RECTF* rect, FPDF_BOOL recurse, F
 
   CPDF_Page* p = CPDFPageFromFPDFPage(page);
   const CFX_FloatRect r = CFXFloatRectFromFSRectF(*rect);
-  return RedactTextInRect(p, r, !!recurse, !!draw_black_boxes);
+  const RedactResult result =
+      RedactTextInRect(p, r, !!recurse, !!draw_black_boxes);
+  return result.succeeded && result.changed;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1132,10 +1127,24 @@ EPDFText_RedactInQuads(FPDF_PAGE page,
 
   CPDF_Page* p = CPDFPageFromFPDFPage(page);
 
-  std::vector<CFX_FloatRect> rects;
-  rects.reserve(count);
-  for (size_t i = 0; i < count; ++i)
-    rects.push_back(BBoxOfQuad(quads[i]));
+  // Oriented well-formed quads redact their exact cells; axis-aligned and
+  // malformed input degrades to the all-corner AABB.
+  std::vector<RedactRegion> regions;
+  regions.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const FS_QUADPOINTSF& q = quads[i];
+    const std::array<CFX_PointF, 4> corners = {
+        CFX_PointF(q.x1, q.y1), CFX_PointF(q.x2, q.y2),
+        CFX_PointF(q.x3, q.y3), CFX_PointF(q.x4, q.y4)};
+    std::optional<RedactRegion> region =
+        RedactRegionFromQuadCorners(corners);
+    if (!region.has_value() || region->bbox.IsEmpty()) {
+      return false;
+    }
+    regions.push_back(std::move(*region));
+  }
 
-  return RedactTextInRects(p, pdfium::span(rects), !!recurse, !!draw_black_boxes);
+  const RedactResult result = RedactTextInRegions(
+      p, pdfium::span(regions), !!recurse, !!draw_black_boxes);
+  return result.succeeded && result.changed;
 }

@@ -33,6 +33,7 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -41,6 +42,7 @@
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/scoped_set_insertion.h"
 #include "core/fxcrt/span.h"
@@ -67,7 +69,9 @@ const char kPathOperatorClosePath = 'h';
 const char kPathOperatorRectangle[] = "re";
 
 using OpCodes = std::map<uint32_t, void (CPDF_StreamContentParser::*)()>;
-OpCodes* g_opcodes = nullptr;
+// EmbedPDF: thread-confined runtime - per-thread content-operator dispatch
+// table, lazily built and torn down on the owning thread.
+EPDF_TLS OpCodes* g_opcodes = nullptr;
 
 CFX_FloatRect GetShadingBBox(CPDF_ShadingPattern* pShading,
                              const CFX_Matrix& matrix) {
@@ -187,6 +191,7 @@ ByteStringView FindFullName(pdfium::span<const AbbrPair> table,
 void ReplaceAbbr(RetainPtr<CPDF_Object> pObj);
 
 void ReplaceAbbrInDictionary(CPDF_Dictionary* dict) {
+  CPDF_ScopedInlineRewrite inline_rewrite;
   std::vector<AbbrReplacementOp> replacements;
   {
     CPDF_DictionaryLocker locker(dict);
@@ -228,6 +233,7 @@ void ReplaceAbbrInDictionary(CPDF_Dictionary* dict) {
 }
 
 void ReplaceAbbrInArray(CPDF_Array* pArray) {
+  CPDF_ScopedInlineRewrite inline_rewrite;
   for (size_t i = 0; i < pArray->size(); ++i) {
     RetainPtr<CPDF_Object> pElement = pArray->GetMutableObjectAt(i);
     if (pElement->IsName()) {
@@ -398,9 +404,10 @@ CPDF_StreamContentParser::CPDF_StreamContentParser(
     : document_(document),
       page_resources_(pPageResources),
       parent_resources_(pParentResources),
-      resources_(CPDF_Form::ChooseResourcesDict(pResources.Get(),
-                                                pParentResources.Get(),
-                                                pPageResources.Get())),
+      resources_(pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+          CPDF_Form::ChooseResourcesDict(pResources.Get(),
+                                         pParentResources.Get(),
+                                         pPageResources.Get())))),
       object_holder_(pObjHolder),
       recursion_state_(recursion_state),
       bbox_(rcBBox),
@@ -624,7 +631,10 @@ void CPDF_StreamContentParser::Handle_BeginMarkedContent_Dictionary() {
 
   if (pProperty->IsName()) {
     ByteString property_name = pProperty->GetString();
-    RetainPtr<CPDF_Dictionary> pHolder = FindResourceHolder("Properties");
+    RetainPtr<const CPDF_Dictionary> const_holder =
+        FindResourceHolder("Properties");
+    RetainPtr<CPDF_Dictionary> pHolder =
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_holder.Get()));
     if (!pHolder || !pHolder->GetDictFor(property_name.AsStringView())) {
       return;
     }
@@ -779,7 +789,10 @@ void CPDF_StreamContentParser::Handle_ExecuteXObject() {
     return;
   }
 
-  RetainPtr<CPDF_Stream> pXObject(ToStream(FindResourceObj("XObject", name)));
+  RetainPtr<const CPDF_Stream> const_xobject =
+      ToStream(FindResourceObj("XObject", name));
+  RetainPtr<CPDF_Stream> pXObject =
+      pdfium::WrapRetain(const_cast<CPDF_Stream*>(const_xobject.Get()));
   if (!pXObject) {
     return;
   }
@@ -946,8 +959,10 @@ void CPDF_StreamContentParser::Handle_SetGray_Stroke() {
 
 void CPDF_StreamContentParser::Handle_SetExtendGraphState() {
   ByteString name = GetString(0);
-  RetainPtr<CPDF_Dictionary> pGS =
+  RetainPtr<const CPDF_Dictionary> const_gs =
       ToDictionary(FindResourceObj("ExtGState", name));
+  RetainPtr<CPDF_Dictionary> pGS =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_gs.Get()));
   if (!pGS) {
     return;
   }
@@ -1196,13 +1211,13 @@ void CPDF_StreamContentParser::Handle_SetFont() {
   }
 }
 
-RetainPtr<CPDF_Dictionary> CPDF_StreamContentParser::FindResourceHolder(
+RetainPtr<const CPDF_Dictionary> CPDF_StreamContentParser::FindResourceHolder(
     ByteStringView type) {
   if (!resources_) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> dict = resources_->GetMutableDictFor(type);
+  RetainPtr<const CPDF_Dictionary> dict = resources_->GetDictFor(type);
   if (dict) {
     return dict;
   }
@@ -1211,21 +1226,22 @@ RetainPtr<CPDF_Dictionary> CPDF_StreamContentParser::FindResourceHolder(
     return nullptr;
   }
 
-  return page_resources_->GetMutableDictFor(type);
+  return page_resources_->GetDictFor(type);
 }
 
-RetainPtr<CPDF_Object> CPDF_StreamContentParser::FindResourceObj(
+RetainPtr<const CPDF_Object> CPDF_StreamContentParser::FindResourceObj(
     ByteStringView type,
     const ByteString& name) {
-  RetainPtr<CPDF_Dictionary> pHolder = FindResourceHolder(type);
-  return pHolder ? pHolder->GetMutableDirectObjectFor(name.AsStringView())
-                 : nullptr;
+  RetainPtr<const CPDF_Dictionary> pHolder = FindResourceHolder(type);
+  return pHolder ? pHolder->GetDirectObjectFor(name.AsStringView()) : nullptr;
 }
 
 RetainPtr<CPDF_Font> CPDF_StreamContentParser::FindFont(
     const ByteString& name) {
-  RetainPtr<CPDF_Dictionary> font_dict(
+  RetainPtr<const CPDF_Dictionary> const_font_dict(
       ToDictionary(FindResourceObj("Font", name)));
+  RetainPtr<CPDF_Dictionary> font_dict =
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_font_dict.Get()));
   if (!font_dict) {
     return CPDF_Font::GetStockFont(document_, CFX_Font::kDefaultAnsiFontName);
   }
@@ -1284,7 +1300,9 @@ RetainPtr<CPDF_ColorSpace> CPDF_StreamContentParser::FindColorSpace(
 
 RetainPtr<CPDF_Pattern> CPDF_StreamContentParser::FindPattern(
     const ByteString& name) {
-  RetainPtr<CPDF_Object> pPattern = FindResourceObj("Pattern", name);
+  RetainPtr<const CPDF_Object> const_pattern = FindResourceObj("Pattern", name);
+  RetainPtr<CPDF_Object> pPattern =
+      pdfium::WrapRetain(const_cast<CPDF_Object*>(const_pattern.Get()));
   if (!pPattern || (!pPattern->IsDictionary() && !pPattern->IsStream())) {
     return nullptr;
   }
@@ -1294,7 +1312,9 @@ RetainPtr<CPDF_Pattern> CPDF_StreamContentParser::FindPattern(
 
 RetainPtr<CPDF_ShadingPattern> CPDF_StreamContentParser::FindShading(
     const ByteString& name) {
-  RetainPtr<CPDF_Object> pPattern = FindResourceObj("Shading", name);
+  RetainPtr<const CPDF_Object> const_pattern = FindResourceObj("Shading", name);
+  RetainPtr<CPDF_Object> pPattern =
+      pdfium::WrapRetain(const_cast<CPDF_Object*>(const_pattern.Get()));
   if (!pPattern || (!pPattern->IsDictionary() && !pPattern->IsStream())) {
     return nullptr;
   }

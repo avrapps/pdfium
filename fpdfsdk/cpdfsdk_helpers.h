@@ -11,6 +11,7 @@
 
 #include "build/build_config.h"
 #include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
@@ -60,6 +61,57 @@ CPDF_Document* CPDFDocumentFromFPDFDocument(FPDF_DOCUMENT doc);
 // EmbedPDF Extension: purge runtime signature-validation status for a document
 // on close. Defined in fpdf_signature.cpp (which owns CollectSignatures).
 void EPDF_CleanupSignatureStatus(FPDF_DOCUMENT document);
+
+// Typed public-handle doors for APIs that traverse the live PDF graph. Keeping
+// the view scope beside the unwrap makes effective-layer resolution structural
+// instead of relying on every call site to remember a separate scope.
+class ScopedFPDFDocumentView final {
+ public:
+  explicit ScopedFPDFDocumentView(FPDF_DOCUMENT document);
+  ~ScopedFPDFDocumentView();
+
+  ScopedFPDFDocumentView(const ScopedFPDFDocumentView&) = delete;
+  ScopedFPDFDocumentView& operator=(const ScopedFPDFDocumentView&) = delete;
+
+  CPDF_Document* Get() const { return document_; }
+  explicit operator bool() const { return document_ != nullptr; }
+
+ private:
+  CPDF_Document* const document_;
+  CPDF_DocumentViewScope view_scope_;
+};
+
+class ScopedFPDFPageView final {
+ public:
+  explicit ScopedFPDFPageView(FPDF_PAGE page);
+  ~ScopedFPDFPageView();
+
+  ScopedFPDFPageView(const ScopedFPDFPageView&) = delete;
+  ScopedFPDFPageView& operator=(const ScopedFPDFPageView&) = delete;
+
+  CPDF_Page* Get() const { return page_; }
+  explicit operator bool() const { return page_ != nullptr; }
+
+ private:
+  CPDF_Page* const page_;
+  CPDF_DocumentViewScope view_scope_;
+};
+
+class ScopedFPDFAnnotationView final {
+ public:
+  explicit ScopedFPDFAnnotationView(FPDF_ANNOTATION annotation);
+  ~ScopedFPDFAnnotationView();
+
+  ScopedFPDFAnnotationView(const ScopedFPDFAnnotationView&) = delete;
+  ScopedFPDFAnnotationView& operator=(const ScopedFPDFAnnotationView&) = delete;
+
+  CPDF_AnnotContext* Get() const { return annotation_; }
+  explicit operator bool() const { return annotation_ != nullptr; }
+
+ private:
+  CPDF_AnnotContext* const annotation_;
+  CPDF_DocumentViewScope view_scope_;
+};
 
 // Conversions to/from incomplete FPDF_ API types.
 inline FPDF_ACTION FPDFActionFromCPDFDictionary(const CPDF_Dictionary* action) {

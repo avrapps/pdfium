@@ -1,4 +1,5 @@
-// Copyright (c) 2026 CloudPDF / EmbedPDF
+// Copyright 2026 CloudPDF LTD
+// SPDX-License-Identifier: Apache-2.0
 //
 // Derived from Apache PDFBox's CloudyBorder.java:
 // https://github.com/apache/pdfbox/blob/trunk/pdfbox/src/main/java/org/apache/pdfbox/pdmodel/interactive/annotation/handlers/CloudyBorder.java

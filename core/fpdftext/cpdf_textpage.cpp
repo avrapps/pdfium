@@ -282,6 +282,57 @@ float GetFontSize(const CPDF_TextObject* text_object) {
   return has_font ? text_object->GetFontSize() : kDefaultFontSize;
 }
 
+std::optional<CPDF_TextPage::CharLocalGeometry> GetCharLocalBoxes(
+    const CPDF_TextObject* text_object,
+    uint32_t char_code,
+    const CFX_PointF& local_origin) {
+  if (!text_object || !text_object->GetFont() ||
+      char_code == CPDF_Font::kInvalidCharCode) {
+    return std::nullopt;
+  }
+
+  RetainPtr<CPDF_Font> font = text_object->GetFont();
+  const float font_size = GetFontSize(text_object);
+
+  const FX_RECT tight_rect = font->GetCharBBox(char_code);
+  const float glyph_scale = text_object->GetFontSize() / 1000;
+  CFX_FloatRect tight_box(tight_rect.left * glyph_scale + local_origin.x,
+                          tight_rect.bottom * glyph_scale + local_origin.y,
+                          tight_rect.right * glyph_scale + local_origin.x,
+                          tight_rect.top * glyph_scale + local_origin.y);
+  if (fabsf(tight_box.top - tight_box.bottom) < kSizeEpsilon) {
+    tight_box.top = tight_box.bottom + glyph_scale;
+  }
+  if (fabsf(tight_box.right - tight_box.left) < kSizeEpsilon) {
+    tight_box.right = tight_box.left + text_object->GetCharWidth(char_code);
+  }
+
+  const bool is_vert_writing = font->IsVertWriting();
+  CFX_FloatRect loose_box = tight_box;
+  if (is_vert_writing && font->IsCIDFont()) {
+    CPDF_CIDFont* cid_font = font->AsCIDFont();
+    const uint16_t cid = cid_font->CIDFromCharCode(char_code);
+    const CFX_Point16 vertical_origin = cid_font->GetVertOrigin(cid);
+    const float offset_x = (vertical_origin.x - 500) * font_size / 1000.0f;
+    const float offset_y = vertical_origin.y * font_size / 1000.0f;
+    const float height = cid_font->GetVertWidth(cid) * font_size / 1000.0f;
+    loose_box = CFX_FloatRect(
+        local_origin.x + offset_x, local_origin.y + offset_y + height,
+        local_origin.x + offset_x + font_size, local_origin.y + offset_y);
+  } else {
+    const FX_RECT font_bbox = font->GetFontBBox();
+    if (font_bbox.Valid() && font_bbox.Height() != 0) {
+      const float width = text_object->GetCharWidth(char_code);
+      loose_box =
+          CFX_FloatRect(local_origin.x, font_bbox.bottom * font_size / 1000.0f,
+                        local_origin.x + (is_vert_writing ? -width : width),
+                        font_bbox.top * font_size / 1000.0f);
+    }
+  }
+
+  return CPDF_TextPage::CharLocalGeometry{loose_box, tight_box};
+}
+
 CFX_FloatRect GetLooseBounds(const CPDF_TextPage::CharInfo& charinfo) {
   if (charinfo.char_box().IsEmpty()) {
     return charinfo.char_box();
@@ -352,18 +403,45 @@ CPDF_TextPage::CharInfo::CharInfo() = default;
 CPDF_TextPage::CharInfo::CharInfo(CharType char_type,
                                   uint32_t char_code,
                                   wchar_t unicode,
-                                  CFX_PointF origin,
-                                  CFX_FloatRect char_box,
+                                  CFX_PointF page_origin,
+                                  std::optional<CFX_PointF> local_origin,
+                                  CFX_FloatRect page_char_box,
                                   CFX_Matrix matrix,
                                   CPDF_TextObject* text_object)
     : char_type_(char_type),
       unicode_(unicode),
       char_code_(char_code),
-      origin_(origin),
-      char_box_(char_box),
+      origin_(page_origin),
+      local_origin_(local_origin),
+      char_box_(page_char_box),
       matrix_(matrix),
       text_object_(text_object) {
   loose_char_box_ = GetLooseBounds(*this);
+}
+
+// static
+CPDF_TextPage::CharInfo CPDF_TextPage::CharInfo::RealGlyph(
+    CharType char_type,
+    uint32_t char_code,
+    wchar_t unicode,
+    CFX_PointF local_origin,
+    CFX_FloatRect page_char_box,
+    CFX_Matrix matrix,
+    CPDF_TextObject* text_object) {
+  return CharInfo(char_type, char_code, unicode, matrix.Transform(local_origin),
+                  local_origin, page_char_box, matrix, text_object);
+}
+
+// static
+CPDF_TextPage::CharInfo CPDF_TextPage::CharInfo::Synthetic(
+    CharType char_type,
+    wchar_t unicode,
+    CFX_PointF page_origin,
+    CFX_FloatRect page_char_box,
+    CFX_Matrix matrix,
+    CPDF_TextObject* text_object) {
+  return CharInfo(char_type, CPDF_Font::kInvalidCharCode, unicode, page_origin,
+                  std::nullopt, page_char_box, matrix, text_object);
 }
 
 CPDF_TextPage::CharInfo::CharInfo(const CharInfo&) = default;
@@ -587,6 +665,26 @@ float CPDF_TextPage::GetCharFontSize(size_t index) const {
 CFX_FloatRect CPDF_TextPage::GetCharLooseBounds(size_t index) const {
   CHECK_LT(index, char_list_.size());
   return char_list_[index].loose_char_box();
+}
+
+std::optional<CPDF_TextPage::CharLocalGeometry>
+CPDF_TextPage::GetCharLocalGeometry(size_t index) const {
+  CHECK_LT(index, char_list_.size());
+  const CharInfo& charinfo = char_list_[index];
+  if (!charinfo.local_origin()) {
+    return std::nullopt;
+  }
+
+  std::optional<CharLocalGeometry> boxes = GetCharLocalBoxes(
+      charinfo.text_object(), charinfo.char_code(), *charinfo.local_origin());
+  if (!boxes) {
+    return std::nullopt;
+  }
+
+  if (boxes->tight_box) {
+    boxes->loose_box.Union(*boxes->tight_box);
+  }
+  return boxes;
 }
 
 WideString CPDF_TextPage::GetPageText(int start, int count) const {
@@ -1051,9 +1149,9 @@ void CPDF_TextPage::ProcessMarkedContent(const TransformedTextObject& obj) {
     CFX_FloatRect char_box(rect);
     char_box.Translate(k * step, 0);
     temp_text_buf_.AppendChar(wChar);
-    temp_char_list_.push_back(
-        CharInfo(CharType::kPiece, CPDF_Font::kInvalidCharCode, wChar,
-                 pTextObj->GetPos(), char_box, matrix, pTextObj));
+    temp_char_list_.push_back(CharInfo::Synthetic(CharType::kPiece, wChar,
+                                                  pTextObj->GetPos(), char_box,
+                                                  matrix, pTextObj));
   }
 }
 
@@ -1405,8 +1503,8 @@ void CPDF_TextPage::ProcessTextObjectItems(CPDF_TextObject* text_object,
       if (threshold && spacing && spacing >= threshold) {
         temp_text_buf_.AppendChar(L' ');
         CFX_PointF origin = matrix.Transform(item.origin_);
-        temp_char_list_.push_back(CharInfo(
-            CharType::kGenerated, CPDF_Font::kInvalidCharCode, L' ', origin,
+        temp_char_list_.push_back(CharInfo::Synthetic(
+            CharType::kGenerated, L' ', origin,
             CFX_FloatRect(origin.x, origin.y, origin.x, origin.y), form_matrix,
             text_object));
       }
@@ -1423,24 +1521,14 @@ void CPDF_TextPage::ProcessTextObjectItems(CPDF_TextObject* text_object,
       char_type = CharType::kNotUnicode;
     }
 
-    const FX_RECT rect = font->GetCharBBox(item.char_code_);
-    const float fFontSize = text_object->GetFontSize() / 1000;
-    CFX_FloatRect char_box(rect.left * fFontSize + item.origin_.x,
-                           rect.bottom * fFontSize + item.origin_.y,
-                           rect.right * fFontSize + item.origin_.x,
-                           rect.top * fFontSize + item.origin_.y);
-    if (fabsf(char_box.top - char_box.bottom) < kSizeEpsilon) {
-      char_box.top = char_box.bottom + fFontSize;
-    }
-    if (fabsf(char_box.right - char_box.left) < kSizeEpsilon) {
-      char_box.right =
-          char_box.left + text_object->GetCharWidth(item.char_code_);
-    }
-    char_box = matrix.TransformRect(char_box);
+    std::optional<CharLocalGeometry> boxes =
+        GetCharLocalBoxes(text_object, item.char_code_, item.origin_);
+    CHECK(boxes.has_value());
+    CFX_FloatRect char_box = matrix.TransformRect(*boxes->tight_box);
 
-    CharInfo charinfo(char_type, item.char_code_, 0,
-                      matrix.Transform(item.origin_), char_box, matrix,
-                      text_object);
+    CharInfo charinfo =
+        CharInfo::RealGlyph(char_type, item.char_code_, 0, item.origin_,
+                            char_box, matrix, text_object);
     if (unicode.IsEmpty()) {
       temp_char_list_.push_back(charinfo);
       temp_text_buf_.AppendChar(0xfffe);
@@ -1584,7 +1672,8 @@ std::optional<CPDF_TextPage::CharInfo> CPDF_TextPage::GenerateCharInfo(
 
   CFX_PointF origin(pPrevCharInfo->origin().x + pre_width * (fFontSize) / 1000,
                     pPrevCharInfo->origin().y);
-  return CharInfo(CharType::kGenerated, CPDF_Font::kInvalidCharCode, unicode,
-                  origin, CFX_FloatRect(origin.x, origin.y, origin.x, origin.y),
-                  form_matrix, /*text_object=*/nullptr);
+  return CharInfo::Synthetic(
+      CharType::kGenerated, unicode, origin,
+      CFX_FloatRect(origin.x, origin.y, origin.x, origin.y), form_matrix,
+      /*text_object=*/nullptr);
 }

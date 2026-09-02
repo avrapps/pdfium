@@ -15,6 +15,8 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
@@ -25,12 +27,15 @@ CPDF_Page::CPDF_Page(CPDF_Document* document,
     : CPDF_PageObjectHolder(document, std::move(pPageDict), nullptr, nullptr),
       page_size_(100, 100),
       pdf_document_(document) {
+  CPDF_DocumentViewScope document_view(document);
+
   // Cannot initialize |resources_| and |page_resources_| via the
   // CPDF_PageObjectHolder ctor because GetPageAttr() requires
   // CPDF_PageObjectHolder to finish initializing first.
-  RetainPtr<CPDF_Object> pPageAttr =
-      GetMutablePageAttr(pdfium::page_object::kResources);
-  resources_ = pPageAttr ? pPageAttr->GetMutableDict() : nullptr;
+  RetainPtr<const CPDF_Object> pPageAttr =
+      GetPageAttr(pdfium::page_object::kResources);
+  resources_ = pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+      pPageAttr ? pPageAttr->GetDict().Get() : nullptr));
   page_resources_ = resources_;
 
   UpdateDimensions();
@@ -64,7 +69,19 @@ bool CPDF_Page::IsPage() const {
   return true;
 }
 
+RetainPtr<const CPDF_Dictionary> CPDF_Page::GetResources() const {
+  RefreshResourcesIfNeeded();
+  return CPDF_PageObjectHolder::GetResources();
+}
+
+RetainPtr<const CPDF_Dictionary> CPDF_Page::GetPageResources() const {
+  RefreshResourcesIfNeeded();
+  return CPDF_PageObjectHolder::GetPageResources();
+}
+
 void CPDF_Page::ParseContent() {
+  CPDF_DocumentViewScope document_view(GetDocument());
+
   if (GetParseState() == ParseState::kParsed) {
     return;
   }
@@ -81,7 +98,48 @@ RetainPtr<CPDF_Object> CPDF_Page::GetMutablePageAttr(ByteStringView name) {
   return pdfium::WrapRetain(const_cast<CPDF_Object*>(GetPageAttr(name).Get()));
 }
 
+void CPDF_Page::EnsureMutableBackingObjectForResources() {
+  RetainPtr<CPDF_Dictionary> page_dict = GetMutableDict();
+  if (GetDocument() && GetDocument()->IsLayerDocument() &&
+      !page_dict->KeyExist(pdfium::page_object::kResources) && resources_) {
+    page_dict->SetFor(pdfium::page_object::kResources,
+                      resources_->CloneDirectObject());
+  }
+  resources_ = page_dict->GetMutableDictFor(pdfium::page_object::kResources);
+}
+
+void CPDF_Page::EnsureMutableBackingObjectForPageResources() {
+  EnsureMutableBackingObjectForResources();
+  page_resources_ = resources_;
+}
+
+void CPDF_Page::RefreshResourcesIfNeeded() const {
+  CPDF_Document* document = GetDocument();
+  if (!document) {
+    return;
+  }
+
+  const uint64_t current_epoch = document->GetOverlayEpoch();
+  if (resources_epoch_ == current_epoch &&
+      page_resources_epoch_ == current_epoch) {
+    return;
+  }
+
+  RetainPtr<const CPDF_Object> page_attr =
+      GetPageAttr(pdfium::page_object::kResources);
+  RetainPtr<const CPDF_Dictionary> effective_resources =
+      page_attr ? page_attr->GetDict() : nullptr;
+  auto* mutable_this = const_cast<CPDF_Page*>(this);
+  mutable_this->resources_ = pdfium::WrapRetain(
+      const_cast<CPDF_Dictionary*>(effective_resources.Get()));
+  mutable_this->page_resources_ = mutable_this->resources_;
+  resources_epoch_ = current_epoch;
+  page_resources_epoch_ = current_epoch;
+}
+
 RetainPtr<const CPDF_Object> CPDF_Page::GetPageAttr(ByteStringView name) const {
+  CPDF_DocumentViewScope document_view(GetDocument());
+
   std::set<RetainPtr<const CPDF_Dictionary>> visited;
   RetainPtr<const CPDF_Dictionary> pPageDict = GetDict();
   while (pPageDict && !pdfium::Contains(visited, pPageDict)) {

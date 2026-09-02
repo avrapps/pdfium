@@ -138,6 +138,77 @@ TEST_F(CPDFSecurityHandlerEmbedderTest, OwnerPassword) {
   EXPECT_EQ(0xFFFFF2C0, FPDF_GetDocUserPermissions(document()));
 }
 
+TEST_F(CPDFSecurityHandlerEmbedderTest,
+       CheckPasswordPermissionsIgnoresCurrentOwnerUnlockState) {
+  ASSERT_TRUE(OpenDocumentWithPassword("encrypted.pdf", "5678"));
+  ASSERT_TRUE(EPDF_IsOwnerUnlocked(document()));
+  ASSERT_EQ(0xFFFFFFFC, FPDF_GetDocPermissions(document()));
+
+  int kind = -1;
+  unsigned int user_permissions = 0;
+  unsigned int effective_permissions = 0;
+  int revision = -1;
+  EXPECT_TRUE(EPDF_CheckPasswordPermissions(document(), "1234", &kind,
+                                            &user_permissions,
+                                            &effective_permissions, &revision));
+  EXPECT_EQ(EPDF_PASSWORD_PERMISSION_USER, kind);
+  EXPECT_EQ(0xFFFFF2C0u, user_permissions);
+  EXPECT_EQ(0xFFFFF2C0u, effective_permissions);
+  EXPECT_GE(revision, 0);
+
+  EXPECT_TRUE(EPDF_CheckPasswordPermissions(document(), "5678", &kind,
+                                            &user_permissions,
+                                            &effective_permissions, &revision));
+  EXPECT_EQ(EPDF_PASSWORD_PERMISSION_OWNER, kind);
+  EXPECT_EQ(0xFFFFF2C0u, user_permissions);
+  EXPECT_EQ(0xFFFFFFFCu, effective_permissions);
+}
+
+TEST_F(CPDFSecurityHandlerEmbedderTest,
+       CheckPasswordPermissionsDoesNotUnlockOwner) {
+  ASSERT_TRUE(OpenDocumentWithPassword("encrypted.pdf", "1234"));
+  ASSERT_FALSE(EPDF_IsOwnerUnlocked(document()));
+  ASSERT_EQ(0xFFFFF2C0, FPDF_GetDocPermissions(document()));
+
+  int kind = -1;
+  unsigned int user_permissions = 0;
+  unsigned int effective_permissions = 0;
+  int revision = -1;
+  EXPECT_TRUE(EPDF_CheckPasswordPermissions(document(), "5678", &kind,
+                                            &user_permissions,
+                                            &effective_permissions, &revision));
+  EXPECT_EQ(EPDF_PASSWORD_PERMISSION_OWNER, kind);
+  EXPECT_EQ(0xFFFFF2C0u, user_permissions);
+  EXPECT_EQ(0xFFFFFFFCu, effective_permissions);
+  EXPECT_FALSE(EPDF_IsOwnerUnlocked(document()));
+  EXPECT_EQ(0xFFFFF2C0, FPDF_GetDocPermissions(document()));
+}
+
+TEST_F(CPDFSecurityHandlerEmbedderTest, SetRuntimeOwnerPermissions) {
+  ASSERT_TRUE(OpenDocumentWithPassword("encrypted.pdf", "1234"));
+  ASSERT_FALSE(EPDF_IsOwnerUnlocked(document()));
+  ASSERT_EQ(0xFFFFF2C0, FPDF_GetDocPermissions(document()));
+
+  EXPECT_TRUE(EPDF_SetRuntimeOwnerPermissions(document(), true));
+  EXPECT_TRUE(EPDF_IsOwnerUnlocked(document()));
+  EXPECT_EQ(0xFFFFFFFC, FPDF_GetDocPermissions(document()));
+
+  int kind = -1;
+  unsigned int user_permissions = 0;
+  unsigned int effective_permissions = 0;
+  int revision = -1;
+  EXPECT_TRUE(EPDF_CheckPasswordPermissions(document(), "1234", &kind,
+                                            &user_permissions,
+                                            &effective_permissions, &revision));
+  EXPECT_EQ(EPDF_PASSWORD_PERMISSION_USER, kind);
+  EXPECT_EQ(0xFFFFF2C0u, user_permissions);
+  EXPECT_EQ(0xFFFFF2C0u, effective_permissions);
+
+  EXPECT_TRUE(EPDF_SetRuntimeOwnerPermissions(document(), false));
+  EXPECT_FALSE(EPDF_IsOwnerUnlocked(document()));
+  EXPECT_EQ(0xFFFFF2C0, FPDF_GetDocPermissions(document()));
+}
+
 TEST_F(CPDFSecurityHandlerEmbedderTest, PasswordAfterGenerateSave) {
   constexpr char kBasename[] = "encrypted";
   {

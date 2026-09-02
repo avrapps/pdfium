@@ -40,6 +40,9 @@ CPDF_DocRenderData* CPDF_DocRenderData::FromDocument(const CPDF_Document* doc) {
 
 CPDF_DocRenderData::CPDF_DocRenderData() = default;
 
+CPDF_DocRenderData::CPDF_DocRenderData(CPDF_DocRenderData* fallback)
+    : fallback_(fallback) {}
+
 CPDF_DocRenderData::~CPDF_DocRenderData() = default;
 
 RetainPtr<CPDF_Type3Cache> CPDF_DocRenderData::GetCachedType3(
@@ -48,6 +51,11 @@ RetainPtr<CPDF_Type3Cache> CPDF_DocRenderData::GetCachedType3(
   auto it = type3_face_map_.find(font);
   if (it != type3_face_map_.end() && it->second) {
     return pdfium::WrapRetain(it->second.Get());
+  }
+
+  if (fallback_ && font->GetFontDictObjNum() != 0 &&
+      !GetDocument()->IsObjectPromoted(font->GetFontDictObjNum())) {
+    return fallback_->GetCachedType3(font);
   }
 
   auto cache = pdfium::MakeRetain<CPDF_Type3Cache>(font);
@@ -63,9 +71,23 @@ RetainPtr<CPDF_TransferFunc> CPDF_DocRenderData::GetTransferFunc(
     return pdfium::WrapRetain(it->second.Get());
   }
 
+  if (fallback_ && CanUseFallbackForObject(obj.Get())) {
+    return fallback_->GetTransferFunc(obj);
+  }
+
   auto func = CreateTransferFunc(obj);
   transfer_func_map_[obj].Reset(func.Get());
   return func;
+}
+
+bool CPDF_DocRenderData::CanUseFallbackForObject(
+    const CPDF_Object* object) const {
+  if (!object) {
+    return false;
+  }
+
+  const uint32_t objnum = object->GetObjNum();
+  return objnum != 0 && !GetDocument()->IsObjectPromoted(objnum);
 }
 
 #if BUILDFLAG(IS_WIN)

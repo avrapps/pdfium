@@ -10,10 +10,10 @@
 #include <stdint.h>
 
 #include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
-#include "core/fxcrt/data_vector.h"
 
 class CFX_DIBBase;
 class CFX_DIBitmap;
@@ -53,6 +53,9 @@ class CPDF_Image final : public Retainable {
   RetainPtr<CPDF_DIB> CreateNewDIB() const;
   RetainPtr<CFX_DIBBase> LoadDIBBase() const;
 
+  // Rebinds the image to the current stream object for its object number.
+  bool RebindStreamIfPromoted();
+
   void SetImage(const RetainPtr<CFX_DIBitmap>& pBitmap);
   void SetJpegImage(RetainPtr<IFX_SeekableReadStream> pFile);
   void SetJpegImageInline(RetainPtr<IFX_SeekableReadStream> pFile);
@@ -88,6 +91,8 @@ class CPDF_Image final : public Retainable {
   ~CPDF_Image() override;
 
   void FinishInitialization();
+  // Used only by explicit edit paths that need to promote this stream.
+  RetainPtr<CPDF_Stream> AcquireMutableStreamForEdit();
   RetainPtr<CPDF_Dictionary> InitJPEG(pdfium::span<uint8_t> src_span);
   RetainPtr<CPDF_Dictionary> CreateXObjectImageDict(int width, int height);
 
@@ -101,7 +106,7 @@ class CPDF_Image final : public Retainable {
   UnownedPtr<CPDF_Document> const document_;
   RetainPtr<CFX_DIBBase> dibbase_;
   RetainPtr<CFX_DIBBase> mask_;
-  RetainPtr<CPDF_Stream> stream_;
+  RetainPtr<const CPDF_Stream> stream_;
   RetainPtr<const CPDF_Dictionary> oc_;
 };
 

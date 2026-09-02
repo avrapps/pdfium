@@ -1,3 +1,6 @@
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 import("//build/toolchain/gcc_toolchain.gni")
 
 gcc_toolchain("x86") {

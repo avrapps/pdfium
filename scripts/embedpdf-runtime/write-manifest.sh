@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -21,7 +24,7 @@ const [artifactDir, releaseBaseUrl, outFile, sha] = process.argv.slice(2);
 const artifacts = {};
 
 for (const file of fs.readdirSync(artifactDir)) {
-  const match = file.match(/^libembedpdf-pdf-runtime-(.+)-[a-f0-9]+\.tar\.gz$/);
+  const match = file.match(/^libembedpdf-runtime-(.+)-[a-f0-9]+\.tar\.gz$/);
   if (!match) continue;
   const target = match[1];
   const full = path.join(artifactDir, file);
@@ -34,7 +37,7 @@ for (const file of fs.readdirSync(artifactDir)) {
 
 fs.writeFileSync(
   outFile,
-  JSON.stringify({ fork: 'embedpdf/pdfium', sha, artifacts }, null, 2) + '\n',
+  JSON.stringify({ fork: 'embedpdf/runtime', sha, artifacts }, null, 2) + '\n',
 );
 NODE
 

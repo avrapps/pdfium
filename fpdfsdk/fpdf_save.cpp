@@ -6,10 +6,13 @@
 
 #include "public/fpdf_save.h"
 
-#include <mutex>
 #include <stdint.h>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
 
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,7 +31,6 @@
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_filewriteadapter.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
-#include "fpdfsdk/fpdfsdk_pending_security.h"
 #include "public/fpdf_edit.h"
 
 #ifdef PDF_ENABLE_XFA
@@ -201,23 +203,19 @@ bool DoDocSave(FPDF_DOCUMENT document,
   CPDF_Creator file_maker(
       doc, pdfium::MakeRetain<CPDFSDK_FileWriteAdapter>(file_write));
 
-  // Apply pending security state
-  {
-    std::lock_guard<std::mutex> lock(GetPendingSecurityMutex());
-    auto& pending_security = GetPendingSecurityMap();
-    auto it = pending_security.find(document);
-    if (it != pending_security.end()) {
-      if (it->second.mode == PendingSecurityMode::kRemove) {
-        flags |= FPDF_REMOVE_SECURITY;
-      } else if (it->second.mode == PendingSecurityMode::kEncrypt) {
-        // SetEncryption sets both:
-        // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
-        // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
-        file_maker.SetEncryption(it->second.encrypt_dict,
-                                 it->second.security_handler);
-      }
-      // Don't erase from map here - leave for cleanup on doc close
-      // This allows multiple saves of the same encrypted doc
+  // Apply document-owned pending security state. It stays on the document so
+  // repeated saves use the same requested encryption/removal policy until the
+  // caller changes it or closes the document.
+  if (const CPDF_Document::PendingSecurity* pending =
+          doc->GetPendingSecurity()) {
+    if (pending->mode == CPDF_Document::PendingSecurityMode::kRemove) {
+      flags |= FPDF_REMOVE_SECURITY;
+    } else if (pending->mode == CPDF_Document::PendingSecurityMode::kEncrypt) {
+      // SetEncryption sets both:
+      // 1. encrypt_dict_ - so /Encrypt reference is written to trailer
+      // 2. security_handler_ - so GetCryptoHandler() encrypts streams/strings
+      file_maker.SetEncryption(pending->encrypt_dict,
+                               pending->security_handler);
     }
   }
 
@@ -235,7 +233,53 @@ bool DoDocSave(FPDF_DOCUMENT document,
   return create_result;
 }
 
+struct MemoryFileWriter : public FPDF_FILEWRITE {
+  std::string data;
+
+  MemoryFileWriter() {
+    version = 1;
+    WriteBlock = [](FPDF_FILEWRITE* self, const void* buf,
+                    unsigned long size) -> int {
+      static_cast<MemoryFileWriter*>(self)->data.append(
+          static_cast<const char*>(buf), size);
+      return 1;
+    };
+  }
+};
+
+void* SaveToOwnedBuffer(FPDF_DOCUMENT document,
+                        FPDF_DWORD flags,
+                        unsigned long* out_size,
+                        std::optional<int> version) {
+  if (!out_size) {
+    return nullptr;
+  }
+  *out_size = 0;
+
+  MemoryFileWriter writer;
+  const bool ok = version.has_value()
+                      ? DoDocSave(document, &writer, flags, version.value())
+                      : DoDocSave(document, &writer, flags, {});
+  if (!ok || writer.data.empty() ||
+      writer.data.size() > std::numeric_limits<unsigned long>::max()) {
+    return nullptr;
+  }
+
+  void* buffer = malloc(writer.data.size());
+  if (!buffer) {
+    return nullptr;
+  }
+
+  memcpy(buffer, writer.data.data(), writer.data.size());
+  *out_size = static_cast<unsigned long>(writer.data.size());
+  return buffer;
+}
+
 }  // namespace
+
+FPDF_EXPORT void FPDF_CALLCONV EPDF_FreeBuffer(void* buffer) {
+  free(buffer);
+}
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_SaveAsCopy(FPDF_DOCUMENT document,
                                                     FPDF_FILEWRITE* file_write,
@@ -249,4 +293,19 @@ FPDF_SaveWithVersion(FPDF_DOCUMENT document,
                      FPDF_DWORD flags,
                      int fileVersion) {
   return DoDocSave(document, file_write, flags, fileVersion);
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBuffer(FPDF_DOCUMENT document,
+                               FPDF_DWORD flags,
+                               unsigned long* out_size) {
+  return SaveToOwnedBuffer(document, flags, out_size, {});
+}
+
+FPDF_EXPORT void* FPDF_CALLCONV
+EPDF_SaveDocumentToOwnedBufferWithVersion(FPDF_DOCUMENT document,
+                                          FPDF_DWORD flags,
+                                          unsigned long* out_size,
+                                          int file_version) {
+  return SaveToOwnedBuffer(document, flags, out_size, file_version);
 }

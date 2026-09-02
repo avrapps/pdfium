@@ -55,6 +55,7 @@
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_2d_size.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/fx_system.h"
@@ -80,7 +81,9 @@
 namespace {
 
 constexpr int kRenderMaxRecursionDepth = 64;
-int g_CurrentRecursionDepth = 0;
+// EmbedPDF: thread-confined runtime - per-thread render recursion counter so
+// concurrent renders on different workers don't corrupt each other's depth.
+EPDF_TLS int g_CurrentRecursionDepth = 0;
 
 CFX_FillRenderOptions GetFillOptionsForDrawPathWithBlend(
     const CPDF_RenderOptions::Options& options,
@@ -1438,7 +1441,9 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderStatus::LoadSMask(
   CFX_Matrix matrix = smask_matrix;
   matrix.Translate(-clip_rect.left, -clip_rect.top);
 
-  CPDF_Form form(context_->GetDocument(), context_->GetMutablePageResources(),
+  CPDF_Form form(context_->GetDocument(),
+                 pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+                     context_->GetPageResources())),
                  pGroup);
   form.ParseContent();
 

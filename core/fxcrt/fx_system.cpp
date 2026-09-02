@@ -12,12 +12,15 @@
 
 #include "build/build_config.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/fx_extension.h"
 
 namespace {
 
 #if !BUILDFLAG(IS_WIN)
-uint32_t g_last_error = 0;
+// EmbedPDF: thread-confined runtime - per-thread last-error, written during
+// parse/render and read back by FPDF_GetLastError on the same thread.
+EPDF_TLS uint32_t g_last_error = 0;
 #endif
 
 template <typename IntType, typename CharType>

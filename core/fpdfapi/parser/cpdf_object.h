@@ -74,6 +74,16 @@ class CPDF_Object : public Retainable {
   // Create a deep copy of the object.
   virtual RetainPtr<CPDF_Object> Clone() const = 0;
 
+  // Create a deep copy of the object for `holder`. References in the clone are
+  // retargeted to `holder`, so promoted layer objects resolve through the
+  // layer overlay rather than the frozen base.
+  virtual RetainPtr<CPDF_Object> CloneForHolder(
+      CPDF_IndirectObjectHolder* holder) const;
+
+  void Freeze();
+  void FreezeForHolder(std::set<const CPDF_Object*>* visited);
+  bool IsFrozen() const { return frozen_; }
+
   // Create a deep copy of the object except any reference object be
   // copied to the object it points to directly.
   RetainPtr<CPDF_Object> CloneDirectObject() const;
@@ -110,13 +120,20 @@ class CPDF_Object : public Retainable {
       bool bDirect,
       std::set<const CPDF_Object*>* pVisited) const;
 
+  virtual RetainPtr<CPDF_Object> CloneForHolderNonCyclic(
+      CPDF_IndirectObjectHolder* holder,
+      std::set<const CPDF_Object*>* pVisited) const;
+
   // Return a reference to itself.
   // The object must be direct (!IsInlined).
   virtual RetainPtr<CPDF_Reference> MakeReference(
       CPDF_IndirectObjectHolder* holder) const;
 
-  RetainPtr<const CPDF_Object> GetDirect() const;    // Wraps virtual method.
-  RetainPtr<CPDF_Object> GetMutableDirect();         // Wraps virtual method.
+  virtual void FreezeChildren(std::set<const CPDF_Object*>* visited);
+
+  RetainPtr<const CPDF_Object> GetDirect() const;  // Wraps virtual method.
+  virtual RetainPtr<CPDF_Object> GetMutableDirect();
+  // Wraps virtual method.
   RetainPtr<const CPDF_Dictionary> GetDict() const;  // Wraps virtual method.
   RetainPtr<CPDF_Dictionary> GetMutableDict();       // Wraps virtual method.
 
@@ -156,6 +173,7 @@ class CPDF_Object : public Retainable {
 
   uint32_t obj_num_ = 0;
   uint32_t gen_num_ = 0;
+  bool frozen_ = false;
 };
 
 template <typename T>

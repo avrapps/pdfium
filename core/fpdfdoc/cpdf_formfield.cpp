@@ -19,6 +19,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
@@ -62,6 +63,17 @@ bool IsComboOrListField(CPDF_FormField::Type type) {
   }
 }
 
+WideString GetFieldNameComponent(const CPDF_Dictionary* dict) {
+  RetainPtr<const CPDF_Object> t_obj =
+      dict->GetObjectFor(pdfium::form_fields::kT);
+  if (ToReference(t_obj)) {
+    RetainPtr<const CPDF_Object> direct_obj = t_obj->GetDirect();
+    return direct_obj && direct_obj->IsString() ? direct_obj->GetUnicodeText()
+                                                : WideString();
+  }
+  return dict->GetUnicodeTextFor(pdfium::form_fields::kT);
+}
+
 }  // namespace
 
 // static
@@ -96,7 +108,7 @@ WideString CPDF_FormField::GetFullNameForDict(
   const CPDF_Dictionary* pLevel = pFieldDict;
   while (pLevel) {
     visited.insert(pLevel);
-    WideString short_name = pLevel->GetUnicodeTextFor(pdfium::form_fields::kT);
+    WideString short_name = GetFieldNameComponent(pLevel);
     if (!short_name.IsEmpty()) {
       if (full_name.IsEmpty()) {
         full_name = std::move(short_name);

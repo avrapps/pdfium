@@ -372,14 +372,6 @@ CPDF_PageContentGenerator::CPDF_PageContentGenerator(
 CPDF_PageContentGenerator::~CPDF_PageContentGenerator() = default;
 
 void CPDF_PageContentGenerator::GenerateContent() {
-  std::optional<fxcrt::ostringstream> canonical_stream =
-      GenerateCanonicalPageStream();
-  if (canonical_stream.has_value()) {
-    ReplaceContentStreamsWithSingleStream(std::move(canonical_stream.value()));
-    UpdateResourcesDict();
-    return;
-  }
-
   std::map<int32_t, fxcrt::ostringstream> new_stream_data =
       GenerateModifiedStreams();
   // If no streams were regenerated or removed, nothing to do here.
@@ -387,53 +379,42 @@ void CPDF_PageContentGenerator::GenerateContent() {
     return;
   }
 
-  UpdateContentStreams(std::move(new_stream_data));
-  UpdateResourcesDict();
-}
-
-std::optional<fxcrt::ostringstream>
-CPDF_PageContentGenerator::GenerateCanonicalPageStream() {
-  if (!obj_holder_->IsPage()) {
-    return std::nullopt;
-  }
-
-  bool has_dirty_page_objects = false;
-  for (auto& pPageObj : page_objects_) {
-    // Must include dirty inactive page objects: replacing the whole content
-    // stream is how their original bytes disappear from this page.
-    if (pPageObj->IsDirty()) {
-      has_dirty_page_objects = true;
+  // EmbedPDF: did this pass rewrite EVERY existing content stream? Computed
+  // before the move — an append-only pass (a lone kNoContentStream bucket)
+  // leaves the existing streams' ops out of `page_objects_`' bookkeeping, so
+  // resource pruning must not run (see UpdateResourcesDict).
+  const int32_t existing_streams = CountExistingContentStreams();
+  bool regenerated_all_streams = true;
+  for (int32_t i = 0; i < existing_streams; ++i) {
+    if (!pdfium::Contains(new_stream_data, i)) {
+      regenerated_all_streams = false;
       break;
     }
   }
 
-  if (!has_dirty_page_objects && !obj_holder_->HasDirtyStreams()) {
-    return std::nullopt;
+  UpdateContentStreams(std::move(new_stream_data));
+  UpdateResourcesDict(regenerated_all_streams);
+}
+
+int32_t CPDF_PageContentGenerator::CountExistingContentStreams() {
+  if (obj_holder_->GetMutableFormStream()) {
+    return 1;
   }
-
-  obj_holder_->TakeDirtyStreams();
-
-  fxcrt::ostringstream buf;
-  buf << "q\n";
-  ProcessDefaultGraphics(&buf);
-
-  std::unique_ptr<const CPDF_ContentMarks> empty_content_marks =
-      std::make_unique<CPDF_ContentMarks>();
-  const CPDF_ContentMarks* content_marks = empty_content_marks.get();
-
-  for (auto& pPageObj : page_objects_) {
-    if (!pPageObj->IsActive()) {
-      pPageObj->SetDirty(false);
-      continue;
-    }
-
-    content_marks = ProcessContentMarks(&buf, pPageObj, content_marks);
-    ProcessPageObject(&buf, pPageObj);
+  RetainPtr<const CPDF_Object> contents =
+      obj_holder_->GetDict()->GetObjectFor(pdfium::page_object::kContents);
+  if (!contents) {
+    return 0;
   }
-
-  FinishMarks(&buf, content_marks);
-  buf << "Q\n";
-  return buf;
+  // Resolve indirection: /Contents is commonly an indirect reference to a
+  // stream or to an array of streams.
+  RetainPtr<const CPDF_Object> direct = contents->GetDirect();
+  if (!direct) {
+    return 0;
+  }
+  if (const CPDF_Array* arr = direct->AsArray()) {
+    return pdfium::checked_cast<int32_t>(arr->size());
+  }
+  return direct->IsStream() ? 1 : 0;
 }
 
 std::map<int32_t, fxcrt::ostringstream>
@@ -452,10 +433,21 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   all_dirty_streams.insert(marked_dirty_streams.begin(),
                            marked_dirty_streams.end());
 
-  // --- embedpdf: if anything is dirty, regenerate *all* page content streams.
-  // Rationale: CTM / graphics-state handoff between streams means rewriting
-  // only a subset can leave the concatenated effect inconsistent.
-  if (!all_dirty_streams.empty()) {
+  // --- embedpdf: if an existing stream (or an object living in one) changed,
+  // regenerate *all* page content streams. Rationale: CTM / graphics-state
+  // handoff between streams means rewriting only a subset can leave the
+  // concatenated effect inconsistent.
+  //
+  // A pure append is exempt: every dirty entry is the streamless bucket and
+  // no stream was marked dirty. Regeneration serializes page objects only, so
+  // rewriting an untouched stream drops ambient ops no page object owns —
+  // e.g. a page-level `/C1 cs` prolog a bare-`scn` form inherits (see the
+  // pruning guard in UpdateResourcesDict, and
+  // FPDFAnnotEmbedderTest.ApplyRedactionPreservesInheritedColorspaceResources).
+  const bool append_only =
+      marked_dirty_streams.empty() && all_dirty_streams.size() == 1 &&
+      all_dirty_streams.count(CPDF_PageObject::kNoContentStream) == 1;
+  if (!append_only && !all_dirty_streams.empty()) {
     int32_t last_index = -1;
     // For Form XObjects, the content is in the XObject stream itself (index 0),
     // not in a separate "Contents" entry.
@@ -463,9 +455,13 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
       last_index = 0;
     } else if (RetainPtr<const CPDF_Object> contents =
             obj_holder_->GetDict()->GetObjectFor(pdfium::page_object::kContents)) {
-      if (const CPDF_Array* arr = contents->AsArray()) {
+      // Resolve indirection like CountExistingContentStreams(): /Contents is
+      // commonly `4 0 R` pointing at the split-stream array
+      // (split_streams.pdf), which must enumerate like a direct array.
+      RetainPtr<const CPDF_Object> direct = contents->GetDirect();
+      if (const CPDF_Array* arr = direct ? direct->AsArray() : nullptr) {
         last_index = static_cast<int32_t>(arr->size()) - 1;
-      } else if (contents->IsStream()) {
+      } else if (direct && direct->IsStream()) {
         last_index = 0;
       }
     }
@@ -566,13 +562,6 @@ CPDF_PageContentGenerator::GenerateModifiedStreams() {
   return streams;
 }
 
-void CPDF_PageContentGenerator::ReplaceContentStreamsWithSingleStream(
-    fxcrt::ostringstream&& stream_data) {
-  default_graphics_name_ = GetOrCreateDefaultGraphics();
-  CPDF_PageContentManager page_content_manager(obj_holder_, document_);
-  page_content_manager.ReplaceWithSingleStream(&stream_data);
-}
-
 void CPDF_PageContentGenerator::UpdateContentStreams(
     std::map<int32_t, fxcrt::ostringstream>&& new_stream_data) {
   CHECK(!new_stream_data.empty());
@@ -600,7 +589,7 @@ void CPDF_PageContentGenerator::UpdateContentStreams(
   }
 }
 
-void CPDF_PageContentGenerator::UpdateResourcesDict() {
+void CPDF_PageContentGenerator::UpdateResourcesDict(bool regenerated_all_streams) {
   RetainPtr<CPDF_Dictionary> resources = obj_holder_->GetMutableResources();
   if (!resources) {
     return;
@@ -619,6 +608,17 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
   // Even though `resources` itself is not shared, its dictionary entries may be
   // shared. Checked for that and clone those as well.
   CloneResourcesDictEntries(document_, resources);
+
+  // EmbedPDF: pruning is only sound when THIS pass rewrote every content
+  // stream. `page_objects_` / `seen_resources` describe the SERIALIZED
+  // output; an untouched stream's raw ops can reference resources no page
+  // object records — e.g. a page-level `/C1 cs` prolog whose colorspace is
+  // inherited by a bare-`scn` Form XObject. Pruning after an append-only
+  // pass orphans those references (the classic symptom: the whole page
+  // collapses to grayscale after applying a redaction that touched nothing).
+  if (!regenerated_all_streams) {
+    return;
+  }
 
   ResourcesMap seen_resources;
   for (auto& page_object : page_objects_) {

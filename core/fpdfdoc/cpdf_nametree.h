@@ -27,6 +27,9 @@ class CPDF_NameTree {
 
   static std::unique_ptr<CPDF_NameTree> Create(CPDF_Document* doc,
                                                ByteStringView category);
+  static std::unique_ptr<CPDF_NameTree> CreateForReading(
+      CPDF_Document* doc,
+      ByteStringView category);
 
   // If necessary, create missing Names dictionary in |doc|, and/or missing
   // Names array in the dictionary that corresponds to |category|, if necessary.
@@ -52,11 +55,12 @@ class CPDF_NameTree {
   CPDF_Dictionary* GetRootForTesting() const { return root_.Get(); }
 
  private:
-  explicit CPDF_NameTree(RetainPtr<CPDF_Dictionary> pRoot);
+  CPDF_NameTree(RetainPtr<CPDF_Dictionary> pRoot, bool read_only);
 
   RetainPtr<const CPDF_Array> LookupNewStyleNamedDest(const ByteString& name);
 
   RetainPtr<CPDF_Dictionary> const root_;
+  const bool read_only_;
 };
 
 #endif  // CORE_FPDFDOC_CPDF_NAMETREE_H_

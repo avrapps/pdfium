@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -65,6 +68,12 @@ copy_patch_file() {
 }
 
 "$SOURCE_DIR/scripts/embedpdf-runtime/unapply-patches.sh"
+
+# The redaction-only Skia target uses stroking without SkPaint. Keep the
+# paint-dependent SkStrokeRec methods in a separate compilation unit so the
+# geometry archive does not inherit Skia's renderer/font dependency graph.
+apply_patch_file "$SOURCE_DIR/third_party/skia" \
+  "$PATCH_DIR/skia/geometry-only-stroke.patch"
 
 case "$TARGET" in
   wasm32)

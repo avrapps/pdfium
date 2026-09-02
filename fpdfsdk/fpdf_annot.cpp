@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -15,20 +16,20 @@
 
 #include "constants/annotation_common.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
-#include "core/fpdfapi/edit/cpdf_pageorganizer.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
-#include "core/fpdfapi/edit/cpdf_text_redactor.h"
+#include "core/fpdfapi/edit/cpdf_pageorganizer.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
-#include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_formobject.h"
+#include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
-#include "core/fpdfapi/page/cpdf_image.h" 
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_document_view_scope.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
@@ -50,6 +51,7 @@
 #include "core/fxcrt/ptr_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_color.h"
+#include "core/fxge/cfx_fontregistry.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
@@ -213,57 +215,51 @@ static_assert(static_cast<int>(CPDF_Annot::BorderStyle::kUnknown) ==
                   FPDF_ANNOT_BS_UNKNOWN,
               "CPDF_Annot::BorderStyle::kUnknown value mismatch");
 
-// These checks ensure the consistency of blend mode values across core/ and public.
-static_assert(static_cast<int>(BlendMode::kNormal) == 
-                  FPDF_BLENDMODE_Normal, 
+// These checks ensure the consistency of blend mode values across core/ and
+// public.
+static_assert(static_cast<int>(BlendMode::kNormal) == FPDF_BLENDMODE_Normal,
               "BlendMode::kNormal value mismatch");
-static_assert(static_cast<int>(BlendMode::kMultiply) == 
-                  FPDF_BLENDMODE_Multiply, 
+static_assert(static_cast<int>(BlendMode::kMultiply) == FPDF_BLENDMODE_Multiply,
               "BlendMode::kMultiply value mismatch");
-static_assert(static_cast<int>(BlendMode::kScreen) == 
-                  FPDF_BLENDMODE_Screen, 
+static_assert(static_cast<int>(BlendMode::kScreen) == FPDF_BLENDMODE_Screen,
               "BlendMode::kScreen value mismatch");
-static_assert(static_cast<int>(BlendMode::kOverlay) == 
-                  FPDF_BLENDMODE_Overlay, 
+static_assert(static_cast<int>(BlendMode::kOverlay) == FPDF_BLENDMODE_Overlay,
               "BlendMode::kOverlay value mismatch");
-static_assert(static_cast<int>(BlendMode::kDarken) == 
-                  FPDF_BLENDMODE_Darken, 
+static_assert(static_cast<int>(BlendMode::kDarken) == FPDF_BLENDMODE_Darken,
               "BlendMode::kDarken value mismatch");
-static_assert(static_cast<int>(BlendMode::kLighten) == 
-                  FPDF_BLENDMODE_Lighten, 
+static_assert(static_cast<int>(BlendMode::kLighten) == FPDF_BLENDMODE_Lighten,
               "BlendMode::kLighten value mismatch");
-static_assert(static_cast<int>(BlendMode::kColorDodge) == 
-                  FPDF_BLENDMODE_ColorDodge, 
+static_assert(static_cast<int>(BlendMode::kColorDodge) ==
+                  FPDF_BLENDMODE_ColorDodge,
               "BlendMode::kColorDodge value mismatch");
-static_assert(static_cast<int>(BlendMode::kColorBurn) == 
-                  FPDF_BLENDMODE_ColorBurn, 
+static_assert(static_cast<int>(BlendMode::kColorBurn) ==
+                  FPDF_BLENDMODE_ColorBurn,
               "BlendMode::kColorBurn value mismatch");
-static_assert(static_cast<int>(BlendMode::kHardLight) == 
-                  FPDF_BLENDMODE_HardLight, 
-              "BlendMode::kHardLight value mismatch"); 
-static_assert(static_cast<int>(BlendMode::kSoftLight) == 
-                  FPDF_BLENDMODE_SoftLight, 
+static_assert(static_cast<int>(BlendMode::kHardLight) ==
+                  FPDF_BLENDMODE_HardLight,
+              "BlendMode::kHardLight value mismatch");
+static_assert(static_cast<int>(BlendMode::kSoftLight) ==
+                  FPDF_BLENDMODE_SoftLight,
               "BlendMode::kSoftLight value mismatch");
-static_assert(static_cast<int>(BlendMode::kDifference) == 
-                  FPDF_BLENDMODE_Difference, 
+static_assert(static_cast<int>(BlendMode::kDifference) ==
+                  FPDF_BLENDMODE_Difference,
               "BlendMode::kDifference value mismatch");
-static_assert(static_cast<int>(BlendMode::kExclusion) == 
-                  FPDF_BLENDMODE_Exclusion, 
+static_assert(static_cast<int>(BlendMode::kExclusion) ==
+                  FPDF_BLENDMODE_Exclusion,
               "BlendMode::kExclusion value mismatch");
-static_assert(static_cast<int>(BlendMode::kHue) == 
-                  FPDF_BLENDMODE_Hue, 
-              "BlendMode::kHue value mismatch"); 
-static_assert(static_cast<int>(BlendMode::kSaturation) == 
-                  FPDF_BLENDMODE_Saturation, 
+static_assert(static_cast<int>(BlendMode::kHue) == FPDF_BLENDMODE_Hue,
+              "BlendMode::kHue value mismatch");
+static_assert(static_cast<int>(BlendMode::kSaturation) ==
+                  FPDF_BLENDMODE_Saturation,
               "BlendMode::kSaturation value mismatch");
-static_assert(static_cast<int>(BlendMode::kColor) == 
-                  FPDF_BLENDMODE_Color, 
+static_assert(static_cast<int>(BlendMode::kColor) == FPDF_BLENDMODE_Color,
               "BlendMode::kColor value mismatch");
-static_assert(static_cast<int>(BlendMode::kLuminosity) == 
-                  FPDF_BLENDMODE_Luminosity, 
+static_assert(static_cast<int>(BlendMode::kLuminosity) ==
+                  FPDF_BLENDMODE_Luminosity,
               "BlendMode::kLuminosity value mismatch");
 
-// These checks ensure the consistency of line ending values across core/ and public.
+// These checks ensure the consistency of line ending values across core/ and
+// public.
 static_assert(static_cast<int>(CPDF_Annot::LineEnding::kNone) ==
                   FPDF_ANNOT_LE_None,
               "LineEnding::kNone mismatch");
@@ -298,159 +294,163 @@ static_assert(static_cast<int>(CPDF_Annot::LineEnding::kUnknown) ==
                   FPDF_ANNOT_LE_Unknown,
               "LineEnding::kUnknown mismatch");
 
-// These checks ensure the consistency of standard font values across core/ and public.
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier) == 
-                  FPDF_FONT_COURIER, 
+// These checks ensure the consistency of standard font values across core/ and
+// public.
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier) ==
+                  FPDF_FONT_COURIER,
               "CPDF_Annot::StandardFont::kCourier mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier_Bold) == 
-                  FPDF_FONT_COURIER_BOLD, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier_Bold) ==
+                  FPDF_FONT_COURIER_BOLD,
               "CPDF_Annot::StandardFont::kCourier_Bold mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier_BoldOblique) == 
-                  FPDF_FONT_COURIER_BOLDITALIC, 
-              "CPDF_Annot::StandardFont::kCourier_BoldOblique mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier_Oblique) == 
-                  FPDF_FONT_COURIER_ITALIC, 
+static_assert(
+    static_cast<int>(CPDF_Annot::StandardFont::kCourier_BoldOblique) ==
+        FPDF_FONT_COURIER_BOLDITALIC,
+    "CPDF_Annot::StandardFont::kCourier_BoldOblique mismatch");
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kCourier_Oblique) ==
+                  FPDF_FONT_COURIER_ITALIC,
               "CPDF_Annot::StandardFont::kCourier_Oblique mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica) == 
-                  FPDF_FONT_HELVETICA, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica) ==
+                  FPDF_FONT_HELVETICA,
               "CPDF_Annot::StandardFont::kHelvetica mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_Bold) == 
-                  FPDF_FONT_HELVETICA_BOLD, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_Bold) ==
+                  FPDF_FONT_HELVETICA_BOLD,
               "CPDF_Annot::StandardFont::kHelvetica_Bold mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_BoldOblique) == 
-                  FPDF_FONT_HELVETICA_BOLDITALIC, 
-              "CPDF_Annot::StandardFont::kHelvetica_BoldOblique mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_Oblique) == 
-                  FPDF_FONT_HELVETICA_ITALIC, 
+static_assert(
+    static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_BoldOblique) ==
+        FPDF_FONT_HELVETICA_BOLDITALIC,
+    "CPDF_Annot::StandardFont::kHelvetica_BoldOblique mismatch");
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kHelvetica_Oblique) ==
+                  FPDF_FONT_HELVETICA_ITALIC,
               "CPDF_Annot::StandardFont::kHelvetica_Oblique mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Roman) == 
-                  FPDF_FONT_TIMES_ROMAN, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Roman) ==
+                  FPDF_FONT_TIMES_ROMAN,
               "CPDF_Annot::StandardFont::kTimes_Roman mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Bold) == 
-                  FPDF_FONT_TIMES_BOLD, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Bold) ==
+                  FPDF_FONT_TIMES_BOLD,
               "CPDF_Annot::StandardFont::kTimes_Bold mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_BoldItalic) == 
-                  FPDF_FONT_TIMES_BOLDITALIC, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_BoldItalic) ==
+                  FPDF_FONT_TIMES_BOLDITALIC,
               "CPDF_Annot::StandardFont::kTimes_BoldItalic mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Italic) == 
-                  FPDF_FONT_TIMES_ITALIC, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kTimes_Italic) ==
+                  FPDF_FONT_TIMES_ITALIC,
               "CPDF_Annot::StandardFont::kTimes_Italic mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kSymbol) == 
-                  FPDF_FONT_SYMBOL, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kSymbol) ==
+                  FPDF_FONT_SYMBOL,
               "CPDF_Annot::StandardFont::kSymbol mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kZapfDingbats) == 
-                  FPDF_FONT_ZAPFDINGBATS, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kZapfDingbats) ==
+                  FPDF_FONT_ZAPFDINGBATS,
               "CPDF_Annot::StandardFont::kZapfDingbats mismatch");
-static_assert(static_cast<int>(CPDF_Annot::StandardFont::kUnknown) == 
-                  FPDF_FONT_UNKNOWN, 
+static_assert(static_cast<int>(CPDF_Annot::StandardFont::kUnknown) ==
+                  FPDF_FONT_UNKNOWN,
               "CPDF_Annot::StandardFont::kUnknown mismatch");
 
 // These checks ensure consistency between the public API and internal enums.
-static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kLeft) == 
-                  FPDF_TEXT_ALIGNMENT_LEFT, 
+static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kLeft) ==
+                  FPDF_TEXT_ALIGNMENT_LEFT,
               "CPDF_Annot::TextAlignment::kLeft mismatch");
-static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kCenter) == 
-                  FPDF_TEXT_ALIGNMENT_CENTER, 
+static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kCenter) ==
+                  FPDF_TEXT_ALIGNMENT_CENTER,
               "CPDF_Annot::TextAlignment::kCenter mismatch");
-static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kRight) == 
-                  FPDF_TEXT_ALIGNMENT_RIGHT, 
+static_assert(static_cast<int>(CPDF_Annot::TextAlignment::kRight) ==
+                  FPDF_TEXT_ALIGNMENT_RIGHT,
               "CPDF_Annot::TextAlignment::kRight mismatch");
 
-// These checks ensure the consistency of vertical alignment values across core/ and public.
-static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kTop) == 
-                  FPDF_VERTICAL_ALIGNMENT_TOP, 
+// These checks ensure the consistency of vertical alignment values across core/
+// and public.
+static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kTop) ==
+                  FPDF_VERTICAL_ALIGNMENT_TOP,
               "CPDF_Annot::VerticalAlignment::kTop mismatch");
-static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kMiddle) == 
-                  FPDF_VERTICAL_ALIGNMENT_MIDDLE, 
+static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kMiddle) ==
+                  FPDF_VERTICAL_ALIGNMENT_MIDDLE,
               "CPDF_Annot::VerticalAlignment::kMiddle mismatch");
-static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kBottom) == 
-                  FPDF_VERTICAL_ALIGNMENT_BOTTOM, 
+static_assert(static_cast<int>(CPDF_Annot::VerticalAlignment::kBottom) ==
+                  FPDF_VERTICAL_ALIGNMENT_BOTTOM,
               "CPDF_Annot::VerticalAlignment::kBottom mismatch");
 
 // These checks ensure the consistency of icon values across core/ and public.
 static_assert(static_cast<int>(CPDF_Annot::Icon::kUnknown) ==
-                  FPDF_ANNOT_NAME_UNKNOWN, 
+                  FPDF_ANNOT_NAME_UNKNOWN,
               "Icon::kUnknown mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Comment) == 
-                  FPDF_ANNOT_NAME_Text_Comment, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Comment) ==
+                  FPDF_ANNOT_NAME_Text_Comment,
               "Icon::kText_Comment mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Key) == 
-                  FPDF_ANNOT_NAME_Text_Key, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Key) ==
+                  FPDF_ANNOT_NAME_Text_Key,
               "Icon::kText_Key mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Note) == 
-                  FPDF_ANNOT_NAME_Text_Note, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Note) ==
+                  FPDF_ANNOT_NAME_Text_Note,
               "Icon::kText_Note mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Help) == 
-                  FPDF_ANNOT_NAME_Text_Help, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Help) ==
+                  FPDF_ANNOT_NAME_Text_Help,
               "Icon::kText_Help mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_NewParagraph) == 
-                  FPDF_ANNOT_NAME_Text_NewParagraph, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_NewParagraph) ==
+                  FPDF_ANNOT_NAME_Text_NewParagraph,
               "Icon::kText_NewParagraph mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Paragraph) == 
-                  FPDF_ANNOT_NAME_Text_Paragraph, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Paragraph) ==
+                  FPDF_ANNOT_NAME_Text_Paragraph,
               "Icon::kText_Paragraph mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Insert) == 
-                  FPDF_ANNOT_NAME_Text_Insert, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kText_Insert) ==
+                  FPDF_ANNOT_NAME_Text_Insert,
               "Icon::kText_Insert mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Graph) == 
-                  FPDF_ANNOT_NAME_File_Graph, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Graph) ==
+                  FPDF_ANNOT_NAME_File_Graph,
               "Icon::kFile_Graph mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_PushPin) == 
-                  FPDF_ANNOT_NAME_File_PushPin, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_PushPin) ==
+                  FPDF_ANNOT_NAME_File_PushPin,
               "Icon::kFile_PushPin mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Paperclip) == 
-                  FPDF_ANNOT_NAME_File_Paperclip, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Paperclip) ==
+                  FPDF_ANNOT_NAME_File_Paperclip,
               "Icon::kFile_Paperclip mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Tag) == 
-                  FPDF_ANNOT_NAME_File_Tag, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kFile_Tag) ==
+                  FPDF_ANNOT_NAME_File_Tag,
               "Icon::kFile_Tag mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kSound_Speaker) == 
-                  FPDF_ANNOT_NAME_Sound_Speaker, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kSound_Speaker) ==
+                  FPDF_ANNOT_NAME_Sound_Speaker,
               "Icon::kSound_Speaker mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kSound_Mic) == 
-                  FPDF_ANNOT_NAME_Sound_Mic, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kSound_Mic) ==
+                  FPDF_ANNOT_NAME_Sound_Mic,
               "Icon::kSound_Mic mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Approved) == 
-                  FPDF_ANNOT_NAME_Stamp_Approved, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Approved) ==
+                  FPDF_ANNOT_NAME_Stamp_Approved,
               "Icon::kStamp_Approved mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Experimental) == 
-                  FPDF_ANNOT_NAME_Stamp_Experimental, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Experimental) ==
+                  FPDF_ANNOT_NAME_Stamp_Experimental,
               "Icon::kStamp_Experimental mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_NotApproved) == 
-                  FPDF_ANNOT_NAME_Stamp_NotApproved, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_NotApproved) ==
+                  FPDF_ANNOT_NAME_Stamp_NotApproved,
               "Icon::kStamp_NotApproved mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_AsIs) == 
-                  FPDF_ANNOT_NAME_Stamp_AsIs, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_AsIs) ==
+                  FPDF_ANNOT_NAME_Stamp_AsIs,
               "Icon::kStamp_AsIs mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Expired) == 
-                  FPDF_ANNOT_NAME_Stamp_Expired, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Expired) ==
+                  FPDF_ANNOT_NAME_Stamp_Expired,
               "Icon::kStamp_Expired mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_NotForPublicRelease) == 
-                  FPDF_ANNOT_NAME_Stamp_NotForPublicRelease, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_NotForPublicRelease) ==
+                  FPDF_ANNOT_NAME_Stamp_NotForPublicRelease,
               "Icon::kStamp_NotForPublicRelease mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Confidential) == 
-                  FPDF_ANNOT_NAME_Stamp_Confidential, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Confidential) ==
+                  FPDF_ANNOT_NAME_Stamp_Confidential,
               "Icon::kStamp_Confidential mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Final) == 
-                  FPDF_ANNOT_NAME_Stamp_Final, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Final) ==
+                  FPDF_ANNOT_NAME_Stamp_Final,
               "Icon::kStamp_Final mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Sold) == 
-                  FPDF_ANNOT_NAME_Stamp_Sold, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Sold) ==
+                  FPDF_ANNOT_NAME_Stamp_Sold,
               "Icon::kStamp_Sold mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Departmental) == 
-                  FPDF_ANNOT_NAME_Stamp_Departmental, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Departmental) ==
+                  FPDF_ANNOT_NAME_Stamp_Departmental,
               "Icon::kStamp_Departmental mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_ForComment) == 
-                  FPDF_ANNOT_NAME_Stamp_ForComment, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_ForComment) ==
+                  FPDF_ANNOT_NAME_Stamp_ForComment,
               "Icon::kStamp_ForComment mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_TopSecret) == 
-                  FPDF_ANNOT_NAME_Stamp_TopSecret, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_TopSecret) ==
+                  FPDF_ANNOT_NAME_Stamp_TopSecret,
               "Icon::kStamp_TopSecret mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Draft) == 
-                  FPDF_ANNOT_NAME_Stamp_Draft, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Draft) ==
+                  FPDF_ANNOT_NAME_Stamp_Draft,
               "Icon::kStamp_Draft mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_ForPublicRelease) == 
-                  FPDF_ANNOT_NAME_Stamp_ForPublicRelease, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_ForPublicRelease) ==
+                  FPDF_ANNOT_NAME_Stamp_ForPublicRelease,
               "Icon::kStamp_ForPublicRelease mismatch");
 static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Completed) ==
                   FPDF_ANNOT_NAME_Stamp_Completed,
@@ -485,11 +485,11 @@ static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Custom) ==
 static_assert(static_cast<int>(CPDF_Annot::Icon::kStamp_Image) ==
                   FPDF_ANNOT_NAME_Stamp_Image,
               "Icon::kStamp_Image mismatch");
-static_assert(static_cast<int>(CPDF_Annot::Icon::kLast) == 
-                  FPDF_ANNOT_NAME_LAST, 
+static_assert(static_cast<int>(CPDF_Annot::Icon::kLast) == FPDF_ANNOT_NAME_LAST,
               "Icon::kLast mismatch");
 
-// These checks ensure the consistency of reply type values across core/ and public.
+// These checks ensure the consistency of reply type values across core/ and
+// public.
 static_assert(static_cast<int>(CPDF_Annot::ReplyType::kUnknown) ==
                   FPDF_ANNOT_RT_UNKNOWN,
               "ReplyType::kUnknown mismatch");
@@ -501,39 +501,45 @@ static_assert(static_cast<int>(CPDF_Annot::ReplyType::kGroup) ==
               "ReplyType::kGroup mismatch");
 
 class RawAnnotContext final : public CPDF_AnnotContext {
-  public:
-    // Takes ownership of |unparsed_page| by value (RetainPtr).
-    RawAnnotContext(RetainPtr<CPDF_Dictionary> dict,
-                    RetainPtr<CPDF_Page> unparsed_page)
-        : CPDF_AnnotContext(dict, unparsed_page.Get()),
-          owned_page_(std::move(unparsed_page)) {}
-  
-  private:
-    // Keeps the page alive as long as the annot context lives.
-    const RetainPtr<CPDF_Page> owned_page_;
-  };
+ public:
+  // Takes ownership of |unparsed_page| by value (RetainPtr).
+  RawAnnotContext(RetainPtr<CPDF_Dictionary> dict,
+                  RetainPtr<CPDF_Page> unparsed_page,
+                  int annot_index)
+      : CPDF_AnnotContext(dict, unparsed_page.Get(), annot_index),
+        owned_page_(std::move(unparsed_page)) {}
+
+ private:
+  // Keeps the page alive as long as the annot context lives.
+  const RetainPtr<CPDF_Page> owned_page_;
+};
 
 class AnnotAppearanceExporter final : public CPDF_PageOrganizer {
  public:
   AnnotAppearanceExporter(CPDF_Document* dest_doc, CPDF_Document* src_doc)
       : CPDF_PageOrganizer(dest_doc, src_doc) {}
 
-  RetainPtr<CPDF_Stream> ExportFormXObject(RetainPtr<const CPDF_Stream> src_stream) {
-    if (!src_stream || !Init())
+  RetainPtr<CPDF_Stream> ExportFormXObject(
+      RetainPtr<const CPDF_Stream> src_stream) {
+    if (!src_stream || !Init()) {
       return nullptr;
+    }
 
     RetainPtr<CPDF_Object> cloned_object = src_stream->Clone();
     RetainPtr<CPDF_Stream> cloned_stream = ToStream(cloned_object);
-    if (!cloned_stream)
+    if (!cloned_stream) {
       return nullptr;
+    }
 
     const uint32_t src_obj_num = src_stream->GetObjNum();
     const uint32_t dest_obj_num = dest()->AddIndirectObject(cloned_object);
-    if (src_obj_num)
+    if (src_obj_num) {
       AddObjectMapping(src_obj_num, dest_obj_num);
+    }
 
-    if (!UpdateReference(cloned_object))
+    if (!UpdateReference(cloned_object)) {
       return nullptr;
+    }
 
     return cloned_stream;
   }
@@ -569,7 +575,7 @@ bool IsNameValidForSubtype(FPDF_ANNOT_NAME name,
   }
 }
 
-bool HasAPStream(CPDF_Dictionary* pAnnotDict) {
+bool HasAPStream(const CPDF_Dictionary* pAnnotDict) {
   return !!GetAnnotAP(pAnnotDict, CPDF_Annot::AppearanceMode::kNormal);
 }
 
@@ -631,41 +637,49 @@ void UpdateBBox(CPDF_Dictionary* annot_dict) {
 }
 
 BlendMode GetEffectiveAnnotBlendMode(CPDF_AnnotContext* ctx) {
-  if (!ctx)
+  if (!ctx) {
     return BlendMode::kNormal;
+  }
 
-  RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
-  if (!annot_dict)
+  CPDF_DocumentViewScope document_view(ctx->GetPage()->GetDocument());
+  const CPDF_Dictionary* annot_dict = ctx->GetAnnotDict();
+  if (!annot_dict) {
     return BlendMode::kNormal;
+  }
 
   // Get (or detect absence of) normal appearance stream.
   RetainPtr<CPDF_Stream> ap_stream =
-      GetAnnotAP(annot_dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+      GetAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
   if (!ap_stream) {
     // Heuristic: highlight annotations without AP are effectively Multiply.
     const CPDF_Annot::Subtype subtype = CPDF_Annot::StringToAnnotSubtype(
         annot_dict->GetNameFor(pdfium::annotation::kSubtype));
-    if (subtype == CPDF_Annot::Subtype::HIGHLIGHT)
+    if (subtype == CPDF_Annot::Subtype::HIGHLIGHT) {
       return BlendMode::kMultiply;
+    }
     return BlendMode::kNormal;
   }
 
   // Ensure form is parsed.
-  if (!ctx->HasForm())
+  if (!ctx->HasForm()) {
     ctx->SetForm(ap_stream);
+  }
 
   CPDF_Form* form = ctx->GetForm();
-  if (!form)
+  if (!form) {
     return BlendMode::kNormal;
+  }
 
   // Iterate objects in creation order; pick first non-Normal encountered.
   for (const auto& obj : *form) {
-    if (!obj)
+    if (!obj) {
       continue;
+    }
     const CPDF_GeneralState& gs = obj->general_state();
     BlendMode bm = gs.GetBlendType();
-    if (bm != BlendMode::kNormal)
+    if (bm != BlendMode::kNormal) {
       return bm;
+    }
   }
   return BlendMode::kNormal;
 }
@@ -682,11 +696,58 @@ RetainPtr<CPDF_Dictionary> GetMutableAnnotDictFromFPDFAnnotation(
   return context ? context->GetMutableAnnotDict() : nullptr;
 }
 
+constexpr char kEmbedMetadataKey[] = "EMBD_Metadata";
+constexpr char kEmbedMetadataCustomJSONKey[] = "CustomJSON";
+
+RetainPtr<const CPDF_Dictionary> GetEmbedMetadataDict(
+    const CPDF_Dictionary* annot_dict) {
+  return annot_dict ? annot_dict->GetDictFor(kEmbedMetadataKey) : nullptr;
+}
+
+RetainPtr<CPDF_Dictionary> GetOrCreateEmbedMetadataDict(
+    RetainPtr<CPDF_Dictionary> annot_dict) {
+  if (!annot_dict) {
+    return nullptr;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+  if (!metadata) {
+    metadata = annot_dict->SetNewFor<CPDF_Dictionary>(kEmbedMetadataKey);
+  }
+  return metadata;
+}
+
+bool EmbedMetadataIsEmpty(const CPDF_Dictionary* metadata) {
+  return !metadata || metadata->size() == 0;
+}
+
+void RemoveEmbedMetadataIfEmpty(RetainPtr<CPDF_Dictionary> annot_dict) {
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(annot_dict.Get());
+  if (EmbedMetadataIsEmpty(metadata.Get())) {
+    annot_dict->RemoveFor(kEmbedMetadataKey);
+  }
+}
+
+float GetEmbedMetadataFloatFor(const CPDF_Dictionary* annot_dict,
+                               ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetFloatFor(key) : 0.0f;
+}
+
+CFX_FloatRect GetEmbedMetadataRectFor(const CPDF_Dictionary* annot_dict,
+                                      ByteStringView key) {
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  return metadata ? metadata->GetRectFor(key) : CFX_FloatRect();
+}
+
 static uint32_t EnsureIndirect(CPDF_Document* doc,
                                RetainPtr<CPDF_Dictionary> dict) {
   uint32_t objnum = dict->GetObjNum();
-  if (objnum == 0)
+  if (objnum == 0) {
     objnum = doc->AddIndirectObject(dict);
+  }
   return objnum;
 }
 
@@ -741,42 +802,6 @@ CPDF_FormField* GetFormField(FPDF_FORMHANDLE hHandle, FPDF_ANNOTATION annot) {
 
   CPDF_InteractiveForm* pPDFForm = pForm->GetInteractiveForm();
   return pPDFForm->GetFieldByDict(pAnnotDict);
-}
-
-RetainPtr<CPDF_Dictionary> GetMutableFieldDict(CPDF_FormField* pFormField) {
-  if (!pFormField) {
-    return nullptr;
-  }
-
-  return pdfium::WrapRetain(
-      const_cast<CPDF_Dictionary*>(pFormField->GetFieldDict().Get()));
-}
-
-bool ArrayContainsDictWithObjNum(const CPDF_Array* pArray, uint32_t obj_num) {
-  if (!pArray || obj_num == 0) {
-    return false;
-  }
-
-  for (size_t i = 0; i < pArray->size(); ++i) {
-    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i);
-    if (pDict && pDict->GetObjNum() == obj_num) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void RemoveDictWithObjNumFromArray(CPDF_Array* pArray, uint32_t obj_num) {
-  if (!pArray || obj_num == 0) {
-    return;
-  }
-
-  for (size_t i = pArray->size(); i > 0; --i) {
-    RetainPtr<const CPDF_Dictionary> pDict = pArray->GetDictAt(i - 1);
-    if (pDict && pDict->GetObjNum() == obj_num) {
-      pArray->RemoveAt(i - 1);
-    }
-  }
 }
 
 // If `allowed_types` is empty, then match all types.
@@ -840,7 +865,13 @@ std::optional<CFX_Color::TypeAndARGB> GetFreetextFontColor(
   RetainPtr<const CPDF_Dictionary> acroform_dict =
       root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
   CPDF_DefaultAppearance default_appearance(annot_dict, acroform_dict);
-  return default_appearance.GetColorARGB();
+  std::optional<CFX_Color::TypeAndARGB> color =
+      default_appearance.GetColorARGB();
+  if (color.has_value()) {
+    return color;
+  }
+  return CFX_Color::TypeAndARGB(CFX_Color::Type::kGray,
+                                ArgbEncode(255, 0, 0, 0));
 }
 
 std::optional<FX_COLORREF> GetWidgetFontColor(FPDF_FORMHANDLE handle,
@@ -853,19 +884,28 @@ enum class EPDFStampFitCpp { kContain = 0, kCover = 1, kStretch = 2 };
 
 inline EPDFStampFitCpp ToCpp(EPDF_STAMP_FIT v) {
   switch (v) {
-    case EPDF_STAMP_FIT_COVER:   return EPDFStampFitCpp::kCover;
-    case EPDF_STAMP_FIT_STRETCH: return EPDFStampFitCpp::kStretch;
-    case EPDF_STAMP_FIT_CONTAIN: return EPDFStampFitCpp::kContain;
+    case EPDF_STAMP_FIT_COVER:
+      return EPDFStampFitCpp::kCover;
+    case EPDF_STAMP_FIT_STRETCH:
+      return EPDFStampFitCpp::kStretch;
+    case EPDF_STAMP_FIT_CONTAIN:
+      return EPDFStampFitCpp::kContain;
   }
   return EPDFStampFitCpp::kContain;
 }
 
-static bool FitImageIntoBox(float box_w, float box_h,
-                            float img_w, float img_h,
+static bool FitImageIntoBox(float box_w,
+                            float box_h,
+                            float img_w,
+                            float img_h,
                             EPDFStampFitCpp fit,
-                            float* out_drawn_w, float* out_drawn_h,
-                            float* out_dx, float* out_dy) {
-  if (box_w <= 0 || box_h <= 0 || img_w <= 0 || img_h <= 0) return false;
+                            float* out_drawn_w,
+                            float* out_drawn_h,
+                            float* out_dx,
+                            float* out_dy) {
+  if (box_w <= 0 || box_h <= 0 || img_w <= 0 || img_h <= 0) {
+    return false;
+  }
 
   const float sx = box_w / img_w;
   const float sy = box_h / img_h;
@@ -902,13 +942,16 @@ static bool FitImageIntoBox(float box_w, float box_h,
 // CalcBoundingBox() already returns bounds in the post-Matrix display space.
 // We therefore must NOT apply the Matrix again here.
 // Falls back to the raw /BBox if the form has no parseable page objects.
-static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc, CPDF_Stream* stream) {
-  if (!doc || !stream)
+static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc,
+                                          CPDF_Stream* stream) {
+  if (!doc || !stream) {
     return CFX_FloatRect();
+  }
 
   RetainPtr<CPDF_Dictionary> stream_dict = stream->GetMutableDict();
-  if (!stream_dict)
+  if (!stream_dict) {
     return CFX_FloatRect();
+  }
 
   auto form = std::make_unique<CPDF_Form>(
       doc, stream_dict->GetMutableDictFor("Resources"),
@@ -921,8 +964,9 @@ static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc, CPDF_Stream* strea
     bounds = stream_dict->GetRectFor("BBox");
     bounds.Normalize();
   }
-  if (bounds.IsEmpty())
+  if (bounds.IsEmpty()) {
     return CFX_FloatRect();
+  }
   return bounds;
 }
 
@@ -930,13 +974,15 @@ static CFX_FloatRect GetPaintedFormBounds(CPDF_Document* doc, CPDF_Stream* strea
 // has no parseable page objects, or all objects are outside the BBox clip).
 // Computes the display box by applying the stream's /Matrix to its /BBox.
 static CFX_FloatRect GetFormDisplayBox(const CPDF_Dictionary* stream_dict) {
-  if (!stream_dict)
+  if (!stream_dict) {
     return CFX_FloatRect();
+  }
 
   CFX_FloatRect bbox = stream_dict->GetRectFor("BBox");
   bbox.Normalize();
-  if (bbox.IsEmpty())
+  if (bbox.IsEmpty()) {
     return CFX_FloatRect();
+  }
 
   CFX_Matrix matrix = stream_dict->GetMatrixFor("Matrix");
   if (!matrix.IsIdentity()) {
@@ -950,12 +996,11 @@ static CFX_FloatRect GetFormDisplayBox(const CPDF_Dictionary* stream_dict) {
 // Resources/XObject/EPDFWRAP, so the outer AP content can be a simple
 // "q ... cm /EPDFWRAP Do Q" that handles all scaling.  Returns false on
 // failure; on success the caller must write the new wrapper content stream.
-static bool WrapAPContentIntoFormXObject(
-    CPDF_Stream* ap,
-    CPDF_Document* doc) {
+static bool WrapAPContentIntoFormXObject(CPDF_Stream* ap, CPDF_Document* doc) {
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
-  if (!ap_dict)
+  if (!ap_dict) {
     return false;
+  }
 
   // Build the child Form XObject dictionary.
   auto child_dict = doc->New<CPDF_Dictionary>();
@@ -967,17 +1012,20 @@ static bool WrapAPContentIntoFormXObject(
   // Fallback to Matrix-transformed BBox if the raw BBox is missing/empty.
   CFX_FloatRect bbox = ap_dict->GetRectFor("BBox");
   bbox.Normalize();
-  if (bbox.IsEmpty())
+  if (bbox.IsEmpty()) {
     bbox = GetFormDisplayBox(ap_dict.Get());
-  if (bbox.IsEmpty())
+  }
+  if (bbox.IsEmpty()) {
     return false;
+  }
   child_dict->SetRectFor("BBox", bbox);
 
   CFX_Matrix child_matrix = ap_dict->GetMatrixFor("Matrix");
-  if (!child_matrix.IsIdentity())
+  if (!child_matrix.IsIdentity()) {
     child_dict->SetMatrixFor("Matrix", child_matrix);
-  else
+  } else {
     child_dict->RemoveFor("Matrix");
+  }
 
   // Move Resources to the child (avoids deep-clone cost).
   RetainPtr<CPDF_Dictionary> res = ap_dict->GetMutableDictFor("Resources");
@@ -1000,9 +1048,26 @@ static bool WrapAPContentIntoFormXObject(
       ap_dict->SetNewFor<CPDF_Dictionary>("Resources");
   RetainPtr<CPDF_Dictionary> xobj =
       new_res->SetNewFor<CPDF_Dictionary>("XObject");
-  xobj->SetNewFor<CPDF_Reference>("EPDFWRAP", doc,
-                                  child_stream->GetObjNum());
+  xobj->SetNewFor<CPDF_Reference>("EPDFWRAP", doc, child_stream->GetObjNum());
   return true;
+}
+
+CPDF_Annot::StandardFont ResolveStandardFontFromDefaultResources(
+    const CPDF_Dictionary* dr_dict,
+    const ByteString& resource_name) {
+  if (!dr_dict || resource_name.IsEmpty()) {
+    return CPDF_Annot::StandardFont::kUnknown;
+  }
+
+  RetainPtr<const CPDF_Dictionary> font_resources = dr_dict->GetDictFor("Font");
+  RetainPtr<const CPDF_Dictionary> font_dict =
+      font_resources ? font_resources->GetDictFor(resource_name.AsStringView())
+                     : nullptr;
+  if (!font_dict) {
+    return CPDF_Annot::StandardFont::kUnknown;
+  }
+
+  return CPDF_Annot::StringToStandardFont(font_dict->GetNameFor("BaseFont"));
 }
 }  // namespace
 
@@ -1028,6 +1093,10 @@ FPDFAnnot_IsSupportedSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
     case FPDF_ANNOT_POLYLINE:
     case FPDF_ANNOT_LINE:
     case FPDF_ANNOT_CARET:
+    // EmbedPDF: widgets are born through the annotation API and adopted by a
+    // form field via EPDFForm_AttachWidget (public/epdf_form.h). An
+    // unattached widget is an ordinary, inert annotation.
+    case FPDF_ANNOT_WIDGET:
       return true;
     default:
       return false;
@@ -1068,24 +1137,27 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetAnnotCount(FPDF_PAGE page) {
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV FPDFPage_GetAnnot(FPDF_PAGE page,
                                                             int index) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage || index < 0) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view || index < 0) {
     return nullptr;
   }
+  const CPDF_Page* pPage = page_view.Get();
 
-  RetainPtr<CPDF_Array> pAnnots = pPage->GetMutableAnnotsArray();
+  RetainPtr<const CPDF_Array> pAnnots = pPage->GetAnnotsArray();
   if (!pAnnots || static_cast<size_t>(index) >= pAnnots->size()) {
     return nullptr;
   }
 
+  RetainPtr<const CPDF_Dictionary> const_dict =
+      ToDictionary(pAnnots->GetDirectObjectAt(index));
   RetainPtr<CPDF_Dictionary> dict =
-      ToDictionary(pAnnots->GetMutableDirectObjectAt(index));
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
   if (!dict) {
     return nullptr;
   }
 
   auto pNewAnnot = std::make_unique<CPDF_AnnotContext>(
-      std::move(dict), IPDFPageFromFPDFPage(page));
+      std::move(dict), IPDFPageFromFPDFPage(page), index);
 
   // Caller takes ownership.
   return FPDFAnnotationFromCPDFAnnotContext(pNewAnnot.release());
@@ -1093,15 +1165,17 @@ FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV FPDFPage_GetAnnot(FPDF_PAGE page,
 
 FPDF_EXPORT int FPDF_CALLCONV FPDFPage_GetAnnotIndex(FPDF_PAGE page,
                                                      FPDF_ANNOTATION annot) {
-  const CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) {
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return -1;
   }
+  const CPDF_Page* pPage = page_view.Get();
 
-  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict) {
+  ScopedFPDFAnnotationView annot_view(annot);
+  if (!annot_view) {
     return -1;
   }
+  const CPDF_Dictionary* pAnnotDict = annot_view.Get()->GetAnnotDict();
 
   RetainPtr<const CPDF_Array> pAnnots = pPage->GetAnnotsArray();
   if (!pAnnots) {
@@ -1288,10 +1362,11 @@ FPDF_EXPORT int FPDF_CALLCONV FPDFAnnot_GetObjectCount(FPDF_ANNOTATION annot) {
     return 0;
   }
 
+  CPDF_DocumentViewScope document_view(pAnnot->GetPage()->GetDocument());
   if (!pAnnot->HasForm()) {
-    RetainPtr<CPDF_Dictionary> dict = pAnnot->GetMutableAnnotDict();
+    const CPDF_Dictionary* dict = pAnnot->GetAnnotDict();
     RetainPtr<CPDF_Stream> pStream =
-        GetAnnotAP(dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+        GetAnnotAP(dict, CPDF_Annot::AppearanceMode::kNormal);
     if (!pStream) {
       return 0;
     }
@@ -1308,10 +1383,11 @@ FPDFAnnot_GetObject(FPDF_ANNOTATION annot, int index) {
     return nullptr;
   }
 
+  CPDF_DocumentViewScope document_view(pAnnot->GetPage()->GetDocument());
   if (!pAnnot->HasForm()) {
-    RetainPtr<CPDF_Dictionary> pAnnotDict = pAnnot->GetMutableAnnotDict();
+    const CPDF_Dictionary* pAnnotDict = pAnnot->GetAnnotDict();
     RetainPtr<CPDF_Stream> pStream =
-        GetAnnotAP(pAnnotDict.Get(), CPDF_Annot::AppearanceMode::kNormal);
+        GetAnnotAP(pAnnotDict, CPDF_Annot::AppearanceMode::kNormal);
     if (!pStream) {
       return nullptr;
     }
@@ -1397,8 +1473,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetColor(FPDF_ANNOTATION annot,
                                                        unsigned int* G,
                                                        unsigned int* B,
                                                        unsigned int* A) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
 
   if (!pAnnotDict || !R || !G || !B || !A) {
     return false;
@@ -1407,7 +1482,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetColor(FPDF_ANNOTATION annot,
   // For annotations with their appearance streams already defined, the path
   // stream's own color definitions take priority over the annotation color
   // definitions retrieved by this method, hence this method will simply fail.
-  if (HasAPStream(pAnnotDict.Get())) {
+  if (HasAPStream(pAnnotDict)) {
     return false;
   }
 
@@ -1812,6 +1887,267 @@ EPDFAnnot_SetNumberValue(FPDF_ANNOTATION annot,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_HasEmbedMetadata(FPDF_ANNOTATION annot) {
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  return !!GetEmbedMetadataDict(annot_dict);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadata(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(kEmbedMetadataKey);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_ClearEmbedMetadataKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+  if (!metadata) {
+    return true;
+  }
+
+  metadata->RemoveFor(key);
+  RemoveEmbedMetadataIfEmpty(annot_dict);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WIDESTRING value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_String>(
+      key, UNSAFE_BUFFERS(WideStringFromFPDFWideString(value).AsStringView()));
+  return true;
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataString(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 FPDF_WCHAR* buffer,
+                                 unsigned long buflen) {
+  if (!key) {
+    return 0;
+  }
+
+  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return 0;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata = GetEmbedMetadataDict(annot_dict);
+  // SAFETY: required from caller.
+  return Utf16EncodeMaybeCopyAndReturnLength(
+      metadata ? metadata->GetUnicodeTextFor(key) : WideString(),
+      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_Number>(key, value);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataNumber(FPDF_ANNOTATION annot,
+                                 FPDF_BYTESTRING key,
+                                 float* value) {
+  if (!key || !value) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kNumber) {
+    return false;
+  }
+
+  *value = object->GetNumber();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL value) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata = GetOrCreateEmbedMetadataDict(
+      GetMutableAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetNewFor<CPDF_Boolean>(key, !!value);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataBoolean(FPDF_ANNOTATION annot,
+                                  FPDF_BYTESTRING key,
+                                  FPDF_BOOL* value) {
+  if (!key || !value) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kBoolean) {
+    return false;
+  }
+
+  *value = object->GetInteger() != 0;
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               const FS_RECTF* rect) {
+  if (!key) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  if (!rect) {
+    RetainPtr<CPDF_Dictionary> metadata =
+        annot_dict->GetMutableDictFor(kEmbedMetadataKey);
+    if (metadata) {
+      metadata->RemoveFor(key);
+      RemoveEmbedMetadataIfEmpty(annot_dict);
+    }
+    return true;
+  }
+
+  RetainPtr<CPDF_Dictionary> metadata =
+      GetOrCreateEmbedMetadataDict(annot_dict);
+  if (!metadata) {
+    return false;
+  }
+
+  metadata->SetRectFor(key, CFXFloatRectFromFSRectF(*rect));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataRect(FPDF_ANNOTATION annot,
+                               FPDF_BYTESTRING key,
+                               FS_RECTF* rect) {
+  if (!key || !rect) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> metadata =
+      GetEmbedMetadataDict(GetAnnotDictFromFPDFAnnotation(annot));
+  if (!metadata) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Object> object = metadata->GetObjectFor(key);
+  if (!object || object->GetType() != CPDF_Object::Type::kArray) {
+    return false;
+  }
+
+  *rect = FSRectFFromCFXFloatRect(metadata->GetRectFor(key));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetEmbedMetadataJSON(FPDF_ANNOTATION annot, FPDF_WIDESTRING json) {
+  return EPDFAnnot_SetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
+                                          json);
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+EPDFAnnot_GetEmbedMetadataJSON(FPDF_ANNOTATION annot,
+                               FPDF_WCHAR* buffer,
+                               unsigned long buflen) {
+  return EPDFAnnot_GetEmbedMetadataString(annot, kEmbedMetadataCustomJSONKey,
+                                          buffer, buflen);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDocument_ClearEmbedMetadata(FPDF_DOCUMENT document) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  if (!pdf) {
+    return false;
+  }
+
+  for (int page_index = 0; page_index < pdf->GetPageCount(); ++page_index) {
+    RetainPtr<CPDF_Dictionary> page_dict =
+        pdf->GetMutablePageDictionary(page_index);
+    if (!page_dict) {
+      continue;
+    }
+
+    RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+    if (!annots) {
+      continue;
+    }
+
+    for (size_t annot_index = 0; annot_index < annots->size(); ++annot_index) {
+      RetainPtr<CPDF_Dictionary> annot_dict =
+          annots->GetMutableDictAt(annot_index);
+      if (annot_dict) {
+        annot_dict->RemoveFor(kEmbedMetadataKey);
+      }
+    }
+  }
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFAnnot_SetAP(FPDF_ANNOTATION annot,
                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                 FPDF_WIDESTRING value) {
@@ -1897,8 +2233,7 @@ FPDFAnnot_GetAP(FPDF_ANNOTATION annot,
                 FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                 FPDF_WCHAR* buffer,
                 unsigned long buflen) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
     return 0;
   }
@@ -1910,7 +2245,7 @@ FPDFAnnot_GetAP(FPDF_ANNOTATION annot,
   CPDF_Annot::AppearanceMode mode =
       static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
 
-  RetainPtr<CPDF_Stream> pStream = GetAnnotAPNoFallback(pAnnotDict.Get(), mode);
+  RetainPtr<CPDF_Stream> pStream = GetAnnotAPNoFallback(pAnnotDict, mode);
   // SAFETY: required from caller.
   return Utf16EncodeMaybeCopyAndReturnLength(
       pStream ? pStream->GetUnicodeText() : WideString(),
@@ -1924,8 +2259,12 @@ FPDFAnnot_GetLinkedAnnot(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
     return nullptr;
   }
 
+  CPDF_DocumentViewScope document_view(pAnnot->GetPage()->GetDocument());
+  const CPDF_Dictionary* annot_dict = pAnnot->GetAnnotDict();
+  RetainPtr<const CPDF_Dictionary> const_linked_dict =
+      annot_dict ? annot_dict->GetDictFor(key) : nullptr;
   RetainPtr<CPDF_Dictionary> pLinkedDict =
-      pAnnot->GetMutableAnnotDict()->GetMutableDictFor(key);
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_linked_dict.Get()));
   if (!pLinkedDict || pLinkedDict->GetNameFor("Type") != "Annot") {
     return nullptr;
   }
@@ -2173,19 +2512,15 @@ FPDFAnnot_SetFontColor(FPDF_FORMHANDLE handle,
     return false;
   }
 
-  bool generated = CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
-      form->GetInteractiveForm()->document(), annot_dict, CFX_Color(R, G, B));
-  if (!generated) {
+  CPDF_Document* doc = form->GetInteractiveForm()->document();
+  bool updated = CPDF_GenerateAP::GenerateDefaultAppearanceWithColor(
+      doc, annot_dict, CFX_Color(R, G, B));
+  if (!updated) {
     return false;
   }
 
-  // Remove the appearance stream. Otherwise PDF viewers will render that and
-  // not use the new color.
-  //
-  // TODO(thestig) When GenerateDefaultAppearanceWithColor() properly updates
-  // the annotation's appearance stream, remove this.
-  annot_dict->RemoveFor(pdfium::annotation::kAP);
-  return true;
+  return CPDF_GenerateAP::GenerateAnnotAP(doc, annot_dict.Get(),
+                                          CPDF_Annot::Subtype::FREETEXT);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2309,9 +2644,14 @@ FPDF_EXPORT FPDF_LINK FPDF_CALLCONV FPDFAnnot_GetLink(FPDF_ANNOTATION annot) {
     return nullptr;
   }
 
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return nullptr;
+  }
+
   // Unretained reference in public API. NOLINTNEXTLINE
   return FPDFLinkFromCPDFDictionary(
-      CPDFAnnotContextFromFPDFAnnotation(annot)->GetMutableAnnotDict());
+      const_cast<CPDF_Dictionary*>(context->GetAnnotDict()));
 }
 
 FPDF_EXPORT int FPDF_CALLCONV
@@ -2369,31 +2709,81 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetURI(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetAction(FPDF_ANNOTATION annot, FPDF_ACTION action) {
-  if (!action || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINK)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetAction(FPDF_ANNOTATION annot,
+                                                        FPDF_ACTION action) {
+  if (!action || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINK) {
     return false;
+  }
 
   CPDF_AnnotContext* pAnnotContext = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pAnnotContext)
+  if (!pAnnotContext) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> annot_dict = pAnnotContext->GetMutableAnnotDict();
-  if (!annot_dict)
+  if (!annot_dict) {
     return false;
+  }
 
   CPDF_Dictionary* act_dict = CPDFDictionaryFromFPDFAction(action);
-  if (!act_dict)
+  if (!act_dict) {
     return false;
+  }
 
   // Require the action to be indirect so we can reference it.
-  if (act_dict->GetObjNum() == 0)
+  if (act_dict->GetObjNum() == 0) {
     return false;
+  }
 
   CPDF_Document* pDoc = pAnnotContext->GetPage()->GetDocument();
 
-  // Set /A as an indirect reference to the action.
+  // Set /A as an indirect reference to the action. A link dictionary must
+  // not carry both /A and /Dest (ISO 32000-1 Table 173), so drop any
+  // pre-existing direct destination while we are at it.
   annot_dict->SetNewFor<CPDF_Reference>("A", pDoc, act_dict->GetObjNum());
+  annot_dict->RemoveFor("Dest");
+  return true;
+}
+
+namespace {
+
+// Shared body of the two link-entry removers: single-purpose, idempotent.
+FPDF_BOOL RemoveLinkDictEntry(FPDF_ANNOTATION annot, const char* key) {
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINK) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(key);
+  return true;
+}
+
+}  // namespace
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveAction(FPDF_ANNOTATION annot) {
+  return RemoveLinkDictEntry(annot, "A");
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveDest(FPDF_ANNOTATION annot) {
+  return RemoveLinkDictEntry(annot, "Dest");
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_RemoveKey(FPDF_ANNOTATION annot, FPDF_BYTESTRING key) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !key) {
+    return false;
+  }
+
+  annot_dict->RemoveFor(key);
   return true;
 }
 
@@ -2403,14 +2793,19 @@ FPDFAnnot_GetFileAttachment(FPDF_ANNOTATION annot) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return nullptr;
+  }
+  CPDF_DocumentViewScope document_view(context->GetPage()->GetDocument());
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
   if (!annot_dict) {
     return nullptr;
   }
 
+  RetainPtr<const CPDF_Object> file_spec = annot_dict->GetDirectObjectFor("FS");
   return FPDFAttachmentFromCPDFObject(
-      annot_dict->GetMutableDirectObjectFor("FS"));
+      const_cast<CPDF_Object*>(file_spec.Get()));
 }
 
 FPDF_EXPORT FPDF_ATTACHMENT FPDF_CALLCONV
@@ -2456,15 +2851,16 @@ static ByteString GetColorKeyForType(FPDFANNOT_COLORTYPE type) {
   return "C";
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
-                   FPDFANNOT_COLORTYPE type,
-                   unsigned int R,
-                   unsigned int G,
-                   unsigned int B) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict || R > 255 || G > 255 || B > 255)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
+                                                       FPDFANNOT_COLORTYPE type,
+                                                       unsigned int R,
+                                                       unsigned int G,
+                                                       unsigned int B) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict || R > 255 || G > 255 || B > 255) {
     return false;
+  }
 
   // OverlayColor (OC) is only valid for Redact annotations.
   if (type == FPDFANNOT_COLORTYPE_OverlayColor &&
@@ -2473,7 +2869,8 @@ EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
   }
 
   ByteString key = GetColorKeyForType(type);
-  RetainPtr<CPDF_Array> pColor = pAnnotDict->GetMutableArrayFor(key.AsStringView());
+  RetainPtr<CPDF_Array> pColor =
+      pAnnotDict->GetMutableArrayFor(key.AsStringView());
   if (pColor) {
     pColor->Clear();
   } else {
@@ -2487,18 +2884,19 @@ EPDFAnnot_SetColor(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
-                   FPDFANNOT_COLORTYPE type,
-                   unsigned int* R,
-                   unsigned int* G,
-                   unsigned int* B) {
-  if (!R || !G || !B)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
+                                                       FPDFANNOT_COLORTYPE type,
+                                                       unsigned int* R,
+                                                       unsigned int* G,
+                                                       unsigned int* B) {
+  if (!R || !G || !B) {
     return false;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // OverlayColor (OC) is only valid for Redact annotations.
   if (type == FPDFANNOT_COLORTYPE_OverlayColor &&
@@ -2508,8 +2906,9 @@ EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
 
   ByteString key = GetColorKeyForType(type);
   RetainPtr<const CPDF_Array> pColor = dict->GetArrayFor(key.AsStringView());
-  if (!pColor)
-    return false;                    // "no colour set"
+  if (!pColor) {
+    return false;  // "no colour set"
+  }
 
   CFX_Color color = fpdfdoc::CFXColorFromArray(*pColor);
   switch (color.nColorType) {
@@ -2521,7 +2920,7 @@ EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
     case CFX_Color::Type::kGray:
       *R = *G = *B = color.fColor1 * 255.f;
       break;
-    case CFX_Color::Type::kCMYK:     // convert roughly
+    case CFX_Color::Type::kCMYK:  // convert roughly
       *R = 255.f * (1 - color.fColor1) * (1 - color.fColor4);
       *G = 255.f * (1 - color.fColor2) * (1 - color.fColor4);
       *B = 255.f * (1 - color.fColor3) * (1 - color.fColor4);
@@ -2534,9 +2933,11 @@ EPDFAnnot_GetColor(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type) {
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   // OverlayColor (OC) is only valid for Redact annotations.
   if (type == FPDFANNOT_COLORTYPE_OverlayColor &&
@@ -2550,11 +2951,13 @@ EPDFAnnot_ClearColor(FPDF_ANNOTATION annot, FPDFANNOT_COLORTYPE type) {
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot, unsigned int alpha) {
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict || alpha > 255)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot,
+                                                         unsigned int alpha) {
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict || alpha > 255) {
     return false;
+  }
 
   if (alpha == 255) {
     dict->RemoveFor("CA");
@@ -2564,13 +2967,15 @@ EPDFAnnot_SetOpacity(FPDF_ANNOTATION annot, unsigned int alpha) {
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot, unsigned int* alpha) {
-  if (!alpha)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetOpacity(FPDF_ANNOTATION annot,
+                                                         unsigned int* alpha) {
+  if (!alpha) {
     return false;
+  }
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   float ca = dict->KeyExist("CA") ? dict->GetFloatFor("CA") : 1.0f;
   *alpha = std::clamp(ca, 0.f, 1.f) * 255.f + 0.5f;
@@ -2597,14 +3002,14 @@ EPDFAnnot_GetBorderEffect(FPDF_ANNOTATION annot, float* intensity) {
 
   // The style must be 'Cloudy' for the intensity to be meaningful.
   if (pBEDict->GetNameFor("S") != "C") {
-      return false;
+    return false;
   }
 
   // The intensity is in the /I key. Default is 1 if not present.
   if (pBEDict->KeyExist("I")) {
     *intensity = pBEDict->GetFloatFor("I");
   } else {
-    *intensity = 1.0f; // Default intensity for cloudy border
+    *intensity = 1.0f;  // Default intensity for cloudy border
   }
 
   return true;
@@ -2623,7 +3028,8 @@ EPDFAnnot_SetBorderEffect(FPDF_ANNOTATION annot, float intensity) {
     return false;
   }
 
-  RetainPtr<CPDF_Dictionary> pBEDict = pAnnotDict->SetNewFor<CPDF_Dictionary>("BE");
+  RetainPtr<CPDF_Dictionary> pBEDict =
+      pAnnotDict->SetNewFor<CPDF_Dictionary>("BE");
   pBEDict->SetNewFor<CPDF_Name>("S", "C");
   pBEDict->SetNewFor<CPDF_Number>("I", intensity);
 
@@ -2640,8 +3046,9 @@ EPDFAnnot_ClearBorderEffect(FPDF_ANNOTATION annot) {
 
   RetainPtr<CPDF_Dictionary> pAnnotDict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  if (!pAnnotDict) {
     return false;
+  }
 
   pAnnotDict->RemoveFor("BE");
   return true;
@@ -2688,10 +3095,10 @@ EPDFAnnot_GetRectangleDifferences(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetRectangleDifferences(FPDF_ANNOTATION annot,
-                                   float left,
-                                   float bottom,
-                                   float right,
-                                   float top) {
+                                  float left,
+                                  float bottom,
+                                  float right,
+                                  float top) {
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
   if (subtype != FPDF_ANNOT_SQUARE && subtype != FPDF_ANNOT_CIRCLE &&
       subtype != FPDF_ANNOT_CARET && subtype != FPDF_ANNOT_FREETEXT &&
@@ -2724,12 +3131,37 @@ EPDFAnnot_ClearRectangleDifferences(FPDF_ANNOTATION annot) {
 
   RetainPtr<CPDF_Dictionary> pAnnotDict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  if (!pAnnotDict) {
     return false;
+  }
 
   pAnnotDict->RemoveFor("RD");
   return true;
 }
+
+namespace {
+
+RetainPtr<const CPDF_Array> GetExplicitBorderDashArray(
+    const CPDF_Dictionary* pAnnotDict) {
+  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
+  if (pBSDict) {
+    // /BS takes precedence over /Border. A missing or unrecognised /S uses
+    // the solid default, so no dash pattern applies.
+    if (pBSDict->GetNameFor("S") != "D") {
+      return nullptr;
+    }
+    return pBSDict->GetArrayFor("D");
+  }
+
+  RetainPtr<const CPDF_Array> pBorderArray =
+      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
+  if (!pBorderArray || pBorderArray->size() < 4) {
+    return nullptr;
+  }
+  return pBorderArray->GetArrayAt(3);
+}
+
+}  // namespace
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot) {
@@ -2738,24 +3170,9 @@ EPDFAnnot_GetBorderDashPatternCount(FPDF_ANNOTATION annot) {
     return 0;
   }
 
-  // The dash pattern is inside the /BS dictionary.
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (!pBSDict) {
-    return 0;
-  }
-  
-  // The border style must be dashed.
-  if (pBSDict->GetNameFor("S") != "D") {
-      return 0;
-  }
-
-  // The dash pattern is defined by the /D array.
-  RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
-  if (!pDashArray) {
-    return 0;
-  }
-
-  return pDashArray->size();
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
+  return pDashArray ? pDashArray->size() : 0;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2767,12 +3184,8 @@ EPDFAnnot_GetBorderDashPattern(FPDF_ANNOTATION annot,
     return false;
   }
 
-  RetainPtr<const CPDF_Dictionary> pBSDict = pAnnotDict->GetDictFor("BS");
-  if (!pBSDict || pBSDict->GetNameFor("S") != "D") {
-    return false;
-  }
-
-  RetainPtr<const CPDF_Array> pDashArray = pBSDict->GetArrayFor("D");
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
   if (!pDashArray || pDashArray->size() < count) {
     return false;
   }
@@ -2788,25 +3201,29 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
                                const float* dash_array,
                                unsigned long count) {
-  if (!annot)
+  if (!annot) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> annot_dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict)
+  if (!annot_dict) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> bs_dict = annot_dict->GetMutableDictFor("BS");
-  if (!bs_dict)
+  if (!bs_dict) {
     bs_dict = annot_dict->SetNewFor<CPDF_Dictionary>("BS");
+  }
 
   // --- Removal branch (PDFium style) ---
   if (!dash_array || count == 0) {
     bs_dict->RemoveFor("D");
     // Optional: if style was dashed only because of the array, you can revert.
     // Leaving it unchanged matches PDFium's permissive style.
-    if (bs_dict->size() == 0)
+    if (bs_dict->size() == 0) {
       annot_dict->RemoveFor("BS");
+    }
     return true;
   }
 
@@ -2814,14 +3231,16 @@ EPDFAnnot_SetBorderDashPattern(FPDF_ANNOTATION annot,
   bs_dict->SetNewFor<CPDF_Name>("S", "D");
 
   RetainPtr<CPDF_Array> d_array = bs_dict->GetMutableArrayFor("D");
-  if (d_array)
+  if (d_array) {
     d_array->Clear();
-  else
+  } else {
     d_array = bs_dict->SetNewFor<CPDF_Array>("D");
+  }
 
   // SAFETY: caller guarantees `dash_array` has `count` elements.
-  for (unsigned long i = 0; i < count; ++i)
+  for (unsigned long i = 0; i < count; ++i) {
     d_array->AppendNew<CPDF_Number>(dash_array[i]);
+  }
 
   return true;
 }
@@ -2830,7 +3249,9 @@ FPDF_EXPORT FPDF_ANNOT_BORDER_STYLE FPDF_CALLCONV
 EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width) {
   const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
   if (!pAnnotDict) {
-    if (width) *width = 0;
+    if (width) {
+      *width = 0;
+    }
     return FPDF_ANNOT_BS_UNKNOWN;
   }
 
@@ -2839,13 +3260,29 @@ EPDFAnnot_GetBorderStyle(FPDF_ANNOTATION annot, float* width) {
     if (width) {
       *width = pBSDict->KeyExist("W") ? pBSDict->GetFloatFor("W") : 1.0f;
     }
-    // Use our new internal helper function and cast the result
-    return static_cast<FPDF_ANNOT_BORDER_STYLE>(
-        CPDF_Annot::StringToBorderStyle(pBSDict->GetNameFor("S")));
+
+    CPDF_Annot::BorderStyle nStyle =
+        CPDF_Annot::StringToBorderStyle(pBSDict->GetNameFor("S"));
+    if (nStyle == CPDF_Annot::BorderStyle::kUnknown) {
+      nStyle = CPDF_Annot::BorderStyle::kSolid;
+    }
+    return static_cast<FPDF_ANNOT_BORDER_STYLE>(nStyle);
   }
-  
-  if (width) *width = 0;
-  return FPDF_ANNOT_BS_UNKNOWN;
+
+  RetainPtr<const CPDF_Array> pBorderArray =
+      pAnnotDict->GetArrayFor(pdfium::annotation::kBorder);
+  if (width) {
+    *width = pBorderArray && pBorderArray->size() >= 3
+                 ? pBorderArray->GetFloatAt(2)
+                 : 1.0f;
+  }
+
+  RetainPtr<const CPDF_Array> pDashArray =
+      GetExplicitBorderDashArray(pAnnotDict);
+  if (pDashArray && !pDashArray->IsEmpty()) {
+    return FPDF_ANNOT_BS_DASHED;
+  }
+  return FPDF_ANNOT_BS_SOLID;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -2915,16 +3352,19 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateAppearanceWithBlend(FPDF_ANNOTATION annot,
                                       FPDF_BLENDMODE blend) {
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!ctx)
+  if (!ctx) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
-  if (!annot_dict)
+  if (!annot_dict) {
     return false;
+  }
 
   CPDF_Document* doc = ctx->GetPage()->GetDocument();
-  if (!doc)
+  if (!doc) {
     return false;
+  }
 
   const CPDF_Annot::Subtype subtype = CPDF_Annot::StringToAnnotSubtype(
       annot_dict->GetNameFor(pdfium::annotation::kSubtype));
@@ -2939,8 +3379,9 @@ EPDFAnnot_GenerateAppearanceWithBlend(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_BLENDMODE FPDF_CALLCONV
 EPDFAnnot_GetBlendMode(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!ctx)
+  if (!ctx) {
     return FPDF_BLENDMODE_Normal;
+  }
 
   BlendMode bm = GetEffectiveAnnotBlendMode(ctx);
   // Safe cast due to static_asserts above.
@@ -2949,20 +3390,24 @@ EPDFAnnot_GetBlendMode(FPDF_ANNOTATION annot) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetIntent(FPDF_ANNOTATION annot, FPDF_BYTESTRING intent) {
-  if (!annot || !intent || !*intent)
+  if (!annot || !intent || !*intent) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // Allow leading slash from caller; strip it.
-  if (intent[0] == '/')
+  if (intent[0] == '/') {
     ++intent;
+  }
 
-  if (!*intent)
+  if (!*intent) {
     return false;
+  }
 
   // Minimal validation (PDFium typically trusts caller). Could reject spaces /
   // delimiters (),<>[]{}/%# if you want to be stricter. Keeping permissive.
@@ -2975,12 +3420,14 @@ EPDFAnnot_GetIntent(FPDF_ANNOTATION annot,
                     FPDF_WCHAR* buffer,
                     unsigned long buflen) {
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
 
   ByteString name = dict->GetNameFor("IT");
-  if (name.IsEmpty())
+  if (name.IsEmpty()) {
     return 0;
+  }
 
   // Name objects are ASCII (or PDF name syntax). For normal ASCII we can
   // construct a WideString directly. (If you later want to decode #XX escapes
@@ -2997,21 +3444,23 @@ EPDFAnnot_GetRichContent(FPDF_ANNOTATION annot,
                          FPDF_WCHAR* buffer,
                          unsigned long buflen) {
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
 
   // /RC may be a text string or a stream (PDF 2.0 §12.5.6.5).
   RetainPtr<const CPDF_Object> rc_obj = dict->GetObjectFor("RC");
-  if (!rc_obj)
+  if (!rc_obj) {
     return 0;
+  }
 
   WideString ws;
   if (rc_obj->IsString() || rc_obj->IsName()) {
-    ws = rc_obj->GetUnicodeText();        // handles PDFDocEncoding / UTF‑16BE
+    ws = rc_obj->GetUnicodeText();  // handles PDFDocEncoding / UTF‑16BE
   } else if (rc_obj->IsStream()) {
     ws = rc_obj->AsStream()->GetUnicodeText();
   } else {
-    return 0;                             // some exotic type we don't handle
+    return 0;  // some exotic type we don't handle
   }
 
   // SAFETY: same pattern as other getters.
@@ -3025,12 +3474,15 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
                          FPDF_ANNOT_LINE_END end_style) {
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
   if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE &&
-      subtype != FPDF_ANNOT_FREETEXT)
+      subtype != FPDF_ANNOT_FREETEXT) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   auto to_core = [](FPDF_ANNOT_LINE_END v) {
     return static_cast<CPDF_Annot::LineEnding>(v);
@@ -3049,23 +3501,27 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
   if (subtype == FPDF_ANNOT_FREETEXT) {
     // FreeText uses a single name for /LE (Acrobat convention).
     ByteString e_name = CPDF_Annot::LineEndingToString(e);
-    if (e_name.IsEmpty())
+    if (e_name.IsEmpty()) {
       e_name = "None";
+    }
     dict->SetNewFor<CPDF_Name>("LE", e_name);
   } else {
     ByteString s_name = CPDF_Annot::LineEndingToString(s);
     ByteString e_name = CPDF_Annot::LineEndingToString(e);
 
-    if (s_name.IsEmpty())
+    if (s_name.IsEmpty()) {
       s_name = "None";
-    if (e_name.IsEmpty())
+    }
+    if (e_name.IsEmpty()) {
       e_name = "None";
+    }
 
     RetainPtr<CPDF_Array> le = dict->GetMutableArrayFor("LE");
-    if (le)
+    if (le) {
       le->Clear();
-    else
+    } else {
       le = dict->SetNewFor<CPDF_Array>("LE");
+    }
 
     le->AppendNew<CPDF_Name>(s_name);
     le->AppendNew<CPDF_Name>(e_name);
@@ -3076,33 +3532,39 @@ EPDFAnnot_SetLineEndings(FPDF_ANNOTATION annot,
 
 static ByteString ReadLineEndingToken(const CPDF_Array* le, size_t idx) {
   RetainPtr<const CPDF_Object> obj = le->GetDirectObjectAt(idx);
-  if (!obj)
+  if (!obj) {
     return ByteString();
+  }
 
-  if (const CPDF_Name* n = obj->AsName())
-    return n->GetString(); // e.g. "OpenArrow"
+  if (const CPDF_Name* n = obj->AsName()) {
+    return n->GetString();  // e.g. "OpenArrow"
+  }
 
-  if (const CPDF_String* s = obj->AsString())
-    return s->GetString(); // tolerate a stray string
+  if (const CPDF_String* s = obj->AsString()) {
+    return s->GetString();  // tolerate a stray string
+  }
 
-  return ByteString(); // anything else -> empty
+  return ByteString();  // anything else -> empty
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
                          FPDF_ANNOT_LINE_END* start_style,
                          FPDF_ANNOT_LINE_END* end_style) {
-  if (!start_style || !end_style)
+  if (!start_style || !end_style) {
     return false;
+  }
 
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
   if (subtype != FPDF_ANNOT_LINE && subtype != FPDF_ANNOT_POLYLINE &&
-      subtype != FPDF_ANNOT_FREETEXT)
+      subtype != FPDF_ANNOT_FREETEXT) {
     return false;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // Try reading as a 2-element array first (spec-compliant for all types).
   RetainPtr<const CPDF_Array> le = dict->GetArrayFor("LE");
@@ -3116,18 +3578,19 @@ EPDFAnnot_GetLineEndings(FPDF_ANNOTATION annot,
         CPDF_Annot::StringToLineEnding(e_name.IsEmpty() ? "None" : e_name);
 
     *start_style = static_cast<FPDF_ANNOT_LINE_END>(s);
-    *end_style   = static_cast<FPDF_ANNOT_LINE_END>(e);
+    *end_style = static_cast<FPDF_ANNOT_LINE_END>(e);
     return true;
   }
 
   // Fall back to single name (Acrobat FreeText convention).
   ByteString name = dict->GetNameFor("LE");
-  if (name.IsEmpty())
+  if (name.IsEmpty()) {
     return false;
+  }
 
   *start_style = FPDF_ANNOT_LE_None;
-  *end_style = static_cast<FPDF_ANNOT_LINE_END>(
-      CPDF_Annot::StringToLineEnding(name));
+  *end_style =
+      static_cast<FPDF_ANNOT_LINE_END>(CPDF_Annot::StringToLineEnding(name));
   return true;
 }
 
@@ -3137,12 +3600,15 @@ EPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
                       unsigned long count) {
   // Accept only Polygon / Polyline annotations.
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_POLYGON && subtype != FPDF_ANNOT_POLYLINE)
+  if (subtype != FPDF_ANNOT_POLYGON && subtype != FPDF_ANNOT_POLYLINE) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   // ───── Removal branch ────────────────────────────────────────────────
   // If caller passes nullptr or zero, delete the /Vertices array.
@@ -3154,10 +3620,11 @@ EPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
   // ───── Replacement branch ───────────────────────────────────────────
   RetainPtr<CPDF_Array> verts =
       dict->GetMutableArrayFor(pdfium::annotation::kVertices);
-  if (verts)
+  if (verts) {
     verts->Clear();
-  else
+  } else {
     verts = dict->SetNewFor<CPDF_Array>(pdfium::annotation::kVertices);
+  }
 
   // SAFETY: caller guarantees |points| has |count| entries.
   auto pts = UNSAFE_BUFFERS(pdfium::span(points, count));
@@ -3169,28 +3636,31 @@ EPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetLine(FPDF_ANNOTATION annot,
-                  const FS_POINTF* start,
-                  const FS_POINTF* end) {
-  if (!annot || !start || !end)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetLine(FPDF_ANNOTATION annot,
+                                                      const FS_POINTF* start,
+                                                      const FS_POINTF* end) {
+  if (!annot || !start || !end) {
     return false;
+  }
 
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINE)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINE) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // (Re‑)create the /L array: [ x1 y1 x2 y2 ]
   RetainPtr<CPDF_Array> line_arr =
       dict->GetMutableArrayFor(pdfium::annotation::kL);
-  if (line_arr)
+  if (line_arr) {
     line_arr->Clear();
-  else
+  } else {
     line_arr = dict->SetNewFor<CPDF_Array>(pdfium::annotation::kL);
+  }
 
   line_arr->AppendNew<CPDF_Number>(start->x);
   line_arr->AppendNew<CPDF_Number>(start->y);
@@ -3217,10 +3687,10 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Allow FREETEXT, WIDGET, and REDACT annotations (all use DA for text styling)
+  // Allow FREETEXT, WIDGET, and REDACT annotations (all use DA for text
+  // styling)
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_FREETEXT && 
-      subtype != FPDF_ANNOT_WIDGET && 
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
       subtype != FPDF_ANNOT_REDACT) {
     return false;
   }
@@ -3230,7 +3700,8 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
     return false;
   }
 
-  // Validate parameters. Allow FPDF_FONT_UNKNOWN to preserve non-standard fonts.
+  // Validate parameters. Allow FPDF_FONT_UNKNOWN to preserve non-standard
+  // fonts.
   if (font != FPDF_FONT_UNKNOWN &&
       (font < FPDF_FONT_COURIER || font > FPDF_FONT_ZAPFDINGBATS)) {
     return false;
@@ -3242,6 +3713,46 @@ EPDFAnnot_SetDefaultAppearance(FPDF_ANNOTATION annot,
   auto internal_font = static_cast<CPDF_Annot::StandardFont>(font);
   return CPDF_GenerateAP::UpdateDefaultAppearance(
       doc, annot_dict.Get(), internal_font, font_size, CFX_Color(R, G, B));
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetDefaultAppearanceRegisteredFont(FPDF_ANNOTATION annot,
+                                             EPDF_FONT_ID font_id,
+                                             float font_size,
+                                             unsigned int R,
+                                             unsigned int G,
+                                             unsigned int B) {
+  // EmbedPDF: annotation-specific bridge from public API to the registered font
+  // AP pipeline. Generic EPDFFont_* registration lives in epdf_font.cpp because
+  // the same registry is also used for page-rendering fallback.
+  CPDF_AnnotContext* context = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!context) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
+  if (!annot_dict) {
+    return false;
+  }
+
+  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
+      subtype != FPDF_ANNOT_REDACT) {
+    return false;
+  }
+
+  CPDF_Document* doc = context->GetPage()->GetDocument();
+  if (!doc) {
+    return false;
+  }
+
+  if (!CFX_FontRegistry::IsValidFont(font_id) || font_size < 0 || R > 255 ||
+      G > 255 || B > 255) {
+    return false;
+  }
+
+  return CPDF_GenerateAP::UpdateDefaultAppearanceRegisteredFont(
+      doc, annot_dict.Get(), font_id, font_size, CFX_Color(R, G, B));
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -3259,15 +3770,11 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
   if (!context) {
     return false;
   }
-  RetainPtr<CPDF_Dictionary> annot_dict = context->GetMutableAnnotDict();
-  if (!annot_dict) {
-    return false;
-  }
 
-  // Allow FREETEXT, WIDGET, and REDACT annotations (all use DA for text styling)
+  // Allow FREETEXT, WIDGET, and REDACT annotations (all use DA for text
+  // styling)
   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
-  if (subtype != FPDF_ANNOT_FREETEXT && 
-      subtype != FPDF_ANNOT_WIDGET && 
+  if (subtype != FPDF_ANNOT_FREETEXT && subtype != FPDF_ANNOT_WIDGET &&
       subtype != FPDF_ANNOT_REDACT) {
     return false;
   }
@@ -3276,29 +3783,44 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
   if (!doc) {
     return false;
   }
+  CPDF_DocumentViewScope document_view(doc);
+  const CPDF_Dictionary* annot_dict = context->GetAnnotDict();
+  if (!annot_dict) {
+    return false;
+  }
 
   // Get AcroForm for inherited /DA and /DR.
-  RetainPtr<const CPDF_Dictionary> root_dict = doc->GetMutableRoot();
+  const CPDF_Dictionary* root_dict = doc->GetRoot();
   RetainPtr<const CPDF_Dictionary> acroform_dict =
       root_dict ? root_dict->GetDictFor("AcroForm") : nullptr;
 
   // Parse the /DA string, inheriting from AcroForm if necessary.
-  CPDF_DefaultAppearance da(annot_dict.Get(), acroform_dict.Get());
+  CPDF_DefaultAppearance da(annot_dict, acroform_dict.Get());
 
   // Get Font and Font Size
-  std::optional<CPDF_DefaultAppearance::FontNameAndSize> font_info = da.GetFont();
+  std::optional<CPDF_DefaultAppearance::FontNameAndSize> font_info =
+      da.GetFont();
   if (!font_info.has_value()) {
-    return false; // Hard fail: /DA string must specify a font.
+    return false;  // Hard fail: /DA string must specify a font.
   }
   *font_size = font_info.value().size;
   ByteString font_name = font_info.value().name;
 
-  if (!font_name.IsEmpty()) {
-    *font = static_cast<FPDF_STANDARD_FONT>(
-        CPDF_Annot::StringToStandardFont(font_name));
-  } else {
-    *font = FPDF_FONT_UNKNOWN;
+  CPDF_Annot::StandardFont standard_font =
+      CPDF_Annot::StringToStandardFont(font_name);
+  if (standard_font == CPDF_Annot::StandardFont::kUnknown) {
+    RetainPtr<const CPDF_Dictionary> inherited_dr =
+        ToDictionary(CPDF_FormField::GetFieldAttrForDict(annot_dict, "DR"));
+    standard_font =
+        ResolveStandardFontFromDefaultResources(inherited_dr.Get(), font_name);
   }
+  if (standard_font == CPDF_Annot::StandardFont::kUnknown) {
+    RetainPtr<const CPDF_Dictionary> acroform_dr =
+        acroform_dict ? acroform_dict->GetDictFor("DR") : nullptr;
+    standard_font =
+        ResolveStandardFontFromDefaultResources(acroform_dr.Get(), font_name);
+  }
+  *font = static_cast<FPDF_STANDARD_FONT>(standard_font);
 
   // Get Color (with default fallback)
   std::optional<CFX_Color::TypeAndARGB> color_info = da.GetColorARGB();
@@ -3319,7 +3841,8 @@ EPDFAnnot_GetDefaultAppearance(FPDF_ANNOTATION annot,
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot, FPDF_TEXT_ALIGNMENT alignment) {
+EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot,
+                           FPDF_TEXT_ALIGNMENT alignment) {
   RetainPtr<CPDF_Dictionary> annot_dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
   if (!annot_dict) {
@@ -3333,11 +3856,13 @@ EPDFAnnot_SetTextAlignment(FPDF_ANNOTATION annot, FPDF_TEXT_ALIGNMENT alignment)
   }
 
   // Validate the enum range to ensure a valid value is passed.
-  if (alignment < FPDF_TEXT_ALIGNMENT_LEFT || alignment > FPDF_TEXT_ALIGNMENT_RIGHT) {
+  if (alignment < FPDF_TEXT_ALIGNMENT_LEFT ||
+      alignment > FPDF_TEXT_ALIGNMENT_RIGHT) {
     return false;
   }
 
-  // Set the /Q key in the annotation dictionary to the integer value of the enum.
+  // Set the /Q key in the annotation dictionary to the integer value of the
+  // enum.
   annot_dict->SetNewFor<CPDF_Number>("Q", static_cast<int>(alignment));
 
   return true;
@@ -3372,73 +3897,33 @@ EPDFAnnot_GetTextAlignment(FPDF_ANNOTATION annot) {
   return kDefaultAlignment;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetVerticalAlignment(FPDF_ANNOTATION annot, FPDF_VERTICAL_ALIGNMENT alignment) {
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return false;
-  }
-
-  // This property is only valid for FreeText annotations.
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
-    return false;
-  }
-
-  // Validate the enum range to ensure a valid value is passed.
-  if (alignment < FPDF_VERTICAL_ALIGNMENT_TOP || alignment > FPDF_VERTICAL_ALIGNMENT_BOTTOM) {
-    return false;
-  }
-
-  // Set the /EPDF:VerticalAlignment key in the annotation dictionary to the integer value of the enum.
-  annot_dict->SetNewFor<CPDF_Number>("EPDF:VerticalAlignment", static_cast<int>(alignment));
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_VERTICAL_ALIGNMENT FPDF_CALLCONV
-EPDFAnnot_GetVerticalAlignment(FPDF_ANNOTATION annot) {
-  RetainPtr<CPDF_Dictionary> annot_dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict) {
-    return FPDF_VERTICAL_ALIGNMENT_TOP;
-  }
-
-  // This property is only valid for FreeText annotations.
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
-    return FPDF_VERTICAL_ALIGNMENT_TOP;
-  }
-
-  // GetIntegerFor() conveniently returns 0 if the key doesn't exist,
-  // which matches the PDF specification's default.
-  int alignment_value = annot_dict->GetIntegerFor("EPDF:VerticalAlignment");
-
-  // Validate the value is within the known enum range before casting.
-  if (alignment_value >= FPDF_VERTICAL_ALIGNMENT_TOP &&
-      alignment_value <= FPDF_VERTICAL_ALIGNMENT_BOTTOM) {
-    return static_cast<FPDF_VERTICAL_ALIGNMENT>(alignment_value);
-  }
-
-  return FPDF_VERTICAL_ALIGNMENT_TOP;
-}
-
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
-  if (!page || !nm || !*nm) return nullptr;
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage) return nullptr;
+  if (!page || !nm || !*nm) {
+    return nullptr;
+  }
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
+    return nullptr;
+  }
+  const CPDF_Page* pPage = page_view.Get();
 
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots) return nullptr;
+  RetainPtr<const CPDF_Array> annots = pPage->GetAnnotsArray();
+  if (!annots) {
+    return nullptr;
+  }
 
   WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
 
   for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> const_dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
     RetainPtr<CPDF_Dictionary> d =
-        ToDictionary(annots->GetMutableDirectObjectAt(i));
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
     if (d && d->GetUnicodeTextFor("NM") == target) {
       auto ctx = std::make_unique<CPDF_AnnotContext>(
-          std::move(d), IPDFPageFromFPDFPage(page));
+          std::move(d), IPDFPageFromFPDFPage(page),
+          pdfium::checked_cast<int>(i));
       return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
     }
   }
@@ -3447,16 +3932,19 @@ EPDFPage_GetAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
-  if (!page || !nm || !*nm)
+  if (!page || !nm || !*nm) {
     return false;
+  }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
+  if (!pPage) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots)
+  if (!annots) {
     return false;
+  }
 
   WideString target = UNSAFE_BUFFERS(WideStringFromFPDFWideString(nm));
 
@@ -3467,8 +3955,9 @@ EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
     // Resolve to a dictionary to compare /NM.
     RetainPtr<CPDF_Dictionary> dict =
         ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!dict || dict->GetUnicodeTextFor("NM") != target)
+    if (!dict || dict->GetUnicodeTextFor("NM") != target) {
       continue;
+    }
 
     // Determine indirect object number, if any.
     uint32_t objnum = 0;
@@ -3484,8 +3973,9 @@ EPDFPage_RemoveAnnotByName(FPDF_PAGE page, FPDF_WIDESTRING nm) {
     annots->RemoveAt(i);
 
     // If it was indirect, delete the object to avoid leaving an orphan.
-    if (objnum)
+    if (objnum) {
       pPage->GetDocument()->DeleteIndirectObject(objnum);
+    }
 
     return true;
   }
@@ -3496,45 +3986,67 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
                          FPDF_BYTESTRING key,
                          FPDF_ANNOTATION linked_annot) {
-  if (!annot || !key) return false;
+  if (!annot || !key) {
+    return false;
+  }
 
   CPDF_AnnotContext* src = CPDFAnnotContextFromFPDFAnnotation(annot);
   CPDF_AnnotContext* dst = CPDFAnnotContextFromFPDFAnnotation(linked_annot);
-  if (!src) return false;
+  if (!src) {
+    return false;
+  }
 
   RetainPtr<CPDF_Dictionary> src_dict = src->GetMutableAnnotDict();
-  if (!src_dict) return false;
+  if (!src_dict) {
+    return false;
+  }
 
-  if (!linked_annot) { src_dict->RemoveFor(key); return true; }
+  if (!linked_annot) {
+    src_dict->RemoveFor(key);
+    return true;
+  }
 
-  if (!dst) return false;
+  if (!dst) {
+    return false;
+  }
 
   IPDF_Page* sp = src->GetPage();
   IPDF_Page* dp = dst->GetPage();
-  if (!sp || !dp) return false;
+  if (!sp || !dp) {
+    return false;
+  }
 
   CPDF_Document* doc = sp->GetDocument();
-  if (doc != dp->GetDocument()) return false;
+  if (doc != dp->GetDocument()) {
+    return false;
+  }
 
   RetainPtr<CPDF_Dictionary> dst_dict = dst->GetMutableAnnotDict();
-  if (!dst_dict) return false;
+  if (!dst_dict) {
+    return false;
+  }
 
   const uint32_t objnum = EnsureIndirect(doc, dst_dict);
-  if (objnum == 0) return false;
+  if (objnum == 0) {
+    return false;
+  }
 
   src_dict->SetNewFor<CPDF_Reference>(key, doc, objnum);
   return true;
 }
 
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc, int page_index) {
+FPDF_EXPORT int FPDF_CALLCONV EPDFPage_GetAnnotCountRaw(FPDF_DOCUMENT doc,
+                                                        int page_index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
-  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount())
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount()) {
     return 0;
+  }
+  CPDF_DocumentViewScope document_view(pdf);
   RetainPtr<const CPDF_Dictionary> page_dict =
       pdf->GetPageDictionary(page_index);
-  if (!page_dict)
+  if (!page_dict) {
     return 0;
+  }
   RetainPtr<const CPDF_Array> annots = page_dict->GetArrayFor("Annots");
   return annots ? fxcrt::CollectionSize<int>(*annots) : 0;
 }
@@ -3546,20 +4058,25 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
       page_index >= pdf->GetPageCount()) {
     return nullptr;
   }
+  CPDF_DocumentViewScope document_view(pdf);
 
+  RetainPtr<const CPDF_Dictionary> const_page_dict =
+      pdf->GetPageDictionary(page_index);
   RetainPtr<CPDF_Dictionary> page_dict =
-      pdf->GetMutablePageDictionary(page_index);
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_page_dict.Get()));
   if (!page_dict) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
+  RetainPtr<const CPDF_Array> annots = page_dict->GetArrayFor("Annots");
   if (!annots || static_cast<size_t>(index) >= annots->size()) {
     return nullptr;
   }
 
+  RetainPtr<const CPDF_Dictionary> const_annot_dict =
+      ToDictionary(annots->GetDirectObjectAt(index));
   RetainPtr<CPDF_Dictionary> annot_dict =
-      ToDictionary(annots->GetMutableDirectObjectAt(index));
+      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_annot_dict.Get()));
   if (!annot_dict) {
     return nullptr;
   }
@@ -3569,25 +4086,32 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
   auto page = pdfium::MakeRetain<CPDF_Page>(pdf, page_dict);
 
   // Create the context, which now takes the RetainPtr directly.
-  auto ctx = std::make_unique<RawAnnotContext>(std::move(annot_dict), std::move(page));
+  auto ctx = std::make_unique<RawAnnotContext>(std::move(annot_dict),
+                                               std::move(page), index);
 
   // The lifetime is now perfectly managed by smart pointers.
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc,
+                                                            int page_index,
+                                                            int index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
-  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount() || index < 0)
+  if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount() ||
+      index < 0) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> page_dict = pdf->GetMutablePageDictionary(page_index);
-  if (!page_dict)
+  RetainPtr<CPDF_Dictionary> page_dict =
+      pdf->GetMutablePageDictionary(page_index);
+  if (!page_dict) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> annots = page_dict->GetMutableArrayFor("Annots");
-  if (!annots || static_cast<size_t>(index) >= annots->size())
+  if (!annots || static_cast<size_t>(index) >= annots->size()) {
     return false;
+  }
 
   // Keep original entry so we can determine if it was indirect.
   RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
@@ -3607,14 +4131,15 @@ EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
   annots->RemoveAt(index);
 
   // If it was indirect, delete the annot object to avoid leaving orphans.
-  if (objnum)
+  if (objnum) {
     pdf->DeleteIndirectObject(objnum);
+  }
 
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetName(FPDF_ANNOTATION annot, FPDF_ANNOT_NAME name) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetName(FPDF_ANNOTATION annot,
+                                                      FPDF_ANNOT_NAME name) {
   RetainPtr<CPDF_Dictionary> dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
   if (!dict) {
@@ -3672,30 +4197,35 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   EPDFStampFitCpp fit_cpp = ToCpp(fit);
 
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!ctx)
+  if (!ctx) {
     return false;
+  }
 
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_STAMP)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_STAMP) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> ad = ctx->GetMutableAnnotDict();
-  if (!ad)
+  if (!ad) {
     return false;
+  }
 
-  // 1) Check for EPDFRotate + EPDFUnrotatedRect first.
-  float rotate_deg = ad->GetFloatFor("EPDFRotate");
+  // 1) Check for /EMBD_Metadata rotation + unrotated rect first.
+  float rotate_deg = GetEmbedMetadataFloatFor(ad.Get(), "Rotation");
   rotate_deg = fmod(fmod(rotate_deg, 360.0f) + 360.0f, 360.0f);
   bool has_rotation = (rotate_deg > 0.01f && rotate_deg < 359.99f);
 
-  CFX_FloatRect unrotated = ad->GetRectFor("EPDFUnrotatedRect");
+  CFX_FloatRect unrotated = GetEmbedMetadataRectFor(ad.Get(), "UnrotatedRect");
   bool use_rotation = has_rotation && !unrotated.IsEmpty();
 
   // Use unrotated rect for image fitting when rotated, otherwise /Rect.
-  CFX_FloatRect rect = use_rotation ? unrotated : ad->GetRectFor(pdfium::annotation::kRect);
+  CFX_FloatRect rect =
+      use_rotation ? unrotated : ad->GetRectFor(pdfium::annotation::kRect);
   const float box_w = std::max(0.f, rect.Width());
   const float box_h = std::max(0.f, rect.Height());
-  if (box_w <= 0 || box_h <= 0)
+  if (box_w <= 0 || box_h <= 0) {
     return false;
+  }
 
   // 2) Fetch/create AP(N).
   RetainPtr<CPDF_Stream> ap =
@@ -3703,18 +4233,21 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   if (!ap) {
     CPDF_GenerateAP::GenerateEmptyAP(ctx->GetPage()->GetDocument(), ad.Get());
     ap = GetAnnotAP(ad.Get(), CPDF_Annot::AppearanceMode::kNormal);
-    if (!ap)
+    if (!ap) {
       return false;
+    }
   }
 
   // 3) Get the AP dict.
   RetainPtr<CPDF_Dictionary> ap_dict = ap->GetMutableDict();
-  if (!ap_dict)
+  if (!ap_dict) {
     return false;
+  }
 
   CPDF_Document* doc = ctx->GetPage()->GetDocument();
-  if (!doc)
+  if (!doc) {
     return false;
+  }
 
   // 4) On first call, wrap the original AP content into a child Form XObject
   //    and record the painted content rect in EPDFOrigContentRect.  This rect
@@ -3724,37 +4257,40 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   CFX_FloatRect content_rect = ap_dict->GetRectFor("EPDFOrigContentRect");
   if (content_rect.IsEmpty()) {
     content_rect = GetFormDisplayBox(ap_dict.Get());
-    if (content_rect.IsEmpty())
+    if (content_rect.IsEmpty()) {
       content_rect = GetPaintedFormBounds(doc, ap.Get());
+    }
     content_rect.Normalize();
-    if (content_rect.IsEmpty() ||
-        content_rect.Width() <= 0 || content_rect.Height() <= 0) {
+    if (content_rect.IsEmpty() || content_rect.Width() <= 0 ||
+        content_rect.Height() <= 0) {
       return false;
     }
 
     ap_dict->SetRectFor("EPDFOrigContentRect", content_rect);
 
-    if (!WrapAPContentIntoFormXObject(ap.Get(), doc))
+    if (!WrapAPContentIntoFormXObject(ap.Get(), doc)) {
       return false;
+    }
   }
 
   const float orig_w = content_rect.Width();
   const float orig_h = content_rect.Height();
-  if (orig_w <= 0 || orig_h <= 0)
+  if (orig_w <= 0 || orig_h <= 0) {
     return false;
+  }
 
   // 5) Compute placement matrix using the same fit logic as before.
   float drawn_w, drawn_h, dx, dy;
-  if (!FitImageIntoBox(box_w, box_h, orig_w, orig_h, fit_cpp,
-                       &drawn_w, &drawn_h, &dx, &dy)) {
+  if (!FitImageIntoBox(box_w, box_h, orig_w, orig_h, fit_cpp, &drawn_w,
+                       &drawn_h, &dx, &dy)) {
     return false;
   }
 
   // 6) Write the wrapper content stream: q sx 0 0 sy tx ty cm /EPDFWRAP Do Q
   //    Form XObjects render in their own coordinate space.  content_rect.left
   //    and .bottom are the offset of the painted content within the child form,
-  //    so the translation compensates for that offset after scaling to align the
-  //    visible content's origin with the target placement box.
+  //    so the translation compensates for that offset after scaling to align
+  //    the visible content's origin with the target placement box.
   {
     const float sx = drawn_w / orig_w;
     const float sy = drawn_h / orig_h;
@@ -3780,10 +4316,10 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
     const float cx = (unrotated.left + unrotated.right) / 2.0f;
     const float cy = (unrotated.bottom + unrotated.top) / 2.0f;
     // M = T(cx,cy) * R(theta) * T(-cx,-cy)
-    ap_dict->SetMatrixFor("Matrix", CFX_Matrix(
-        cos_t, sin_t, -sin_t, cos_t,
-        cx * (1.0f - cos_t) + cy * sin_t,
-        cy * (1.0f - cos_t) - cx * sin_t));
+    ap_dict->SetMatrixFor("Matrix",
+                          CFX_Matrix(cos_t, sin_t, -sin_t, cos_t,
+                                     cx * (1.0f - cos_t) + cy * sin_t,
+                                     cy * (1.0f - cos_t) - cx * sin_t));
   } else {
     ap_dict->RemoveFor("Matrix");
   }
@@ -3794,32 +4330,36 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage || !FPDFAnnot_IsSupportedSubtype(subtype))
+  if (!pPage || !FPDFAnnot_IsSupportedSubtype(subtype)) {
     return nullptr;
+  }
 
   CPDF_Document* doc = pPage->GetDocument();
 
   // Create the annotation dictionary as an INDIRECT object
   RetainPtr<CPDF_Dictionary> dict = doc->NewIndirect<CPDF_Dictionary>();
   dict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "Annot");
-  dict->SetNewFor<CPDF_Name>(
-      pdfium::annotation::kSubtype,
-      CPDF_Annot::AnnotSubtypeToString(static_cast<CPDF_Annot::Subtype>(subtype)));
+  dict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype,
+                             CPDF_Annot::AnnotSubtypeToString(
+                                 static_cast<CPDF_Annot::Subtype>(subtype)));
 
   // Append a REFERENCE to /Annots instead of the direct dict
   RetainPtr<CPDF_Array> annots = pPage->GetOrCreateAnnotsArray();
   annots->AppendNew<CPDF_Reference>(doc, dict->GetObjNum());
 
   // Build the public handle
-  auto ctx = std::make_unique<CPDF_AnnotContext>(dict, IPDFPageFromFPDFPage(page));
+  auto ctx =
+      std::make_unique<CPDF_AnnotContext>(dict, IPDFPageFromFPDFPage(page));
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation) {
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRotate(FPDF_ANNOTATION annot,
+                                                        float rotation) {
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   if (rotation == 0.0f) {
     // 0 is the default, so remove the key to keep the PDF clean.
@@ -3830,18 +4370,20 @@ EPDFAnnot_SetRotate(FPDF_ANNOTATION annot, float rotation) {
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetRotate(FPDF_ANNOTATION annot, float* rotation) {
-  if (!rotation)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRotate(FPDF_ANNOTATION annot,
+                                                        float* rotation) {
+  if (!rotation) {
     return false;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   *rotation = dict->GetFloatFor("Rotate");
   return true;
-} 
+}
 
 FPDF_EXPORT FPDF_ANNOT_REPLY_TYPE FPDF_CALLCONV
 EPDFAnnot_GetReplyType(FPDF_ANNOTATION annot) {
@@ -3859,7 +4401,8 @@ EPDFAnnot_GetReplyType(FPDF_ANNOTATION annot) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt) {
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
   if (!dict) {
     return false;
   }
@@ -3883,12 +4426,15 @@ EPDFAnnot_SetReplyType(FPDF_ANNOTATION annot, FPDF_ANNOT_REPLY_TYPE rt) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetOverlayText(FPDF_ANNOTATION annot, FPDF_WIDESTRING text) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   if (!text || !*text) {
     dict->RemoveFor("OverlayText");
@@ -3905,12 +4451,14 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetOverlayText(FPDF_ANNOTATION annot,
                          FPDF_WCHAR* buffer,
                          unsigned long buflen) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
     return 0;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
 
   WideString text = dict->GetUnicodeTextFor("OverlayText");
   // SAFETY: required from caller.
@@ -3920,12 +4468,15 @@ EPDFAnnot_GetOverlayText(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetOverlayTextRepeat(FPDF_ANNOTATION annot, FPDF_BOOL repeat) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   if (repeat) {
     dict->SetNewFor<CPDF_Boolean>("Repeat", true);
@@ -3937,291 +4488,16 @@ EPDFAnnot_SetOverlayTextRepeat(FPDF_ANNOTATION annot, FPDF_BOOL repeat) {
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetOverlayTextRepeat(FPDF_ANNOTATION annot) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT) {
     return false;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   return dict->GetBooleanFor("Repeat", false);
-}
-
-namespace {
-
-// Helper to extract redaction rectangles from a REDACT annotation.
-// Returns QuadPoints if present, otherwise falls back to Rect.
-std::vector<CFX_FloatRect> GetRedactRectsFromAnnotDict(
-    const CPDF_Dictionary* annot_dict) {
-  std::vector<CFX_FloatRect> rects;
-  if (!annot_dict)
-    return rects;
-
-  // Try QuadPoints first (for text-based redactions)
-  RetainPtr<const CPDF_Array> quad_points_array =
-      annot_dict->GetArrayFor("QuadPoints");
-  if (quad_points_array && quad_points_array->size() >= 8) {
-    size_t quad_count = CPDF_Annot::QuadPointCount(quad_points_array.Get());
-    for (size_t i = 0; i < quad_count; ++i) {
-      CFX_FloatRect rect = CPDF_Annot::RectFromQuadPoints(annot_dict, i);
-      rect.Normalize();
-      if (!rect.IsEmpty())
-        rects.push_back(rect);
-    }
-    if (!rects.empty())
-      return rects;
-  }
-
-  // Fall back to Rect (for area-based redactions)
-  CFX_FloatRect rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  rect.Normalize();
-  if (!rect.IsEmpty())
-    rects.push_back(rect);
-
-  return rects;
-}
-
-// Internal helper to flatten any Form XObject stream to page content.
-// Used by EPDFAnnot_Flatten (for AP/N) and EPDFAnnot_ApplyRedaction (for RO).
-void FlattenFormXObjectToPage(CPDF_Page* page,
-                              RetainPtr<const CPDF_Stream> form_stream,
-                              const CFX_FloatRect& target_rect) {
-  if (!page || !form_stream)
-    return;
-
-  CPDF_Document* doc = page->GetDocument();
-  if (!doc)
-    return;
-
-  // Get the form dictionary from the stream
-  RetainPtr<const CPDF_Dictionary> form_dict = form_stream->GetDict();
-  if (!form_dict)
-    return;
-
-  // Get the BBox from the form stream
-  CFX_FloatRect form_bbox = form_dict->GetRectFor("BBox");
-  form_bbox.Normalize();
-  if (form_bbox.IsEmpty())
-    form_bbox = target_rect;
-
-  // Calculate the transformation matrix to position the form at the target rect
-  // The form's content is defined in BBox coordinates, we need to map it to target_rect
-  float scale_x = 1.0f;
-  float scale_y = 1.0f;
-  if (form_bbox.Width() > 0)
-    scale_x = target_rect.Width() / form_bbox.Width();
-  if (form_bbox.Height() > 0)
-    scale_y = target_rect.Height() / form_bbox.Height();
-
-  CFX_Matrix form_matrix;
-  form_matrix.a = scale_x;
-  form_matrix.d = scale_y;
-  form_matrix.e = target_rect.left - form_bbox.left * scale_x;
-  form_matrix.f = target_rect.bottom - form_bbox.bottom * scale_y;
-
-  // Create a CPDF_Form from the stream
-  auto form = std::make_unique<CPDF_Form>(
-      doc,
-      page->GetMutableResources(),
-      pdfium::WrapRetain(const_cast<CPDF_Stream*>(form_stream.Get())));
-  form->ParseContent();
-
-  // Create a FormObject that wraps the form
-  auto form_obj = std::make_unique<CPDF_FormObject>(
-      CPDF_PageObject::kNoContentStream,
-      std::move(form),
-      form_matrix);
-
-  form_obj->CalcBoundingBox();
-  form_obj->SetDirty(true);
-
-  page->AppendPageObject(std::move(form_obj));
-}
-
-// Find the index of an annotation in the page's annotation array.
-// Returns -1 if not found.
-int GetAnnotIndexOnPage(CPDF_Page* page, const CPDF_Dictionary* annot_dict) {
-  if (!page || !annot_dict)
-    return -1;
-
-  RetainPtr<CPDF_Array> annots = page->GetMutableAnnotsArray();
-  if (!annots)
-    return -1;
-
-  for (size_t i = 0; i < annots->size(); ++i) {
-    if (annots->GetDictAt(i) == annot_dict)
-      return static_cast<int>(i);
-  }
-  return -1;
-}
-
-}  // namespace
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ApplyRedaction(FPDF_PAGE page, FPDF_ANNOTATION annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
-    return false;
-
-  // Must be a REDACT annotation
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_REDACT)
-    return false;
-
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict)
-    return false;
-
-  // 1. Extract redaction rectangles from QuadPoints or Rect
-  std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(annot_dict);
-  if (rects.empty())
-    return false;
-
-  // 2. Remove content using existing redactor (no black boxes - we use RO)
-  RedactTextInRects(pPage, pdfium::span(rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
-
-  // 3. Flatten RO stream if present
-  RetainPtr<const CPDF_Stream> ro_stream = annot_dict->GetStreamFor("RO");
-  if (ro_stream) {
-    CFX_FloatRect annot_rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-    annot_rect.Normalize();
-    FlattenFormXObjectToPage(pPage, ro_stream, annot_rect);
-  }
-  // If no RO: content is removed but no overlay is added
-
-  // 4. Remove the annotation from the page
-  int annot_index = GetAnnotIndexOnPage(pPage, annot_dict);
-  if (annot_index >= 0) {
-    RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-    if (annots) {
-      RetainPtr<CPDF_Object> entry =
-          annots->GetMutableObjectAt(annot_index);
-      uint32_t objnum = 0;
-      if (entry && entry->IsReference()) {
-        objnum = entry->AsReference()->GetRefObjNum();
-      } else if (entry) {
-        objnum = entry->GetObjNum();
-      }
-      annots->RemoveAt(annot_index);
-      if (objnum)
-        pPage->GetDocument()->DeleteIndirectObject(objnum);
-    }
-  }
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_ApplyRedactions(FPDF_PAGE page) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
-    return false;
-
-  // First pass: collect all redaction areas, RO streams, indices, and objnums
-  std::vector<CFX_FloatRect> all_rects;
-  std::vector<std::pair<RetainPtr<const CPDF_Stream>, CFX_FloatRect>> ro_streams;
-  std::vector<std::pair<size_t, uint32_t>> redact_index_objnums;
-
-  RetainPtr<CPDF_Array> annot_list = pPage->GetMutableAnnotsArray();
-  if (!annot_list || annot_list->IsEmpty())
-    return false;
-
-  for (size_t i = 0; i < annot_list->size(); ++i) {
-    RetainPtr<CPDF_Object> entry = annot_list->GetMutableObjectAt(i);
-    RetainPtr<CPDF_Dictionary> annot_dict =
-        ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!annot_dict)
-      continue;
-
-    // Check if this is a REDACT annotation
-    ByteString subtype = annot_dict->GetNameFor(pdfium::annotation::kSubtype);
-    if (subtype != "Redact")
-      continue;
-
-    // Track index and indirect object number for later removal
-    uint32_t objnum = 0;
-    if (entry && entry->IsReference()) {
-      objnum = entry->AsReference()->GetRefObjNum();
-    } else if (annot_dict) {
-      objnum = annot_dict->GetObjNum();
-    }
-    redact_index_objnums.push_back({i, objnum});
-
-    // Extract rectangles
-    std::vector<CFX_FloatRect> rects = GetRedactRectsFromAnnotDict(annot_dict.Get());
-    for (const auto& rect : rects) {
-      all_rects.push_back(rect);
-    }
-
-    // Collect RO stream if present
-    RetainPtr<const CPDF_Stream> ro_stream = annot_dict->GetStreamFor("RO");
-    if (ro_stream) {
-      CFX_FloatRect annot_rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-      annot_rect.Normalize();
-      ro_streams.push_back({ro_stream, annot_rect});
-    }
-  }
-
-  if (all_rects.empty())
-    return false;
-
-  // Remove content for all redaction areas at once
-  RedactTextInRects(pPage, pdfium::span(all_rects),
-                    /*recurse_forms=*/true,
-                    /*draw_black_boxes=*/false);
-
-  // Flatten all RO streams
-  for (const auto& [ro_stream, annot_rect] : ro_streams) {
-    FlattenFormXObjectToPage(pPage, ro_stream, annot_rect);
-  }
-
-  // Remove all REDACT annotations (in reverse order to maintain indices)
-  // and delete the underlying indirect objects to avoid orphans in the xref.
-  for (auto it = redact_index_objnums.rbegin(); it != redact_index_objnums.rend(); ++it) {
-    annot_list->RemoveAt(it->first);
-    if (it->second)
-      pPage->GetDocument()->DeleteIndirectObject(it->second);
-  }
-
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
-    return false;
-
-  const CPDF_Dictionary* annot_dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!annot_dict)
-    return false;
-
-  // Get the annotation's Normal appearance stream (AP/N)
-  RetainPtr<const CPDF_Dictionary> ap_dict =
-      annot_dict->GetDictFor(pdfium::annotation::kAP);
-  if (!ap_dict)
-    return false;
-
-  RetainPtr<const CPDF_Stream> ap_stream = ap_dict->GetStreamFor("N");
-  if (!ap_stream)
-    return false;
-
-  CFX_FloatRect annot_rect = annot_dict->GetRectFor(pdfium::annotation::kRect);
-  annot_rect.Normalize();
-
-  FlattenFormXObjectToPage(pPage, ap_stream, annot_rect);
-
-  // Remove the annotation from the page
-  int annot_index = GetAnnotIndexOnPage(pPage, annot_dict);
-  if (annot_index >= 0) {
-    RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-    if (annots) {
-      annots->RemoveAt(annot_index);
-    }
-  }
-
-  return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -4229,44 +4505,51 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
                                 FPDF_DOCUMENT src_doc_handle,
                                 int page_index) {
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!ctx)
+  if (!ctx) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
   IPDF_Page* annot_page = ctx->GetPage();
   CPDF_Document* dest_doc = annot_page ? annot_page->GetDocument() : nullptr;
-  if (!annot_dict || !dest_doc)
+  if (!annot_dict || !dest_doc) {
     return false;
+  }
 
   CPDF_Document* src_doc = CPDFDocumentFromFPDFDocument(src_doc_handle);
-  if (!src_doc)
+  if (!src_doc) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> src_page_dict =
       src_doc->GetMutablePageDictionary(page_index);
-  if (!src_page_dict)
+  if (!src_page_dict) {
     return false;
+  }
 
   CFX_FloatRect media_box = src_page_dict->GetRectFor("MediaBox");
   media_box.Normalize();
-  if (media_box.IsEmpty())
+  if (media_box.IsEmpty()) {
     return false;
+  }
 
   // Collect page content bytes (Contents can be a stream or an array of
   // streams).
   RetainPtr<const CPDF_Object> contents_obj =
       src_page_dict->GetObjectFor("Contents");
-  if (!contents_obj)
+  if (!contents_obj) {
     return false;
+  }
 
   DataVector<uint8_t> content_data;
   const CPDF_Object* direct = contents_obj->GetDirect();
-  if (!direct)
+  if (!direct) {
     return false;
+  }
 
   if (direct->IsStream()) {
-    auto acc =
-        pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(direct->AsStream()));
+    auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(
+        pdfium::WrapRetain(direct->AsStream()));
     acc->LoadAllDataFiltered();
     auto span = acc->GetSpan();
     content_data.assign(span.begin(), span.end());
@@ -4274,18 +4557,21 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
     const CPDF_Array* arr = direct->AsArray();
     for (size_t i = 0; i < arr->size(); ++i) {
       RetainPtr<const CPDF_Stream> stream = arr->GetStreamAt(i);
-      if (!stream)
+      if (!stream) {
         continue;
+      }
       auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(std::move(stream));
       acc->LoadAllDataFiltered();
       auto span = acc->GetSpan();
-      if (!content_data.empty())
+      if (!content_data.empty()) {
         content_data.push_back(' ');
+      }
       content_data.insert(content_data.end(), span.begin(), span.end());
     }
   }
-  if (content_data.empty())
+  if (content_data.empty()) {
     return false;
+  }
 
   // Build a Form XObject stream in the source document so that
   // AnnotAppearanceExporter can deep-clone it with all resource dependencies.
@@ -4296,47 +4582,49 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 
   RetainPtr<const CPDF_Dictionary> src_resources =
       src_page_dict->GetDictFor("Resources");
-  if (src_resources)
+  if (src_resources) {
     xobj_dict->SetFor("Resources", src_resources->Clone());
+  }
 
-  auto src_stream =
-      src_doc->NewIndirect<CPDF_Stream>(std::move(xobj_dict));
+  auto src_stream = src_doc->NewIndirect<CPDF_Stream>(std::move(xobj_dict));
   src_stream->SetData(content_data);
 
   // Clone the stream (and all its resource references) into dest_doc.
   AnnotAppearanceExporter exporter(dest_doc, src_doc);
-  RetainPtr<CPDF_Stream> cloned_stream =
-      exporter.ExportFormXObject(src_stream);
+  RetainPtr<CPDF_Stream> cloned_stream = exporter.ExportFormXObject(src_stream);
 
   // Clean up temporary object from source document.
   src_doc->DeleteIndirectObject(src_stream->GetObjNum());
 
-  if (!cloned_stream)
+  if (!cloned_stream) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> cloned_dict = cloned_stream->GetMutableDict();
-  if (!cloned_dict)
+  if (!cloned_dict) {
     return false;
+  }
 
   // Persist the imported appearance's painted content rect before any later
   // annotation resize mutates /Rect.  This captures where the visible content
   // lives inside the child form's coordinate space so the wrapper can align it.
   CFX_FloatRect content_rect = GetFormDisplayBox(cloned_dict.Get());
-  if (content_rect.IsEmpty())
+  if (content_rect.IsEmpty()) {
     content_rect = GetPaintedFormBounds(dest_doc, cloned_stream.Get());
+  }
   content_rect.Normalize();
   if (!content_rect.IsEmpty()) {
     cloned_dict->SetRectFor("EPDFOrigContentRect", content_rect);
 
-    if (!WrapAPContentIntoFormXObject(cloned_stream.Get(), dest_doc))
+    if (!WrapAPContentIntoFormXObject(cloned_stream.Get(), dest_doc)) {
       return false;
+    }
   }
 
   // Set cloned stream as AP/N on the annotation.
   RetainPtr<CPDF_Dictionary> ap_dict =
       annot_dict->GetOrCreateDictFor(pdfium::annotation::kAP);
-  ap_dict->SetNewFor<CPDF_Reference>("N", dest_doc,
-                                     cloned_stream->GetObjNum());
+  ap_dict->SetNewFor<CPDF_Reference>("N", dest_doc, cloned_stream->GetObjNum());
 
   return true;
 }
@@ -4344,19 +4632,23 @@ EPDFAnnot_SetAppearanceFromPage(FPDF_ANNOTATION annot,
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!ctx)
+  if (!ctx) {
     return nullptr;
+  }
 
-  RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
   IPDF_Page* src_page = ctx->GetPage();
   CPDF_Document* src_doc = src_page ? src_page->GetDocument() : nullptr;
-  if (!annot_dict || !src_doc)
+  CPDF_DocumentViewScope document_view(src_doc);
+  const CPDF_Dictionary* annot_dict = ctx->GetAnnotDict();
+  if (!annot_dict || !src_doc) {
     return nullptr;
+  }
 
   RetainPtr<CPDF_Stream> ap_stream =
-      GetAnnotAP(annot_dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
-  if (!ap_stream)
+      GetAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
+  if (!ap_stream) {
     return nullptr;
+  }
 
   CFX_FloatRect bbox = ap_stream->GetDict()->GetRectFor("BBox");
   bbox.Normalize();
@@ -4364,17 +4656,20 @@ EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
     bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
     bbox.Normalize();
   }
-  if (bbox.IsEmpty())
+  if (bbox.IsEmpty()) {
     return nullptr;
+  }
 
   const float page_width = bbox.Width();
   const float page_height = bbox.Height();
-  if (page_width <= 0 || page_height <= 0)
+  if (page_width <= 0 || page_height <= 0) {
     return nullptr;
+  }
 
   FPDF_DOCUMENT exported_doc = FPDF_CreateNewDocument();
-  if (!exported_doc)
+  if (!exported_doc) {
     return nullptr;
+  }
 
   CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported_doc);
   if (!dest_doc) {
@@ -4389,7 +4684,8 @@ EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
     return nullptr;
   }
 
-  FPDF_PAGE exported_page = FPDFPage_New(exported_doc, 0, page_width, page_height);
+  FPDF_PAGE exported_page =
+      FPDFPage_New(exported_doc, 0, page_width, page_height);
   if (!exported_page) {
     FPDF_CloseDocument(exported_doc);
     return nullptr;
@@ -4404,12 +4700,12 @@ EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
 
   CFX_Matrix form_matrix = cloned_stream->GetDict()->GetMatrixFor("Matrix");
 
-  auto form = std::make_unique<CPDF_Form>(dest_doc, dest_page->GetMutableResources(),
-                                          std::move(cloned_stream));
+  auto form = std::make_unique<CPDF_Form>(
+      dest_doc, dest_page->GetMutableResources(), std::move(cloned_stream));
   form->ParseContent();
 
-  CFX_PointF mapped_origin = form_matrix.Transform(
-      CFX_PointF(bbox.left, bbox.bottom));
+  CFX_PointF mapped_origin =
+      form_matrix.Transform(CFX_PointF(bbox.left, bbox.bottom));
 
   auto form_obj = std::make_unique<CPDF_FormObject>(
       CPDF_PageObject::kNoContentStream, std::move(form),
@@ -4431,18 +4727,22 @@ EPDFAnnot_ExportAppearanceAsDocument(FPDF_ANNOTATION annot) {
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV
 EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
                                               int annot_count) {
-  if (!annots || annot_count <= 0)
+  if (!annots || annot_count <= 0) {
     return nullptr;
+  }
 
   // Validate first annotation and extract source page/document.
   CPDF_AnnotContext* first_ctx = CPDFAnnotContextFromFPDFAnnotation(annots[0]);
-  if (!first_ctx)
+  if (!first_ctx) {
     return nullptr;
+  }
 
   IPDF_Page* src_page = first_ctx->GetPage();
   CPDF_Document* src_doc = src_page ? src_page->GetDocument() : nullptr;
-  if (!src_doc)
+  if (!src_doc) {
     return nullptr;
+  }
+  CPDF_DocumentViewScope document_view(src_doc);
 
   struct AnnotInfo {
     RetainPtr<CPDF_Stream> ap_stream;
@@ -4458,22 +4758,26 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
 
   for (int i = 0; i < annot_count; i++) {
     CPDF_AnnotContext* ctx = CPDFAnnotContextFromFPDFAnnotation(annots[i]);
-    if (!ctx)
+    if (!ctx) {
       return nullptr;
+    }
 
     // All annotations must share the same source document.
     IPDF_Page* page_i = ctx->GetPage();
-    if (!page_i || page_i->GetDocument() != src_doc)
+    if (!page_i || page_i->GetDocument() != src_doc) {
       return nullptr;
+    }
 
-    RetainPtr<CPDF_Dictionary> annot_dict = ctx->GetMutableAnnotDict();
-    if (!annot_dict)
+    const CPDF_Dictionary* annot_dict = ctx->GetAnnotDict();
+    if (!annot_dict) {
       return nullptr;
+    }
 
     RetainPtr<CPDF_Stream> ap_stream =
-        GetAnnotAP(annot_dict.Get(), CPDF_Annot::AppearanceMode::kNormal);
-    if (!ap_stream)
+        GetAnnotAP(annot_dict, CPDF_Annot::AppearanceMode::kNormal);
+    if (!ap_stream) {
       return nullptr;
+    }
 
     CFX_FloatRect ap_bbox = ap_stream->GetDict()->GetRectFor("BBox");
     ap_bbox.Normalize();
@@ -4481,14 +4785,16 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
       ap_bbox = annot_dict->GetRectFor(pdfium::annotation::kRect);
       ap_bbox.Normalize();
     }
-    if (ap_bbox.IsEmpty())
+    if (ap_bbox.IsEmpty()) {
       return nullptr;
+    }
 
     CFX_FloatRect annot_rect =
         annot_dict->GetRectFor(pdfium::annotation::kRect);
     annot_rect.Normalize();
-    if (annot_rect.IsEmpty())
+    if (annot_rect.IsEmpty()) {
       return nullptr;
+    }
 
     if (first) {
       combined_rect = annot_rect;
@@ -4502,12 +4808,14 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
 
   const float page_width = combined_rect.Width();
   const float page_height = combined_rect.Height();
-  if (page_width <= 0 || page_height <= 0)
+  if (page_width <= 0 || page_height <= 0) {
     return nullptr;
+  }
 
   FPDF_DOCUMENT exported_doc = FPDF_CreateNewDocument();
-  if (!exported_doc)
+  if (!exported_doc) {
     return nullptr;
+  }
 
   CPDF_Document* dest_doc = CPDFDocumentFromFPDFDocument(exported_doc);
   if (!dest_doc) {
@@ -4543,8 +4851,7 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
     CFX_Matrix form_matrix = cloned_stream->GetDict()->GetMatrixFor("Matrix");
 
     auto form = std::make_unique<CPDF_Form>(
-        dest_doc, dest_page->GetMutableResources(),
-        std::move(cloned_stream));
+        dest_doc, dest_page->GetMutableResources(), std::move(cloned_stream));
     form->ParseContent();
 
     CFX_PointF mapped_origin = form_matrix.Transform(
@@ -4552,10 +4859,10 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
 
     const float sx = info.annot_rect.Width() / info.ap_bbox.Width();
     const float sy = info.annot_rect.Height() / info.ap_bbox.Height();
-    const float tx = (info.annot_rect.left - combined_rect.left) -
-                     mapped_origin.x * sx;
-    const float ty = (info.annot_rect.bottom - combined_rect.bottom) -
-                     mapped_origin.y * sy;
+    const float tx =
+        (info.annot_rect.left - combined_rect.left) - mapped_origin.x * sx;
+    const float ty =
+        (info.annot_rect.bottom - combined_rect.bottom) - mapped_origin.y * sy;
 
     auto form_obj = std::make_unique<CPDF_FormObject>(
         CPDF_PageObject::kNoContentStream, std::move(form),
@@ -4575,72 +4882,11 @@ EPDFAnnot_ExportMultipleAppearancesAsDocument(FPDF_ANNOTATION* annots,
   return exported_doc;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetExtendedRotation(FPDF_ANNOTATION annot, float rotation) {
-  RetainPtr<CPDF_Dictionary> dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetRect(FPDF_ANNOTATION annot,
+                                                      FS_RECTF* rect) {
+  if (!FPDFAnnot_GetRect(annot, rect)) {
     return false;
-
-  if (rotation == 0.0f) {
-    dict->RemoveFor("EPDFRotate");
-  } else {
-    dict->SetNewFor<CPDF_Number>("EPDFRotate", rotation);
   }
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetExtendedRotation(FPDF_ANNOTATION annot, float* rotation) {
-  if (!rotation)
-    return false;
-
-  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
-    return false;
-
-  *rotation = dict->GetFloatFor("EPDFRotate");
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetUnrotatedRect(FPDF_ANNOTATION annot, const FS_RECTF* rect) {
-  RetainPtr<CPDF_Dictionary> dict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
-    return false;
-
-  if (!rect) {
-    dict->RemoveFor("EPDFUnrotatedRect");
-    return true;
-  }
-
-  CFX_FloatRect float_rect = CFXFloatRectFromFSRectF(*rect);
-  if (float_rect.IsEmpty()) {
-    dict->RemoveFor("EPDFUnrotatedRect");
-  } else {
-    dict->SetRectFor("EPDFUnrotatedRect", float_rect);
-  }
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetUnrotatedRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
-  if (!rect)
-    return false;
-
-  const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
-    return false;
-
-  *rect = FSRectFFromCFXFloatRect(dict->GetRectFor("EPDFUnrotatedRect"));
-  return true;
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
-  if (!FPDFAnnot_GetRect(annot, rect))
-    return false;
 
   // Normalize: upstream FPDFAnnot_GetRect does not normalize the rect read
   // from the dictionary. PDFs may store Rect as [x1,y1,x2,y2] with y1>y2,
@@ -4651,36 +4897,54 @@ EPDFAnnot_GetRect(FPDF_ANNOTATION annot, FS_RECTF* rect) {
   return true;
 }
 
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetRect(FPDF_ANNOTATION annot,
+                                                      const FS_RECTF* rect) {
+  RetainPtr<CPDF_Dictionary> annot_dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!annot_dict || !rect) {
+    return false;
+  }
+
+  annot_dict->SetRectFor(pdfium::annotation::kRect,
+                         CFXFloatRectFromFSRectF(*rect));
+  return true;
+}
+
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetAPMatrix(FPDF_ANNOTATION annot,
                       FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                       const FS_MATRIX* matrix) {
-  if (!matrix)
+  if (!matrix) {
     return false;
-  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT)
+  }
+  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> dict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // Map mode to AP stream key: N, R, D
-  static constexpr auto kModeKey =
-      std::to_array<const char*>({"N", "R", "D"});
+  static constexpr auto kModeKey = std::to_array<const char*>({"N", "R", "D"});
   RetainPtr<CPDF_Dictionary> ap =
       dict->GetMutableDictFor(pdfium::annotation::kAP);
-  if (!ap)
+  if (!ap) {
     return false;
+  }
 
   RetainPtr<CPDF_Stream> stream =
       ap->GetMutableStreamFor(kModeKey[appearanceMode]);
-  if (!stream)
+  if (!stream) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> stream_dict = stream->GetMutableDict();
-  if (!stream_dict)
+  if (!stream_dict) {
     return false;
+  }
 
   stream_dict->SetMatrixFor("Matrix", CFXMatrixFromFSMatrix(*matrix));
   return true;
@@ -4690,31 +4954,36 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
                       FPDF_ANNOT_APPEARANCEMODE appearanceMode,
                       FS_MATRIX* matrix) {
-  if (!matrix)
+  if (!matrix) {
     return false;
-  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT)
+  }
+  if (appearanceMode < 0 || appearanceMode >= FPDF_ANNOT_APPEARANCEMODE_COUNT) {
     return false;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return false;
+  }
 
   // Map mode to AP stream key: N, R, D
-  static constexpr auto kModeKey =
-      std::to_array<const char*>({"N", "R", "D"});
+  static constexpr auto kModeKey = std::to_array<const char*>({"N", "R", "D"});
   RetainPtr<const CPDF_Dictionary> ap =
       dict->GetDictFor(pdfium::annotation::kAP);
-  if (!ap)
+  if (!ap) {
     return false;
+  }
 
   RetainPtr<const CPDF_Stream> stream =
       ap->GetStreamFor(kModeKey[appearanceMode]);
-  if (!stream)
+  if (!stream) {
     return false;
+  }
 
   RetainPtr<const CPDF_Dictionary> stream_dict = stream->GetDict();
-  if (!stream_dict)
+  if (!stream_dict) {
     return false;
+  }
 
   *matrix = FSMatrixFromCFXMatrix(stream_dict->GetMatrixFor("Matrix"));
   return true;
@@ -4722,36 +4991,40 @@ EPDFAnnot_GetAPMatrix(FPDF_ANNOTATION annot,
 
 FPDF_EXPORT int FPDF_CALLCONV
 EPDFAnnot_GetAvailableAppearanceModes(FPDF_ANNOTATION annot) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
     return 0;
+  }
 
   RetainPtr<const CPDF_Dictionary> pAP =
       pAnnotDict->GetDictFor(pdfium::annotation::kAP);
-  if (!pAP)
+  if (!pAP) {
     return 0;
+  }
 
   int modes = 0;
-  if (pAP->KeyExist("N"))
+  if (pAP->KeyExist("N")) {
     modes |= 1;  // bit 0 = Normal
-  if (pAP->KeyExist("R"))
+  }
+  if (pAP->KeyExist("R")) {
     modes |= 2;  // bit 1 = Rollover
-  if (pAP->KeyExist("D"))
+  }
+  if (pAP->KeyExist("D")) {
     modes |= 4;  // bit 2 = Down
+  }
   return modes;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_HasAppearanceStream(FPDF_ANNOTATION annot,
                               FPDF_ANNOT_APPEARANCEMODE appearanceMode) {
-  RetainPtr<CPDF_Dictionary> pAnnotDict =
-      GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
     return false;
+  }
 
   auto mode = static_cast<CPDF_Annot::AppearanceMode>(appearanceMode);
-  return !!GetAnnotAP(pAnnotDict.Get(), mode);
+  return !!GetAnnotAP(pAnnotDict, mode);
 }
 
 static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
@@ -4764,16 +5037,16 @@ static ByteString GetMKColorKey(EPDF_MK_COLORTYPE type) {
   return "BC";
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
-                     EPDF_MK_COLORTYPE type,
-                     unsigned int R,
-                     unsigned int G,
-                     unsigned int B) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
+                                                         EPDF_MK_COLORTYPE type,
+                                                         unsigned int R,
+                                                         unsigned int G,
+                                                         unsigned int B) {
   RetainPtr<CPDF_Dictionary> pAnnotDict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict || R > 255 || G > 255 || B > 255)
+  if (!pAnnotDict || R > 255 || G > 255 || B > 255) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> pMK = pAnnotDict->GetOrCreateDictFor("MK");
   ByteString key = GetMKColorKey(type);
@@ -4792,27 +5065,30 @@ EPDFAnnot_SetMKColor(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
-                     EPDF_MK_COLORTYPE type,
-                     unsigned int* R,
-                     unsigned int* G,
-                     unsigned int* B) {
-  if (!R || !G || !B)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFAnnot_GetMKColor(FPDF_ANNOTATION annot,
+                                                         EPDF_MK_COLORTYPE type,
+                                                         unsigned int* R,
+                                                         unsigned int* G,
+                                                         unsigned int* B) {
+  if (!R || !G || !B) {
     return false;
+  }
 
   const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  if (!pAnnotDict) {
     return false;
+  }
 
   RetainPtr<const CPDF_Dictionary> pMK = pAnnotDict->GetDictFor("MK");
-  if (!pMK)
+  if (!pMK) {
     return false;
+  }
 
   ByteString key = GetMKColorKey(type);
   RetainPtr<const CPDF_Array> pColor = pMK->GetArrayFor(key.AsStringView());
-  if (!pColor || pColor->size() < 3)
+  if (!pColor || pColor->size() < 3) {
     return false;
+  }
 
   *R = static_cast<unsigned int>(pColor->GetFloatAt(0) * 255.f + 0.5f);
   *G = static_cast<unsigned int>(pColor->GetFloatAt(1) * 255.f + 0.5f);
@@ -4825,12 +5101,14 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type) {
   RetainPtr<CPDF_Dictionary> pAnnotDict =
       GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
+  if (!pAnnotDict) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> pMK = pAnnotDict->GetMutableDictFor("MK");
-  if (!pMK)
+  if (!pMK) {
     return true;
+  }
 
   ByteString key = GetMKColorKey(type);
   pMK->RemoveFor(key.AsStringView());
@@ -4838,124 +5116,22 @@ EPDFAnnot_ClearMKColor(FPDF_ANNOTATION annot, EPDF_MK_COLORTYPE type) {
   return true;
 }
 
-FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
-EPDFPage_CreateFormField(FPDF_PAGE page,
-                         FPDF_FORMHANDLE handle,
-                         int field_type,
-                         FPDF_WIDESTRING field_name) {
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
-    return nullptr;
-
-  CPDFSDK_InteractiveForm* pSDKForm = FormHandleToInteractiveForm(handle);
-  if (!pSDKForm)
-    return nullptr;
-
-  // Validate field_type
-  switch (field_type) {
-    case FPDF_FORMFIELD_TEXTFIELD:
-    case FPDF_FORMFIELD_CHECKBOX:
-    case FPDF_FORMFIELD_RADIOBUTTON:
-    case FPDF_FORMFIELD_COMBOBOX:
-    case FPDF_FORMFIELD_LISTBOX:
-    case FPDF_FORMFIELD_PUSHBUTTON:
-      break;
-    default:
-      return nullptr;
-  }
-
-  CPDF_Document* pDoc = pPage->GetDocument();
-
-  // Determine /FT and base /Ff from the field_type
-  ByteString ft_value;
-  uint32_t base_flags = 0;
-  switch (field_type) {
-    case FPDF_FORMFIELD_TEXTFIELD:
-      ft_value = "Tx";
-      break;
-    case FPDF_FORMFIELD_CHECKBOX:
-      ft_value = "Btn";
-      break;
-    case FPDF_FORMFIELD_RADIOBUTTON:
-      ft_value = "Btn";
-      base_flags = (1 << 15);  // kRadio
-      break;
-    case FPDF_FORMFIELD_PUSHBUTTON:
-      ft_value = "Btn";
-      base_flags = (1 << 16);  // kPushbutton
-      break;
-    case FPDF_FORMFIELD_COMBOBOX:
-      ft_value = "Ch";
-      base_flags = (1 << 17);  // kCombo
-      break;
-    case FPDF_FORMFIELD_LISTBOX:
-      ft_value = "Ch";
-      break;
-  }
-
-  // Create the parent field dictionary (indirect)
-  RetainPtr<CPDF_Dictionary> pFieldDict = pDoc->NewIndirect<CPDF_Dictionary>();
-  pFieldDict->SetNewFor<CPDF_Name>("FT", ft_value);
-  if (base_flags != 0)
-    pFieldDict->SetNewFor<CPDF_Number>("Ff", static_cast<int>(base_flags));
-
-  // Set field name /T
-  if (field_name) {
-    WideString ws_name = WideStringFromFPDFWideString(field_name);
-    if (!ws_name.IsEmpty())
-      pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
-  }
-
-  // Create the widget annotation dictionary (indirect)
-  RetainPtr<CPDF_Dictionary> pAnnotDict = pDoc->NewIndirect<CPDF_Dictionary>();
-  pAnnotDict->SetNewFor<CPDF_Name>(pdfium::annotation::kType, "Annot");
-  pAnnotDict->SetNewFor<CPDF_Name>(pdfium::annotation::kSubtype, "Widget");
-
-  // Link widget -> parent via /Parent
-  pAnnotDict->SetNewFor<CPDF_Reference>("Parent", pDoc, pFieldDict->GetObjNum());
-
-  // Link parent -> widget via /Kids
-  RetainPtr<CPDF_Array> pKids = pFieldDict->SetNewFor<CPDF_Array>("Kids");
-  pKids->AppendNew<CPDF_Reference>(pDoc, pAnnotDict->GetObjNum());
-
-  // Ensure /AcroForm exists on document root
-  RetainPtr<CPDF_Dictionary> pRoot = pDoc->GetMutableRoot();
-  if (!pRoot)
-    return nullptr;
-
-  RetainPtr<CPDF_Dictionary> pAcroForm = pRoot->GetOrCreateDictFor("AcroForm");
-
-  // Append field to /AcroForm/Fields
-  RetainPtr<CPDF_Array> pFields = pAcroForm->GetOrCreateArrayFor("Fields");
-  pFields->AppendNew<CPDF_Reference>(pDoc, pFieldDict->GetObjNum());
-
-  // Append widget annotation to page /Annots
-  RetainPtr<CPDF_Array> pAnnots = pPage->GetOrCreateAnnotsArray();
-  pAnnots->AppendNew<CPDF_Reference>(pDoc, pAnnotDict->GetObjNum());
-
-  // Register the new field with the interactive form
-  CPDF_InteractiveForm* pPDFForm = pSDKForm->GetInteractiveForm();
-  pPDFForm->FixPageFields(pPage);
-
-  // Build and return the annotation handle
-  auto pContext = std::make_unique<CPDF_AnnotContext>(
-      pAnnotDict, IPDFPageFromFPDFPage(page));
-  return FPDFAnnotationFromCPDFAnnotContext(pContext.release());
-}
-
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* pContext = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pContext)
+  if (!pContext) {
     return false;
+  }
 
   RetainPtr<CPDF_Dictionary> pAnnotDict = pContext->GetMutableAnnotDict();
-  if (!pAnnotDict)
+  if (!pAnnotDict) {
     return false;
+  }
 
   CPDF_Document* pDoc = pContext->GetPage()->GetDocument();
-  if (!pDoc)
+  if (!pDoc) {
     return false;
+  }
 
   // Look for /FT on this dict or on /Parent
   ByteString ft;
@@ -4969,8 +5145,9 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
     pLookup = pLookup->GetDictFor("Parent");
   }
 
-  if (ft.IsEmpty())
+  if (ft.IsEmpty()) {
     return false;
+  }
 
   uint32_t ff = 0;
   RetainPtr<const CPDF_Dictionary> pFfLookup = pAnnotDict;
@@ -5013,205 +5190,29 @@ EPDFAnnot_GenerateFormFieldAP(FPDF_ANNOTATION annot) {
 }
 
 FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFAnnot_GetButtonExportValue(FPDF_ANNOTATION annot,
-                               FPDF_WCHAR* buffer,
-                               unsigned long buflen) {
-  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!pAnnotDict)
-    return 0;
-
-  RetainPtr<const CPDF_Dictionary> pAP =
-      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
-  if (!pAP)
-    return 0;
-
-  RetainPtr<const CPDF_Dictionary> pN = pAP->GetDictFor("N");
-  if (!pN)
-    return 0;
-
-  ByteString on_state;
-  CPDF_DictionaryLocker locker(pN);
-  for (const auto& it : locker) {
-    if (it.first != "Off") {
-      on_state = it.first;
-      break;
-    }
-  }
-
-  if (on_state.IsEmpty())
-    return 0;
-
-  return Utf16EncodeMaybeCopyAndReturnLength(
-      WideString::FromUTF8(on_state.AsStringView()),
-      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
-}
-
-FPDF_EXPORT unsigned long FPDF_CALLCONV
-EPDFAnnot_GetFormFieldRawValue(FPDF_FORMHANDLE hHandle,
-                               FPDF_ANNOTATION annot,
-                               FPDF_WCHAR* buffer,
-                               unsigned long buflen) {
-  const CPDF_FormField* pFormField = GetFormField(hHandle, annot);
-  if (!pFormField) {
-    return 0;
-  }
-  // SAFETY: required from caller.
-  return Utf16EncodeMaybeCopyAndReturnLength(
-      pFormField->GetRawValue(),
-      UNSAFE_BUFFERS(SpanFromFPDFApiArgs(buffer, buflen)));
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldValue(FPDF_FORMHANDLE handle,
-                            FPDF_ANNOTATION annot,
-                            FPDF_WIDESTRING value) {
-  CPDF_FormField* pFormField = GetFormField(handle, annot);
-  if (!pFormField)
-    return false;
-
-  return pFormField->SetValue(WideStringFromFPDFWideString(value),
-                              NotificationOption::kDoNotNotify);
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldName(FPDF_FORMHANDLE handle,
-                           FPDF_ANNOTATION annot,
-                           FPDF_WIDESTRING name) {
-  CPDF_FormField* pFormField = GetFormField(handle, annot);
-  if (!pFormField)
-    return false;
-
-  RetainPtr<CPDF_Dictionary> pFieldDict =
-      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
-          pFormField->GetFieldDict().Get()));
-  if (!pFieldDict)
-    return false;
-
-  WideString ws_name = WideStringFromFPDFWideString(name);
-  pFieldDict->SetNewFor<CPDF_String>("T", ws_name.ToUTF8());
-  return true;
-}
-
-FPDF_EXPORT int FPDF_CALLCONV
-EPDFAnnot_GetFormFieldObjectNumber(FPDF_FORMHANDLE handle, FPDF_ANNOTATION annot) {
-  RetainPtr<CPDF_Dictionary> pFieldDict = GetMutableFieldDict(GetFormField(handle, annot));
-  if (!pFieldDict) {
-    return 0;
-  }
-
-  return static_cast<int>(pFieldDict->GetObjNum());
-}
-
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_ShareFormField(FPDF_FORMHANDLE handle,
-                         FPDF_ANNOTATION source_annot,
-                         FPDF_ANNOTATION target_annot) {
-  CPDFSDK_InteractiveForm* pSDKForm = FormHandleToInteractiveForm(handle);
-  if (!pSDKForm) {
-    return false;
-  }
-
-  CPDF_FormField* pSourceField = GetFormField(handle, source_annot);
-  CPDF_FormField* pTargetField = GetFormField(handle, target_annot);
-  if (!pSourceField || !pTargetField) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Dictionary> pSourceFieldDict = GetMutableFieldDict(pSourceField);
-  RetainPtr<CPDF_Dictionary> pTargetFieldDict = GetMutableFieldDict(pTargetField);
-  if (!pSourceFieldDict || !pTargetFieldDict) {
-    return false;
-  }
-
-  if (pSourceFieldDict->GetObjNum() == pTargetFieldDict->GetObjNum()) {
-    return true;
-  }
-
-  if (pSourceField->GetType() != pTargetField->GetType()) {
-    return false;
-  }
-
-  CPDF_AnnotContext* pSourceContext = CPDFAnnotContextFromFPDFAnnotation(source_annot);
-  CPDF_AnnotContext* pTargetContext = CPDFAnnotContextFromFPDFAnnotation(target_annot);
-  if (!pSourceContext || !pTargetContext) {
-    return false;
-  }
-
-  IPDF_Page* pSourcePage = pSourceContext->GetPage();
-  IPDF_Page* pTargetPage = pTargetContext->GetPage();
-  if (!pSourcePage || !pTargetPage) {
-    return false;
-  }
-
-  CPDF_Document* pDoc = pSourcePage->GetDocument();
-  if (!pDoc || pDoc != pTargetPage->GetDocument()) {
-    return false;
-  }
-
-  RetainPtr<CPDF_Array> pSourceKids = pSourceFieldDict->GetMutableArrayFor("Kids");
-  RetainPtr<CPDF_Array> pTargetKids = pTargetFieldDict->GetOrCreateArrayFor("Kids");
-  if (!pSourceKids || !pTargetKids) {
-    return false;
-  }
-
-  for (size_t i = 0; i < pSourceKids->size(); ++i) {
-    RetainPtr<CPDF_Dictionary> pKidDict = pSourceKids->GetMutableDictAt(i);
-    if (!pKidDict) {
-      continue;
-    }
-
-    pKidDict->SetNewFor<CPDF_Reference>("Parent", pDoc, pTargetFieldDict->GetObjNum());
-
-    if (!ArrayContainsDictWithObjNum(pTargetKids.Get(), pKidDict->GetObjNum())) {
-      pTargetKids->AppendNew<CPDF_Reference>(pDoc, pKidDict->GetObjNum());
-    }
-  }
-
-  pSourceFieldDict->RemoveFor("Kids");
-
-  RetainPtr<CPDF_Dictionary> pRoot = pDoc->GetMutableRoot();
-  if (pRoot) {
-    RetainPtr<CPDF_Dictionary> pAcroForm = pRoot->GetMutableDictFor("AcroForm");
-    if (pAcroForm) {
-      RetainPtr<CPDF_Array> pFields = pAcroForm->GetMutableArrayFor("Fields");
-      if (pFields) {
-        RemoveDictWithObjNumFromArray(pFields.Get(), pSourceFieldDict->GetObjNum());
-      }
-    }
-  }
-
-  CPDF_InteractiveForm* pPDFForm = pSDKForm->GetInteractiveForm();
-  if (CPDF_Page* pSourcePdfPage = ToPDFPage(pSourcePage)) {
-    pPDFForm->FixPageFields(pSourcePdfPage);
-  }
-  if (pTargetPage != pSourcePage) {
-    if (CPDF_Page* pTargetPdfPage = ToPDFPage(pTargetPage)) {
-      pPDFForm->FixPageFields(pTargetPdfPage);
-    }
-  }
-
-  return true;
-}
-
-FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetCalloutLineCount(FPDF_ANNOTATION annot) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
     return 0;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
 
   RetainPtr<const CPDF_Array> cl = dict->GetArrayFor("CL");
-  if (!cl)
+  if (!cl) {
     return 0;
+  }
 
   // /CL must have 4 (2 points) or 6 (3 points) numbers.
   const size_t sz = cl->size();
-  if (sz == 4)
+  if (sz == 4) {
     return 2;
-  if (sz >= 6)
+  }
+  if (sz >= 6) {
     return 3;
+  }
   return 0;
 }
 
@@ -5219,25 +5220,29 @@ FPDF_EXPORT unsigned long FPDF_CALLCONV
 EPDFAnnot_GetCalloutLine(FPDF_ANNOTATION annot,
                          FS_POINTF* buffer,
                          unsigned long length) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
     return 0;
+  }
 
   const CPDF_Dictionary* dict = GetAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
 
   RetainPtr<const CPDF_Array> cl = dict->GetArrayFor("CL");
-  if (!cl)
+  if (!cl) {
     return 0;
+  }
 
   const size_t sz = cl->size();
   unsigned long points_len = 0;
-  if (sz == 4)
+  if (sz == 4) {
     points_len = 2;
-  else if (sz >= 6)
+  } else if (sz >= 6) {
     points_len = 3;
-  else
+  } else {
     return 0;
+  }
 
   if (buffer && length >= points_len) {
     auto buffer_span = UNSAFE_BUFFERS(pdfium::span(buffer, length));
@@ -5253,12 +5258,15 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
                          const FS_POINTF* points,
                          unsigned long count) {
-  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT)
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_FREETEXT) {
     return false;
+  }
 
-  RetainPtr<CPDF_Dictionary> dict = GetMutableAnnotDictFromFPDFAnnotation(annot);
-  if (!dict)
+  RetainPtr<CPDF_Dictionary> dict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!dict) {
     return false;
+  }
 
   if (!points || count == 0) {
     dict->RemoveFor("CL");
@@ -5266,14 +5274,16 @@ EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
   }
 
   // /CL must be 2 points (4 numbers) or 3 points (6 numbers).
-  if (count != 2 && count != 3)
+  if (count != 2 && count != 3) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> cl = dict->GetMutableArrayFor("CL");
-  if (cl)
+  if (cl) {
     cl->Clear();
-  else
+  } else {
     cl = dict->SetNewFor<CPDF_Array>("CL");
+  }
 
   auto pts = UNSAFE_BUFFERS(pdfium::span(points, count));
   for (unsigned long i = 0; i < count; ++i) {
@@ -5284,59 +5294,41 @@ EPDFAnnot_SetCalloutLine(FPDF_ANNOTATION annot,
   return true;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFAnnot_SetFormFieldOptions(FPDF_FORMHANDLE handle,
-                              FPDF_ANNOTATION annot,
-                              const FPDF_WIDESTRING* labels,
-                              int count) {
-  if (count < 0 || (count > 0 && !labels))
-    return false;
-
-  CPDF_FormField* pFormField = GetFormField(handle, annot);
-  if (!pFormField)
-    return false;
-
-  RetainPtr<CPDF_Dictionary> pFieldDict =
-      pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
-          pFormField->GetFieldDict().Get()));
-  if (!pFieldDict)
-    return false;
-
-  RetainPtr<CPDF_Array> pOpt = pFieldDict->SetNewFor<CPDF_Array>("Opt");
-  for (int i = 0; i < count; i++) {
-    WideString ws_label = WideStringFromFPDFWideString(labels[i]);
-    pOpt->AppendNew<CPDF_String>(ws_label.AsStringView());
-  }
-  return true;
-}
-
 FPDF_EXPORT unsigned int FPDF_CALLCONV
 EPDFAnnot_GetObjectNumber(FPDF_ANNOTATION annot) {
   CPDF_AnnotContext* pCtx = CPDFAnnotContextFromFPDFAnnotation(annot);
-  if (!pCtx)
+  if (!pCtx) {
     return 0;
+  }
   const CPDF_Dictionary* dict = pCtx->GetAnnotDict();
-  if (!dict)
+  if (!dict) {
     return 0;
+  }
   return dict->GetObjNum();
 }
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
-  if (!page || obj_num == 0)
+  if (!page || obj_num == 0) {
     return nullptr;
+  }
 
-  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
+  ScopedFPDFPageView page_view(page);
+  if (!page_view) {
     return nullptr;
+  }
+  const CPDF_Page* pPage = page_view.Get();
 
-  RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots)
+  RetainPtr<const CPDF_Array> annots = pPage->GetAnnotsArray();
+  if (!annots) {
     return nullptr;
+  }
 
   for (size_t i = 0; i < annots->size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> const_dict =
+        ToDictionary(annots->GetDirectObjectAt(i));
     RetainPtr<CPDF_Dictionary> d =
-        ToDictionary(annots->GetMutableDirectObjectAt(i));
+        pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(const_dict.Get()));
     if (d && d->GetObjNum() == obj_num) {
       auto ctx = std::make_unique<CPDF_AnnotContext>(
           std::move(d), IPDFPageFromFPDFPage(page));
@@ -5346,15 +5338,17 @@ EPDFPage_GetAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
   return nullptr;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_RemoveAnnot(FPDF_PAGE page, int index) {
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_RemoveAnnot(FPDF_PAGE page,
+                                                         int index) {
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage || index < 0)
+  if (!pPage || index < 0) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots || static_cast<size_t>(index) >= annots->size())
+  if (!annots || static_cast<size_t>(index) >= annots->size()) {
     return false;
+  }
 
   RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(index);
   RetainPtr<CPDF_Dictionary> dict =
@@ -5369,31 +5363,36 @@ EPDFPage_RemoveAnnot(FPDF_PAGE page, int index) {
 
   annots->RemoveAt(index);
 
-  if (objnum)
+  if (objnum) {
     pPage->GetDocument()->DeleteIndirectObject(objnum);
+  }
 
   return true;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
-  if (!page || obj_num == 0)
+  if (!page || obj_num == 0) {
     return false;
+  }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
+  if (!pPage) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots)
+  if (!annots) {
     return false;
+  }
 
   for (size_t i = 0; i < annots->size(); ++i) {
     RetainPtr<CPDF_Object> entry = annots->GetMutableObjectAt(i);
     RetainPtr<CPDF_Dictionary> dict =
         ToDictionary(entry ? entry->GetMutableDirect() : nullptr);
-    if (!dict)
+    if (!dict) {
       continue;
+    }
 
     uint32_t entry_objnum = 0;
     if (entry && entry->IsReference()) {
@@ -5401,13 +5400,15 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
     } else {
       entry_objnum = dict->GetObjNum();
     }
-    if (entry_objnum != obj_num)
+    if (entry_objnum != obj_num) {
       continue;
+    }
 
     annots->RemoveAt(i);
 
-    if (entry_objnum)
+    if (entry_objnum) {
       pPage->GetDocument()->DeleteIndirectObject(entry_objnum);
+    }
 
     return true;
   }
@@ -5428,21 +5429,23 @@ EPDFPage_RemoveAnnotByObjectNumber(FPDF_PAGE page, unsigned int obj_num) {
 // Any failure returns false without touching the array. The indirect
 // objects backing each annotation are never destroyed, so durable
 // identity (objectNumber, /NM) is preserved across the move.
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_MoveAnnots(FPDF_PAGE page,
-                    const int* from_indices,
-                    int from_indices_len,
-                    int to_index) {
-  if (!page || !from_indices || from_indices_len <= 0)
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV EPDFPage_MoveAnnots(FPDF_PAGE page,
+                                                        const int* from_indices,
+                                                        int from_indices_len,
+                                                        int to_index) {
+  if (!page || !from_indices || from_indices_len <= 0) {
     return false;
+  }
 
   CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
-  if (!pPage)
+  if (!pPage) {
     return false;
+  }
 
   RetainPtr<CPDF_Array> annots = pPage->GetMutableAnnotsArray();
-  if (!annots)
+  if (!annots) {
     return false;
+  }
 
   const int count = static_cast<int>(annots->size());
 
@@ -5453,17 +5456,20 @@ EPDFPage_MoveAnnots(FPDF_PAGE page,
   seen.reserve(static_cast<size_t>(from_indices_len));
   for (int i = 0; i < from_indices_len; ++i) {
     int idx = from_indices[i];
-    if (idx < 0 || idx >= count)
+    if (idx < 0 || idx >= count) {
       return false;
+    }
     for (int s : seen) {
-      if (s == idx)
+      if (s == idx) {
         return false;
+      }
     }
     seen.push_back(idx);
   }
   const int post_count = count - from_indices_len;
-  if (to_index < 0 || to_index > post_count)
+  if (to_index < 0 || to_index > post_count) {
     return false;
+  }
 
   // 2. Detach each entry in caller order. RetainPtr keeps the underlying
   //    CPDF_Object alive across the subsequent RemoveAt calls so the
@@ -5488,8 +5494,7 @@ EPDFPage_MoveAnnots(FPDF_PAGE page,
   //    a fresh reference to each entry; our local RetainPtr drops at
   //    scope exit.
   for (int i = 0; i < from_indices_len; ++i) {
-    annots->InsertAt(static_cast<size_t>(to_index + i),
-                     std::move(entries[i]));
+    annots->InsertAt(static_cast<size_t>(to_index + i), std::move(entries[i]));
   }
   return true;
 }

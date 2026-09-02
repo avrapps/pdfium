@@ -68,17 +68,9 @@ int32_t CPVT_VariableText::Provider::GetTypeDescent(int32_t nFontIndex) {
 int32_t CPVT_VariableText::Provider::GetWordFontIndex(uint16_t word,
                                                       FX_Charset charset,
                                                       int32_t nFontIndex) {
-  if (RetainPtr<CPDF_Font> pDefFont = font_map_->GetPDFFont(0)) {
-    if (pDefFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
-      return 0;
-    }
-  }
-  if (RetainPtr<CPDF_Font> pSysFont = font_map_->GetPDFFont(1)) {
-    if (pSysFont->CharCodeFromUnicode(word) != CPDF_Font::kInvalidCharCode) {
-      return 1;
-    }
-  }
-  return -1;
+  // EmbedPDF: delegate font choice to IPVT_FontMap so CPDF_AnnotFontMap can
+  // route individual FreeText glyphs to registered fallback fonts.
+  return font_map_->GetWordFontIndex(word, charset, nFontIndex);
 }
 
 int32_t CPVT_VariableText::Provider::GetDefaultFontIndex() {

@@ -7,6 +7,8 @@
 #include "core/fpdfdoc/cpdf_annot.h"
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -78,11 +80,11 @@ CPDF_Form* AnnotGetMatrix(CPDF_Page* pPage,
   return pForm;
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPInternal(const CPDF_Dictionary* pAnnotDict,
                                           CPDF_Annot::AppearanceMode eMode,
                                           bool bFallbackToNormal) {
-  RetainPtr<CPDF_Dictionary> pAP =
-      pAnnotDict->GetMutableDictFor(pdfium::annotation::kAP);
+  RetainPtr<const CPDF_Dictionary> pAP =
+      pAnnotDict->GetDictFor(pdfium::annotation::kAP);
   if (!pAP) {
     return nullptr;
   }
@@ -97,17 +99,17 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
     ap_entry = "N";
   }
 
-  RetainPtr<CPDF_Object> psub = pAP->GetMutableDirectObjectFor(ap_entry);
+  RetainPtr<const CPDF_Object> psub = pAP->GetDirectObjectFor(ap_entry);
   if (!psub) {
     return nullptr;
   }
 
-  RetainPtr<CPDF_Stream> pStream(psub->AsMutableStream());
+  RetainPtr<const CPDF_Stream> pStream(psub->AsStream());
   if (pStream) {
-    return pStream;
+    return pdfium::WrapRetain(const_cast<CPDF_Stream*>(pStream.Get()));
   }
 
-  CPDF_Dictionary* dict = psub->AsMutableDictionary();
+  const CPDF_Dictionary* dict = psub->AsDictionary();
   if (!dict) {
     return nullptr;
   }
@@ -123,7 +125,8 @@ RetainPtr<CPDF_Stream> GetAnnotAPInternal(CPDF_Dictionary* pAnnotDict,
     as = (!value.IsEmpty() && dict->KeyExist(value.AsStringView())) ? value
                                                                     : "Off";
   }
-  return dict->GetMutableStreamFor(as.AsStringView());
+  RetainPtr<const CPDF_Stream> stream = dict->GetStreamFor(as.AsStringView());
+  return pdfium::WrapRetain(const_cast<CPDF_Stream*>(stream.Get()));
 }
 
 }  // namespace
@@ -135,8 +138,11 @@ CPDF_Annot::CPDF_Annot(RetainPtr<CPDF_Dictionary> dict, CPDF_Document* document)
           annot_dict_->GetByteStringFor(pdfium::annotation::kSubtype))),
       is_text_markup_annotation_(IsTextMarkupAnnotation(subtype_)),
       has_generated_ap_(
-          annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false)) {
-  GenerateAPIfNeeded();
+          annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false) ||
+          (CanGenerateEphemeralAP() && ShouldGenerateAP())) {
+  if (!CanGenerateEphemeralAP()) {
+    GenerateAPIfNeeded();
+  }
 }
 
 CPDF_Annot::~CPDF_Annot() {
@@ -168,6 +174,39 @@ bool CPDF_Annot::ShouldGenerateAP() const {
   return !IsHidden();
 }
 
+bool CPDF_Annot::CanGenerateEphemeralAP() const {
+  return CPDF_GenerateAP::CanGenerateEphemeralAnnotAP(subtype_);
+}
+
+RetainPtr<CPDF_Stream> CPDF_Annot::GetOrBuildEphemeralAP(AppearanceMode mode) {
+  if (mode != AppearanceMode::kNormal || !CanGenerateEphemeralAP()) {
+    return nullptr;
+  }
+
+  if (ephemeral_built_) {
+    return ephemeral_normal_ap_;
+  }
+
+  ephemeral_built_ = true;
+  if (!ShouldGenerateAP()) {
+    return nullptr;
+  }
+
+  std::optional<CPDF_GenerateAP::GeneratedAP> generated =
+      CPDF_GenerateAP::GenerateEphemeralAnnotAP(document_, annot_dict_.Get(),
+                                                subtype_);
+  if (!generated.has_value()) {
+    return nullptr;
+  }
+
+  ephemeral_normal_ap_ = std::move(generated->normal_stream);
+  if (subtype_ == CPDF_Annot::Subtype::INK) {
+    ephemeral_rect_ = ephemeral_normal_ap_->GetDict()->GetRectFor("BBox");
+  }
+  has_generated_ap_ = true;
+  return ephemeral_normal_ap_;
+}
+
 bool CPDF_Annot::ShouldDrawAnnotation() const {
   if (IsHidden()) {
     return false;
@@ -177,6 +216,12 @@ bool CPDF_Annot::ShouldDrawAnnotation() const {
 
 void CPDF_Annot::ClearCachedAP() {
   ap_map_.clear();
+  ephemeral_normal_ap_.Reset();
+  ephemeral_rect_.reset();
+  ephemeral_built_ = false;
+  has_generated_ap_ =
+      annot_dict_->GetBooleanFor(kPDFiumKey_HasGeneratedAP, false) ||
+      (CanGenerateEphemeralAP() && ShouldGenerateAP());
 }
 
 CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
@@ -184,6 +229,10 @@ CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
 }
 
 CFX_FloatRect CPDF_Annot::RectForDrawing() const {
+  if (ephemeral_rect_.has_value()) {
+    return ephemeral_rect_.value();
+  }
+
   bool bShouldUseQuadPointsCoords =
       is_text_markup_annotation_ && has_generated_ap_;
   if (bShouldUseQuadPointsCoords) {
@@ -206,13 +255,13 @@ bool CPDF_Annot::IsHidden() const {
   return !!(GetFlags() & pdfium::annotation_flags::kHidden);
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAP(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAP(const CPDF_Dictionary* pAnnotDict,
                                   CPDF_Annot::AppearanceMode eMode) {
   DCHECK(pAnnotDict);
   return GetAnnotAPInternal(pAnnotDict, eMode, true);
 }
 
-RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
+RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(const CPDF_Dictionary* pAnnotDict,
                                             CPDF_Annot::AppearanceMode eMode) {
   DCHECK(pAnnotDict);
   return GetAnnotAPInternal(pAnnotDict, eMode, false);
@@ -220,6 +269,9 @@ RetainPtr<CPDF_Stream> GetAnnotAPNoFallback(CPDF_Dictionary* pAnnotDict,
 
 CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
   RetainPtr<CPDF_Stream> pStream = GetAnnotAP(annot_dict_.Get(), mode);
+  if (!pStream) {
+    pStream = GetOrBuildEphemeralAP(mode);
+  }
   if (!pStream) {
     return nullptr;
   }
@@ -240,7 +292,10 @@ CPDF_Form* CPDF_Annot::GetAPForm(CPDF_Page* pPage, AppearanceMode mode) {
   }
 
   auto pNewForm = std::make_unique<CPDF_Form>(
-      document_, pPage->GetMutableResources(), pStream);
+      document_,
+      pdfium::WrapRetain(
+          const_cast<CPDF_Dictionary*>(pPage->GetResources().Get())),
+      pStream);
   pNewForm->ParseContent();
 
   CPDF_Form* pResult = pNewForm.get();
@@ -293,20 +348,23 @@ CFX_FloatRect CPDF_Annot::RectFromQuadPointsArray(const CPDF_Array* pArray,
   DCHECK(pArray);
   DCHECK(nIndex < pArray->size() / 8);
 
-  // QuadPoints are defined with 4 pairs of numbers
-  // ([ pair0, pair1, pair2, pair3 ]), where
-  // pair0 = top_left
-  // pair1 = top_right
-  // pair2 = bottom_left
-  // pair3 = bottom_right
-  //
-  // On the other hand, /Rect is defined as 2 pairs [pair0, pair1] where:
-  // pair0 = bottom_left
-  // pair1 = top_right.
-
-  return CFX_FloatRect(
-      pArray->GetFloatAt(4 + nIndex * 8), pArray->GetFloatAt(5 + nIndex * 8),
-      pArray->GetFloatAt(2 + nIndex * 8), pArray->GetFloatAt(3 + nIndex * 8));
+  // QuadPoints text-markup order is top-left, top-right, bottom-left,
+  // bottom-right. Bounds remain producer-order agnostic and inspect all four.
+  const size_t offset = nIndex * 8;
+  std::optional<CFX_FloatRect> rect;
+  for (size_t i = 0; i < 4; ++i) {
+    const CFX_PointF point(pArray->GetFloatAt(offset + i * 2),
+                           pArray->GetFloatAt(offset + i * 2 + 1));
+    if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+      continue;
+    }
+    if (rect) {
+      rect->UpdateRect(point);
+    } else {
+      rect.emplace(point);
+    }
+  }
+  return rect.value_or(CFX_FloatRect());
 }
 
 // static
@@ -613,8 +671,9 @@ CPDF_Annot::Icon CPDF_Annot::StringToIcon(const ByteString& name) {
     ByteString prefix = name.First(2);
     if (prefix == "SB" || prefix == "SH") {
       Icon result = StringToIcon(name.Substr(2));
-      if (result != Icon::kUnknown && result != Icon::kStamp_Custom)
+      if (result != Icon::kUnknown && result != Icon::kStamp_Custom) {
         return result;
+      }
     }
   }
   return Icon::kStamp_Custom;
@@ -739,17 +798,17 @@ ByteString CPDF_Annot::LineEndingToString(CPDF_Annot::LineEnding le) {
       return "Circle";
     case LineEnding::kDiamond:
       return "Diamond";
-    case LineEnding::kOpenArrow:    
+    case LineEnding::kOpenArrow:
       return "OpenArrow";
-    case LineEnding::kClosedArrow:  
+    case LineEnding::kClosedArrow:
       return "ClosedArrow";
-    case LineEnding::kButt:         
+    case LineEnding::kButt:
       return "Butt";
-    case LineEnding::kROpenArrow:   
+    case LineEnding::kROpenArrow:
       return "ROpenArrow";
-    case LineEnding::kRClosedArrow: 
+    case LineEnding::kRClosedArrow:
       return "RClosedArrow";
-    case LineEnding::kSlash:        
+    case LineEnding::kSlash:
       return "Slash";
     case LineEnding::kUnknown:
       break;
@@ -791,7 +850,8 @@ CPDF_Annot::LineEnding CPDF_Annot::StringToLineEnding(const ByteString& n) {
   return LineEnding::kUnknown;
 }
 
-CPDF_Annot::StandardFont CPDF_Annot::StringToStandardFont(const ByteString& name) {
+CPDF_Annot::StandardFont CPDF_Annot::StringToStandardFont(
+    const ByteString& name) {
   // Full canonical names (PDF Reference, Table 5.17)
   if (name == "Courier" || name == "Cour") {
     return StandardFont::kCourier;
@@ -844,7 +904,7 @@ ByteString CPDF_Annot::StandardFontToString(CPDF_Annot::StandardFont font) {
       return "Courier";
     case StandardFont::kCourier_Bold:
       return "Courier-Bold";
-    case StandardFont::kCourier_BoldOblique: 
+    case StandardFont::kCourier_BoldOblique:
       return "Courier-BoldOblique";
     case StandardFont::kCourier_Oblique:
       return "Courier-Oblique";
@@ -877,11 +937,21 @@ ByteString CPDF_Annot::StandardFontToString(CPDF_Annot::StandardFont font) {
 // static
 CPDF_Annot::BorderStyle CPDF_Annot::StringToBorderStyle(
     const ByteString& sStyle) {
-  if (sStyle == "S") return CPDF_Annot::BorderStyle::kSolid;
-  if (sStyle == "D") return CPDF_Annot::BorderStyle::kDashed;
-  if (sStyle == "B") return CPDF_Annot::BorderStyle::kBeveled;
-  if (sStyle == "I") return CPDF_Annot::BorderStyle::kInset;
-  if (sStyle == "U") return CPDF_Annot::BorderStyle::kUnderline;
+  if (sStyle == "S") {
+    return CPDF_Annot::BorderStyle::kSolid;
+  }
+  if (sStyle == "D") {
+    return CPDF_Annot::BorderStyle::kDashed;
+  }
+  if (sStyle == "B") {
+    return CPDF_Annot::BorderStyle::kBeveled;
+  }
+  if (sStyle == "I") {
+    return CPDF_Annot::BorderStyle::kInset;
+  }
+  if (sStyle == "U") {
+    return CPDF_Annot::BorderStyle::kUnderline;
+  }
   return CPDF_Annot::BorderStyle::kUnknown;
 }
 
@@ -916,12 +986,14 @@ bool CPDF_Annot::DrawAppearance(CPDF_Page* pPage,
     return false;
   }
 
-  // It might happen that by the time this annotation instance was created,
-  // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
-  // to not "generate" its AP.
-  // If for a reason the object is no longer hidden, but still does not have
-  // its "AP" generated, generate it now.
-  GenerateAPIfNeeded();
+  if (!CanGenerateEphemeralAP()) {
+    // It might happen that by the time this annotation instance was created,
+    // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
+    // to not "generate" its AP.
+    // If for a reason the object is no longer hidden, but still does not have
+    // its "AP" generated, generate it now.
+    GenerateAPIfNeeded();
+  }
 
   CFX_Matrix matrix;
   CPDF_Form* pForm = AnnotGetMatrix(pPage, this, mode, mtUser2Device, &matrix);
@@ -930,7 +1002,8 @@ bool CPDF_Annot::DrawAppearance(CPDF_Page* pPage,
   }
 
   CPDF_RenderContext context(pPage->GetDocument(),
-                             pPage->GetMutablePageResources(),
+                             pdfium::WrapRetain(const_cast<CPDF_Dictionary*>(
+                                 pPage->GetPageResources().Get())),
                              pPage->GetPageImageCache());
   context.AppendLayer(pForm, matrix);
   context.Render(pDevice, nullptr, nullptr, nullptr);
@@ -945,12 +1018,14 @@ bool CPDF_Annot::DrawInContext(CPDF_Page* pPage,
     return false;
   }
 
-  // It might happen that by the time this annotation instance was created,
-  // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
-  // to not "generate" its AP.
-  // If for a reason the object is no longer hidden, but still does not have
-  // its "AP" generated, generate it now.
-  GenerateAPIfNeeded();
+  if (!CanGenerateEphemeralAP()) {
+    // It might happen that by the time this annotation instance was created,
+    // it was flagged as "hidden" (e.g. /F 2), and hence CPDF_GenerateAP decided
+    // to not "generate" its AP.
+    // If for a reason the object is no longer hidden, but still does not have
+    // its "AP" generated, generate it now.
+    GenerateAPIfNeeded();
+  }
 
   CFX_Matrix matrix;
   CPDF_Form* pForm = AnnotGetMatrix(pPage, this, mode, mtUser2Device, &matrix);

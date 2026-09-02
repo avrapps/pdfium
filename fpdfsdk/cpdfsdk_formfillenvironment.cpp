@@ -685,7 +685,7 @@ CPDFSDK_PageView* CPDFSDK_FormFillEnvironment::GetPageViewAtIndex(int nIndex) {
 }
 
 void CPDFSDK_FormFillEnvironment::ProcJavascriptAction() {
-  auto name_tree = CPDF_NameTree::Create(cpdfdoc_, "JavaScript");
+  auto name_tree = CPDF_NameTree::CreateForReading(cpdfdoc_, "JavaScript");
   if (!name_tree) {
     return;
   }

@@ -13,6 +13,12 @@ source_set("fpdfdoc") {
     "cpdf_action.h",
     "cpdf_annot.cpp",
     "cpdf_annot.h",
+    # EmbedPDF: registered FreeText annotation fonts and per-layer subset
+    # embedding. Keep these fork-owned files when rebasing from upstream PDFium.
+    "cpdf_annotfontmap.cpp",
+    "cpdf_annotfontmap.h",
+    "cpdf_annotfontsubset.cpp",
+    "cpdf_annotfontsubset.h",
     "cpdf_annotlist.cpp",
     "cpdf_annotlist.h",
     "cpdf_apsettings.cpp",
@@ -96,6 +102,9 @@ source_set("fpdfdoc") {
     "../fpdfapi/render",
     "../fxcrt",
     "../fxge",
+    # EmbedPDF: CPDF_AnnotFontSubset uses HarfBuzz subsetting to embed only the
+    # glyphs used by each saved annotation/layer.
+    "../../third_party/harfbuzz-ng",
   ]
   visibility = [ "../../*" ]
 }
@@ -110,6 +119,7 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_dest_unittest.cpp",
     "cpdf_filespec_unittest.cpp",
     "cpdf_formfield_unittest.cpp",
+    "cpdf_generateap_unittest.cpp",
     "cpdf_interactiveform_unittest.cpp",
     "cpdf_metadata_unittest.cpp",
     "cpdf_nametree_unittest.cpp",

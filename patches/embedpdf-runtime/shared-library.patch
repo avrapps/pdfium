@@ -8,7 +8,7 @@ index fbdb13a4e..3b450b979 100644
  
 -component("pdfium") {
 +shared_library("pdfium") {
-   output_name = "pdfium"
+   output_name = "embedpdf"
    libs = []
    configs += [ ":pdfium_strict_config" ]
 +  if (is_android) {

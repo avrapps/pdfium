@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 CloudPDF LTD
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 SOURCE_DIR="${PDF_RUNTIME_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -14,30 +17,30 @@ OUT="$SOURCE_DIR/out/embedpdf-runtime/$TARGET"
 STAGING="$SOURCE_DIR/out/embedpdf-runtime-staging/$TARGET"
 SHA="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
 SHORT_SHA="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
-ARCHIVE="$OUTPUT_DIR/libembedpdf-pdf-runtime-$TARGET-$SHORT_SHA.tar.gz"
+ARCHIVE="$OUTPUT_DIR/libembedpdf-runtime-$TARGET-$SHORT_SHA.tar.gz"
 
 case "$TARGET" in
   win32-*)
-    LIB_SOURCE="$OUT/pdfium.dll.lib"
-    LIB_DEST="$STAGING/lib/pdfium.dll.lib"
-    DLL_SOURCE="$OUT/pdfium.dll"
-    DLL_DEST="$STAGING/bin/pdfium.dll"
+    LIB_SOURCE="$OUT/embedpdf.dll.lib"
+    LIB_DEST="$STAGING/lib/embedpdf.dll.lib"
+    DLL_SOURCE="$OUT/embedpdf.dll"
+    DLL_DEST="$STAGING/bin/embedpdf.dll"
     ;;
   darwin-*)
-    LIB_SOURCE="$OUT/libpdfium.dylib"
-    LIB_DEST="$STAGING/lib/libpdfium.dylib"
+    LIB_SOURCE="$OUT/libembedpdf.dylib"
+    LIB_DEST="$STAGING/lib/libembedpdf.dylib"
     ;;
   linux-*|android-*|arm64-v8a|armeabi-v7a|x86_64|x86)
-    LIB_SOURCE="$OUT/libpdfium.so"
-    LIB_DEST="$STAGING/lib/libpdfium.so"
+    LIB_SOURCE="$OUT/libembedpdf.so"
+    LIB_DEST="$STAGING/lib/libembedpdf.so"
     ;;
   ios-*|linuxmusl-*|wasm32)
-    LIB_SOURCE="$OUT/obj/libpdfium.a"
-    LIB_DEST="$STAGING/lib/libpdfium.a"
+    LIB_SOURCE="$OUT/obj/libembedpdf.a"
+    LIB_DEST="$STAGING/lib/libembedpdf.a"
     ;;
   *)
-    LIB_SOURCE="$OUT/obj/libpdfium.a"
-    LIB_DEST="$STAGING/lib/libpdfium.a"
+    LIB_SOURCE="$OUT/obj/libembedpdf.a"
+    LIB_DEST="$STAGING/lib/libembedpdf.a"
     ;;
 esac
 
@@ -57,7 +60,7 @@ cp -R "$SOURCE_DIR/public/." "$STAGING/include/"
 cp "$LIB_SOURCE" "$LIB_DEST"
 case "$TARGET" in
   darwin-*)
-    install_name_tool -id "@rpath/libpdfium.dylib" "$LIB_DEST"
+    install_name_tool -id "@rpath/libembedpdf.dylib" "$LIB_DEST"
     ;;
 esac
 if [[ -n "${DLL_SOURCE:-}" ]]; then
@@ -69,7 +72,7 @@ cp "$SOURCE_DIR/LICENSE" "$STAGING/LICENSES/PDFIUM_LICENSE"
 
 cat > "$STAGING/BUILD-METADATA.json" <<EOF
 {
-  "name": "embedpdf-pdf-runtime",
+  "name": "embedpdf-runtime",
   "target": "$TARGET",
   "sha": "$SHA",
   "createdAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

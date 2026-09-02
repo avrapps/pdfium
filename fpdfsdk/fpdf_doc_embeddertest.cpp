@@ -9,6 +9,7 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_read_only_graph_guard.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -75,6 +76,25 @@ int CountStreamEntries(const std::string& data) {
 
 class FPDFDocEmbedderTest : public EmbedderTest {};
 
+TEST_F(FPDFDocEmbedderTest, ReadPurityLinkEnumeration) {
+  ASSERT_TRUE(OpenDocument("links_highlights_annots.pdf"));
+  ScopedPage page = LoadScopedPage(0);
+  ASSERT_TRUE(page);
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(doc);
+  const uint32_t last_obj_num = doc->GetLastObjNum();
+
+  {
+    CPDF_ReadOnlyGraphGuard guard;
+    int start_pos = 0;
+    FPDF_LINK link = nullptr;
+    while (FPDFLink_Enumerate(page.get(), &start_pos, &link)) {
+    }
+  }
+
+  EXPECT_EQ(last_obj_num, doc->GetLastObjNum());
+}
+
 TEST_F(FPDFDocEmbedderTest, MultipleSamePage) {
   ASSERT_TRUE(OpenDocument("hello_world.pdf"));
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document());
@@ -120,6 +140,42 @@ TEST_F(FPDFDocEmbedderTest, DestGetPageIndex) {
   dest = FPDF_GetNamedDestByName(document(), "LastAlternate");
   EXPECT_TRUE(dest);
   EXPECT_EQ(-1, FPDFDest_GetDestPageIndex(document(), dest));
+}
+
+TEST_F(FPDFDocEmbedderTest, DestGetPageObjectNumber) {
+  ASSERT_TRUE(OpenDocument("named_dests.pdf"));
+
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(nullptr, nullptr));
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), nullptr));
+
+  const unsigned int page_1_object_number =
+      EPDFDoc_GetPageObjectNumberByIndex(document(), 1);
+  ASSERT_GT(page_1_object_number, 0u);
+
+  // Numeric page index in the Dests NameTree.
+  FPDF_DEST dest = FPDF_GetNamedDestByName(document(), "First");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(nullptr, dest));
+  EXPECT_EQ(page_1_object_number,
+            EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Page dictionary reference in the Dests NameTree.
+  dest = FPDF_GetNamedDestByName(document(), "Next");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(page_1_object_number,
+            EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Out-of-range numeric page index in the legacy Dests dictionary. The
+  // compatibility index API reports the stored 11, but there is no visible
+  // page object at that index in this two-page fixture.
+  dest = FPDF_GetNamedDestByName(document(), "FirstAlternate");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), dest));
+
+  // Invalid object reference in the Dests NameTree.
+  dest = FPDF_GetNamedDestByName(document(), "LastAlternate");
+  ASSERT_TRUE(dest);
+  EXPECT_EQ(0u, EPDFDest_GetPageObjectNumber(document(), dest));
 }
 
 TEST_F(FPDFDocEmbedderTest, DestGetView) {

@@ -38,6 +38,7 @@
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/epdf_tls.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_2d_size.h"
 #include "core/fxcrt/fx_safe_types.h"
@@ -450,7 +451,9 @@ class StockColorSpaces {
   RetainPtr<CPDF_PatternCS> pattern_;
 };
 
-StockColorSpaces* g_stock_colorspaces = nullptr;
+// EmbedPDF: thread-confined runtime - per-thread stock device colorspaces
+// (gray/rgb/cmyk/pattern), created/destroyed on the owning thread.
+EPDF_TLS StockColorSpaces* g_stock_colorspaces = nullptr;
 
 }  // namespace
 
