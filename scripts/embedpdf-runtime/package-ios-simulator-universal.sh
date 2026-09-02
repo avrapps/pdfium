@@ -33,7 +33,7 @@ tar -xzf "$X64_ARTIFACT" -C "$TMP_X64"
 
 # Combine with lipo
 mkdir -p "$STAGING/lib"
-lipo -create "$TMP_ARM64/lib/libpdfium.a" "$TMP_X64/lib/libpdfium.a" -output "$STAGING/lib/libpdfium.a"
+lipo -create "$TMP_ARM64/lib/libembedpdf.a" "$TMP_X64/lib/libembedpdf.a" -output "$STAGING/lib/libembedpdf.a"
 
 # Copy headers and other metadata from arm64 (they should be identical)
 cp -R "$TMP_ARM64/include" "$STAGING/include"

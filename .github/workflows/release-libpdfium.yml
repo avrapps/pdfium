@@ -205,7 +205,7 @@ jobs:
           tar -xzf artifacts/ios-simulator-x64/*.tar.gz -C staging/x64
           
           # Combine with lipo
-          lipo -create staging/arm64/lib/libpdfium.a staging/x64/lib/libpdfium.a -output out/ios-universal/lib/libpdfium.a
+          lipo -create staging/arm64/lib/libembedpdf.a staging/x64/lib/libembedpdf.a -output out/ios-universal/lib/libembedpdf.a
           
           # Copy headers and other files from one of them
           mkdir -p out/ios-universal/include out/ios-universal/LICENSES
