@@ -490,10 +490,18 @@ component("skia") {
   }
 
   if (is_android) {
-    deps += [
-      "//third_party/cpu_features:ndk_compat",
-      "//third_party/expat",
-    ]
+    deps += [ "//third_party/cpu_features:ndk_compat" ]
+
+    # expat is only pulled in for the full-skia Android font manager
+    # (skia_ports_fontmgr_android_sources above). It is NOT in the runtime
+    # "small" gclient checkout, so referencing the label unconditionally makes
+    # `gn gen` fail to load //third_party/expat on Android builds that run with
+    # pdf_use_skia=false (which link :redaction_pathops, not this component and
+    # never need expat). Gate it on pdf_use_skia so the label is only evaluated
+    # when the full skia component is actually built.
+    if (pdf_use_skia) {
+      deps += [ "//third_party/expat" ]
+    }
   }
 
   if (is_android && !is_debug) {
