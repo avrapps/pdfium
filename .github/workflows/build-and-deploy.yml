@@ -4,18 +4,6 @@ on:
   push:
     branches:
       - default
-    paths:
-      - 'core/**'
-      - 'fpdfsdk/**'
-      - 'fxjs/**'
-      - 'constants/**'
-      - 'public/**'
-      - 'third_party/**'
-      - 'BUILD.gn'
-      - '*.gni'
-      - 'patches/embedpdf-runtime/**'
-      - 'scripts/embedpdf-runtime/**'
-      - '.github/workflows/build-and-deploy.yml'
   workflow_dispatch:
     inputs:
       ref:
