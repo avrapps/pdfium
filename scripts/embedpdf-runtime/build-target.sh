@@ -108,12 +108,14 @@ case "$TARGET" in
     ;;
 esac
 
-# EmbedPDF: enable per-thread PDFium globals for the native server targets so
-# the server worker pool can render in parallel in-process. wasm stays off
-# (each instance already isolates globals via its own linear memory).
-if [[ "$TARGET" != "wasm32" ]]; then
-  EMBEDPDF_TLS_GLOBALS=true
-fi
+# EmbedPDF: per-thread PDFium globals (embedpdf_thread_local_globals) are for
+# the in-process server worker pool that renders in parallel. Falcon PDF does
+# NOT use that pool -- it inits PDFium once and shares document/page handles
+# across coroutine dispatcher threads (Dispatchers.Default/IO). Under TLS
+# globals that pattern segfaults in GetStockCS on any thread that never called
+# EPDF_InitThread. Keep the flag OFF so PDFium uses process-global singletons
+# (pre-merge behaviour) and one FPDF_InitLibrary covers all threads.
+# EMBEDPDF_TLS_GLOBALS intentionally stays false for all targets.
 
 PDF_RUNTIME_TARGET_OS_LIST="${PDF_RUNTIME_TARGET_OS_LIST:-$GN_TARGET_OS}" \
   "$SOURCE_DIR/scripts/embedpdf-runtime/ensure-deps.sh"
