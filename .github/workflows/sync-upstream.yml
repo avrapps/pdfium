@@ -13,7 +13,10 @@ jobs:
         with:
           ref: default
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Use a PAT (not GITHUB_TOKEN) so the push below triggers the
+          # build-and-deploy workflow. Pushes made with GITHUB_TOKEN do not
+          # fire further workflow runs (GitHub loop protection).
+          token: ${{ secrets.PDFIUM_BINARIES_PAT }}
 
       - name: Configure git
         run: |

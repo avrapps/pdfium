@@ -1,6 +1,21 @@
 name: Build PDFium & Deploy to falcon-pdfium-binaries
 
 on:
+  push:
+    branches:
+      - default
+    paths:
+      - 'core/**'
+      - 'fpdfsdk/**'
+      - 'fxjs/**'
+      - 'constants/**'
+      - 'public/**'
+      - 'third_party/**'
+      - 'BUILD.gn'
+      - '*.gni'
+      - 'patches/embedpdf-runtime/**'
+      - 'scripts/embedpdf-runtime/**'
+      - '.github/workflows/build-and-deploy.yml'
   workflow_dispatch:
     inputs:
       ref:
@@ -26,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install depot_tools
         run: |
@@ -60,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Select Xcode
         run: sudo xcode-select -s "/Applications/Xcode_26.0.app"
@@ -97,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Select Xcode
         if: runner.os == 'macOS'

@@ -610,10 +610,12 @@ skia_source_set("skia_opts") {
     # assert(false, "Unsupported target CPU " + current_cpu)
   }
 
-  if (is_android && !is_debug) {
-    configs -= [ "//build/config/compiler:default_optimization" ]
-    configs += [ "//build/config/compiler:optimize_max" ]
-  }
+  # NOTE: release optimization (-default_optimization +optimize_max) is applied
+  # by the skia_source_set template for all platforms in !is_debug. The former
+  # `is_android && !is_debug` configs block here was redundant AND broken: it
+  # mutated `configs` in the invoker scope where the variable is undefined
+  # (the template only seeds `configs` after forward_variables_from), so
+  # `gn gen` failed with "Undefined identifier" on Android release builds.
 
   visibility = [
     ":redaction_pathops",
