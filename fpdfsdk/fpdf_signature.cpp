@@ -11,6 +11,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
@@ -18,6 +19,7 @@
 #include "core/fxcrt/stl_util.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "core/fpdfdoc/epdf_signature_status.h"
+#include "core/fpdfdoc/epdf_signature_status_compose.h"
 
 namespace {
 
@@ -299,9 +301,43 @@ void EPDF_CleanupSignatureStatus(FPDF_DOCUMENT document) {
   if (signatures.empty()) {
     return;
   }
-  std::lock_guard<std::mutex> lock(GetSignatureStatusMutex());
-  auto& map = GetSignatureStatusMap();
-  for (const auto& sig : signatures) {
-    map.erase(sig.Get());
+  {
+    std::lock_guard<std::mutex> lock(GetSignatureStatusMutex());
+    auto& map = GetSignatureStatusMap();
+    for (const auto& sig : signatures) {
+      map.erase(sig.Get());
+    }
   }
+
+  // Also drop any stashed signature-appearance layer backups for this
+  // document, so a later save never restores bytes into (or, before streams
+  // were retained, freed) a closed document's layer streams. Collect each
+  // signature's normal-appearance (/AP /N) form stream from the field dict or,
+  // for a separate field/widget split, from its /Kids widgets.
+  std::vector<CPDF_Stream*> ap_streams;
+  auto collect_ap = [&ap_streams](const CPDF_Dictionary* dict) {
+    if (!dict) {
+      return;
+    }
+    RetainPtr<const CPDF_Dictionary> ap = dict->GetDictFor("AP");
+    if (!ap) {
+      return;
+    }
+    RetainPtr<CPDF_Stream> normal =
+        const_cast<CPDF_Dictionary*>(ap.Get())->GetMutableStreamFor("N");
+    if (normal) {
+      ap_streams.push_back(normal.Get());
+    }
+  };
+  for (const auto& sig : signatures) {
+    collect_ap(sig.Get());
+    RetainPtr<const CPDF_Array> kids = sig->GetArrayFor("Kids");
+    if (kids) {
+      CPDF_ArrayLocker locker(std::move(kids));
+      for (auto& kid : locker) {
+        collect_ap(kid->GetDict().Get());
+      }
+    }
+  }
+  EPDF_CleanupSignatureLayers(ap_streams);
 }

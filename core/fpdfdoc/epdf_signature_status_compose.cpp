@@ -34,10 +34,53 @@ std::mutex& LayerMutex() {
   return *m;
 }
 
-// Keyed by the live layer stream pointer.
+// Keyed by a RetainPtr to the layer stream so the stream object stays alive as
+// long as a backup exists. A raw pointer here would dangle once the owning
+// document is closed, and the next save's EPDF_RestoreSignatureLayers() would
+// call SetData() on freed memory (SIGSEGV in CPDF_Dictionary::SetForInternal).
 std::unordered_map<CPDF_Stream*, LayerBackup>& LayerBackups() {
   static auto* m = new std::unordered_map<CPDF_Stream*, LayerBackup>;
   return *m;
+}
+
+// Retains each stashed stream, keyed by its raw pointer, so the CPDF_Stream is
+// kept alive for the lifetime of its backup. Parallel to LayerBackups().
+std::unordered_map<CPDF_Stream*, RetainPtr<CPDF_Stream>>& LayerKeepAlive() {
+  static auto* m = new std::unordered_map<CPDF_Stream*, RetainPtr<CPDF_Stream>>;
+  return *m;
+}
+
+// Erases a single stashed layer (backup + keep-alive). Caller holds LayerMutex.
+void EraseLayerLocked(CPDF_Stream* stream) {
+  LayerBackups().erase(stream);
+  LayerKeepAlive().erase(stream);
+}
+
+// Restores every stashed layer to its original bytes and clears the maps.
+// Caller MUST hold LayerMutex (LayerMutex is non-recursive).
+void RestoreAllLocked() {
+  auto& backups = LayerBackups();
+  for (auto& [stream, backup] : backups) {
+    // Restore original raw bytes.
+    stream->SetData(backup.raw_data);
+    RetainPtr<CPDF_Dictionary> dict = stream->GetMutableDict();
+    if (!dict) {
+      continue;
+    }
+    // Restore original /Filter and /DecodeParms exactly.
+    if (backup.had_filter) {
+      dict->SetFor("Filter", backup.filter->Clone());
+    } else {
+      dict->RemoveFor("Filter");
+    }
+    if (backup.had_decode_parms) {
+      dict->SetFor("DecodeParms", backup.decode_parms->Clone());
+    } else {
+      dict->RemoveFor("DecodeParms");
+    }
+  }
+  backups.clear();
+  LayerKeepAlive().clear();
 }
 
 void StashOriginal(CPDF_Stream* stream) {
@@ -45,6 +88,9 @@ void StashOriginal(CPDF_Stream* stream) {
   if (backups.count(stream)) {
     return;  // already stashed
   }
+  // Keep the stream alive for as long as we hold a backup for it, so the raw
+  // pointer key can never dangle after the owning document is torn down.
+  LayerKeepAlive()[stream] = pdfium::WrapRetain(stream);
   LayerBackup b;
   // The stream may be file-based (mmap'd from the PDF) or memory-based; use the
   // matching accessor. GetInMemoryRawData() aborts on a file-based stream.
@@ -273,7 +319,7 @@ void EPDF_ApplySignatureStatusLayers(const CPDF_Stream* ap_stream, int status) {
   CPDF_Stream* n4 = GetLayer(ap_stream, "n4");  // status text
 
   if (status == kEpdfSignatureStatusUnknown) {
-    EPDF_RestoreSignatureLayers();  // show the original "?"
+    RestoreAllLocked();  // show the original "?"; LayerMutex already held
     return;
   }
 
@@ -309,25 +355,22 @@ void EPDF_ApplySignatureStatusLayers(const CPDF_Stream* ap_stream, int status) {
 }
 
 void EPDF_RestoreSignatureLayers() {
-  auto& backups = LayerBackups();
-  for (auto& [stream, backup] : backups) {
-    // Restore original raw bytes.
-    stream->SetData(backup.raw_data);
-    RetainPtr<CPDF_Dictionary> dict = stream->GetMutableDict();
-    if (!dict) {
+  std::lock_guard<std::mutex> lock(LayerMutex());
+  RestoreAllLocked();
+}
+
+void EPDF_CleanupSignatureLayers(
+    const std::vector<CPDF_Stream*>& ap_streams) {
+  std::lock_guard<std::mutex> lock(LayerMutex());
+  static constexpr const char* kLayerNames[] = {"n0", "n1", "n2", "n3", "n4"};
+  for (CPDF_Stream* ap : ap_streams) {
+    if (!ap) {
       continue;
     }
-    // Restore original /Filter and /DecodeParms exactly.
-    if (backup.had_filter) {
-      dict->SetFor("Filter", backup.filter->Clone());
-    } else {
-      dict->RemoveFor("Filter");
-    }
-    if (backup.had_decode_parms) {
-      dict->SetFor("DecodeParms", backup.decode_parms->Clone());
-    } else {
-      dict->RemoveFor("DecodeParms");
+    for (const char* name : kLayerNames) {
+      if (CPDF_Stream* layer = GetLayer(ap, name)) {
+        EraseLayerLocked(layer);
+      }
     }
   }
-  backups.clear();
 }

@@ -5,6 +5,8 @@
 #ifndef CORE_FPDFDOC_EPDF_SIGNATURE_STATUS_COMPOSE_H_
 #define CORE_FPDFDOC_EPDF_SIGNATURE_STATUS_COMPOSE_H_
 
+#include <vector>
+
 class CPDF_Stream;
 
 // Experimental EmbedPDF Extension: Adobe/iText/Foxit-style validity-layer swap
@@ -35,5 +37,14 @@ void EPDF_ApplySignatureStatusLayers(const CPDF_Stream* ap_stream, int status);
 // Restores every stashed signature layer to its original bytes. Idempotent.
 // Call before serializing a document so runtime status never reaches disk.
 void EPDF_RestoreSignatureLayers();
+
+// Drops the stashed backups (and the keep-alive retain) for the signature
+// appearance layers reachable from the given appearance (AP) form streams.
+// Called from FPDF_CloseDocument() with the closing document's signature
+// appearance streams, so no backup outlives its document and a later save
+// never touches a closed document's layers. Idempotent; unknown streams are
+// ignored.
+void EPDF_CleanupSignatureLayers(
+    const std::vector<CPDF_Stream*>& ap_streams);
 
 #endif  // CORE_FPDFDOC_EPDF_SIGNATURE_STATUS_COMPOSE_H_
