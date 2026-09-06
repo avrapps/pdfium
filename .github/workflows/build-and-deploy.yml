@@ -80,7 +80,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdfium-${{ matrix.target }}
-          path: out/embedpdf-runtime/${{ matrix.target }}/obj/libfalconpdf.a
+          # iOS does not apply shared-library.patch, so its output_name stays the
+          # upstream "embedpdf" (produces libembedpdf.a). The deploy step renames
+          # it to libfalconpdf.a when assembling the xcframework.
+          path: out/embedpdf-runtime/${{ matrix.target }}/obj/libembedpdf.a
 
   build-desktop:
     name: Build Desktop (${{ matrix.target }})
@@ -178,12 +181,12 @@ jobs:
         run: |
           mkdir -p staging/ios-arm64 staging/ios-simulator
 
-          cp artifacts/pdfium-ios-arm64/libfalconpdf.a staging/ios-arm64/libfalconpdf.a
+          cp artifacts/pdfium-ios-arm64/libembedpdf.a staging/ios-arm64/libfalconpdf.a
 
           # Combine simulator architectures with lipo
           lipo -create \
-            artifacts/pdfium-ios-simulator-arm64/libfalconpdf.a \
-            artifacts/pdfium-ios-simulator-x64/libfalconpdf.a \
+            artifacts/pdfium-ios-simulator-arm64/libembedpdf.a \
+            artifacts/pdfium-ios-simulator-x64/libembedpdf.a \
             -output staging/ios-simulator/libfalconpdf.a
 
           # Remove existing xcframework and rebuild

@@ -2,13 +2,14 @@ diff --git a/BUILD.gn b/BUILD.gn
 index fbdb13a4e..3b450b979 100644
 --- a/BUILD.gn
 +++ b/BUILD.gn
-@@ -225,10 +225,18 @@ group("pdfium_public_headers") {
+@@ -244,10 +244,18 @@
    ]
  }
  
 -component("pdfium") {
+-  output_name = "embedpdf"
 +shared_library("pdfium") {
-   output_name = "embedpdf"
++  output_name = "falconpdf"
    libs = []
    configs += [ ":pdfium_strict_config" ]
 +  if (is_android) {
@@ -22,7 +23,7 @@ index fbdb13a4e..3b450b979 100644
    public_configs = [ ":pdfium_public_config" ]
  
    deps = [
-@@ -263,6 +269,9 @@ component("pdfium") {
+@@ -282,6 +290,9 @@
        "gdi32.lib",
        "user32.lib",
      ]
