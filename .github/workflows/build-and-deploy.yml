@@ -93,8 +93,11 @@ jobs:
           - { target: darwin-x64, runner: macos-15, file: libembedpdf.dylib }
           - { target: linux-x64, runner: ubuntu-24.04, file: libembedpdf.so }
           - { target: linux-arm64, runner: ubuntu-24.04, file: libembedpdf.so }
-          - { target: win32-x64, runner: windows-2022, file: embedpdf.dll }
-          - { target: win32-arm64, runner: windows-2022, file: embedpdf.dll }
+          # Windows is built with output_name="falconpdf" (see BUILD.gn), so it
+          # emits falconpdf.dll and its matching import library falconpdf.dll.lib.
+          # The glob uploads both; both are copied through to the binaries repo.
+          - { target: win32-x64, runner: windows-2022, file: "falconpdf.dll*" }
+          - { target: win32-arm64, runner: windows-2022, file: "falconpdf.dll*" }
     env:
       DEPOT_TOOLS_WIN_TOOLCHAIN: 0
     steps:
@@ -167,8 +170,10 @@ jobs:
           cp artifacts/pdfium-darwin-x64/libembedpdf.dylib falcon-pdfium-binaries/binaries/macosX64/libfalconpdf.dylib
           cp artifacts/pdfium-linux-x64/libembedpdf.so falcon-pdfium-binaries/binaries/linuxX64/libfalconpdf.so
           cp artifacts/pdfium-linux-arm64/libembedpdf.so falcon-pdfium-binaries/binaries/linuxArm64/libfalconpdf.so
-          cp artifacts/pdfium-win32-x64/embedpdf.dll falcon-pdfium-binaries/binaries/mingwX64/falconpdf.dll
-          cp artifacts/pdfium-win32-arm64/embedpdf.dll falcon-pdfium-binaries/binaries/mingwArm64/falconpdf.dll
+          cp artifacts/pdfium-win32-x64/falconpdf.dll falcon-pdfium-binaries/binaries/mingwX64/falconpdf.dll
+          cp artifacts/pdfium-win32-x64/falconpdf.dll.lib falcon-pdfium-binaries/binaries/mingwX64/falconpdf.dll.lib
+          cp artifacts/pdfium-win32-arm64/falconpdf.dll falcon-pdfium-binaries/binaries/mingwArm64/falconpdf.dll
+          cp artifacts/pdfium-win32-arm64/falconpdf.dll.lib falcon-pdfium-binaries/binaries/mingwArm64/falconpdf.dll.lib
 
       - name: Build iOS xcframework
         run: |

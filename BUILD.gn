@@ -245,7 +245,18 @@ group("pdfium_public_headers") {
 }
 
 component("pdfium") {
-  output_name = "embedpdf"
+  # Falcon: on Windows the DLL's import library records this name as the module
+  # consumers link against. The falcon-pdfium-binaries deploy renames the DLL
+  # file to falconpdf.dll, so the link-time name must match or downstream builds
+  # import a non-existent "embedpdf.dll". Naming the Windows output "falconpdf"
+  # makes lld emit falconpdf.dll + falconpdf.dll.lib with the correct internal
+  # name, so the deploy step can copy them through unchanged. Other platforms
+  # keep the upstream "embedpdf" name (the deploy renames those files directly).
+  if (is_win) {
+    output_name = "falconpdf"
+  } else {
+    output_name = "embedpdf"
+  }
   libs = []
   configs += [ ":pdfium_strict_config" ]
   public_configs = [ ":pdfium_public_config" ]
