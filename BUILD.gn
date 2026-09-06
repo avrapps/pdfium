@@ -245,12 +245,7 @@ group("pdfium_public_headers") {
 }
 
 component("pdfium") {
-  # Falcon: name the output "falconpdf" so the shipped file, and (on Windows) the
-  # import library's internal DLL-name record, both match what downstream links
-  # against. Renaming only the file post-build left Windows import libs pointing
-  # at a non-existent "embedpdf.dll". The deploy step now copies artifacts through
-  # unchanged instead of renaming.
-  output_name = "falconpdf"
+  output_name = "embedpdf"
   libs = []
   configs += [ ":pdfium_strict_config" ]
   public_configs = [ ":pdfium_public_config" ]
