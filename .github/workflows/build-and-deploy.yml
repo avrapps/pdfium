@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdfium-android-${{ matrix.target }}
-          path: out/embedpdf-runtime/${{ matrix.target }}/libembedpdf.so
+          path: out/embedpdf-runtime/${{ matrix.target }}/libfalconpdf.so
 
   build-ios:
     name: Build iOS (${{ matrix.target }})
@@ -80,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdfium-${{ matrix.target }}
-          path: out/embedpdf-runtime/${{ matrix.target }}/obj/libembedpdf.a
+          path: out/embedpdf-runtime/${{ matrix.target }}/obj/libfalconpdf.a
 
   build-desktop:
     name: Build Desktop (${{ matrix.target }})
@@ -89,13 +89,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: darwin-arm64, runner: macos-15, file: libembedpdf.dylib }
-          - { target: darwin-x64, runner: macos-15, file: libembedpdf.dylib }
-          - { target: linux-x64, runner: ubuntu-24.04, file: libembedpdf.so }
-          - { target: linux-arm64, runner: ubuntu-24.04, file: libembedpdf.so }
-          # Windows is built with output_name="falconpdf" (see BUILD.gn), so it
-          # emits falconpdf.dll and its matching import library falconpdf.dll.lib.
-          # The glob uploads both; both are copied through to the binaries repo.
+          - { target: darwin-arm64, runner: macos-15, file: libfalconpdf.dylib }
+          - { target: darwin-x64, runner: macos-15, file: libfalconpdf.dylib }
+          - { target: linux-x64, runner: ubuntu-24.04, file: libfalconpdf.so }
+          - { target: linux-arm64, runner: ubuntu-24.04, file: libfalconpdf.so }
+          # Windows also emits the matching import library falconpdf.dll.lib; the
+          # glob uploads both it and falconpdf.dll.
           - { target: win32-x64, runner: windows-2022, file: "falconpdf.dll*" }
           - { target: win32-arm64, runner: windows-2022, file: "falconpdf.dll*" }
     env:
@@ -159,17 +158,17 @@ jobs:
 
       - name: Copy Android binaries
         run: |
-          cp artifacts/pdfium-android-arm64-v8a/libembedpdf.so falcon-pdfium-binaries/binaries/android/arm64-v8a/libfalconpdf.so
-          cp artifacts/pdfium-android-armeabi-v7a/libembedpdf.so falcon-pdfium-binaries/binaries/android/armeabi-v7a/libfalconpdf.so
-          cp artifacts/pdfium-android-x86/libembedpdf.so falcon-pdfium-binaries/binaries/android/x86/libfalconpdf.so
-          cp artifacts/pdfium-android-x86_64/libembedpdf.so falcon-pdfium-binaries/binaries/android/x86_64/libfalconpdf.so
+          cp artifacts/pdfium-android-arm64-v8a/libfalconpdf.so falcon-pdfium-binaries/binaries/android/arm64-v8a/libfalconpdf.so
+          cp artifacts/pdfium-android-armeabi-v7a/libfalconpdf.so falcon-pdfium-binaries/binaries/android/armeabi-v7a/libfalconpdf.so
+          cp artifacts/pdfium-android-x86/libfalconpdf.so falcon-pdfium-binaries/binaries/android/x86/libfalconpdf.so
+          cp artifacts/pdfium-android-x86_64/libfalconpdf.so falcon-pdfium-binaries/binaries/android/x86_64/libfalconpdf.so
 
       - name: Copy Desktop binaries
         run: |
-          cp artifacts/pdfium-darwin-arm64/libembedpdf.dylib falcon-pdfium-binaries/binaries/macosArm64/libfalconpdf.dylib
-          cp artifacts/pdfium-darwin-x64/libembedpdf.dylib falcon-pdfium-binaries/binaries/macosX64/libfalconpdf.dylib
-          cp artifacts/pdfium-linux-x64/libembedpdf.so falcon-pdfium-binaries/binaries/linuxX64/libfalconpdf.so
-          cp artifacts/pdfium-linux-arm64/libembedpdf.so falcon-pdfium-binaries/binaries/linuxArm64/libfalconpdf.so
+          cp artifacts/pdfium-darwin-arm64/libfalconpdf.dylib falcon-pdfium-binaries/binaries/macosArm64/libfalconpdf.dylib
+          cp artifacts/pdfium-darwin-x64/libfalconpdf.dylib falcon-pdfium-binaries/binaries/macosX64/libfalconpdf.dylib
+          cp artifacts/pdfium-linux-x64/libfalconpdf.so falcon-pdfium-binaries/binaries/linuxX64/libfalconpdf.so
+          cp artifacts/pdfium-linux-arm64/libfalconpdf.so falcon-pdfium-binaries/binaries/linuxArm64/libfalconpdf.so
           cp artifacts/pdfium-win32-x64/falconpdf.dll falcon-pdfium-binaries/binaries/mingwX64/falconpdf.dll
           cp artifacts/pdfium-win32-x64/falconpdf.dll.lib falcon-pdfium-binaries/binaries/mingwX64/falconpdf.dll.lib
           cp artifacts/pdfium-win32-arm64/falconpdf.dll falcon-pdfium-binaries/binaries/mingwArm64/falconpdf.dll
@@ -179,12 +178,12 @@ jobs:
         run: |
           mkdir -p staging/ios-arm64 staging/ios-simulator
 
-          cp artifacts/pdfium-ios-arm64/libembedpdf.a staging/ios-arm64/libfalconpdf.a
+          cp artifacts/pdfium-ios-arm64/libfalconpdf.a staging/ios-arm64/libfalconpdf.a
 
           # Combine simulator architectures with lipo
           lipo -create \
-            artifacts/pdfium-ios-simulator-arm64/libembedpdf.a \
-            artifacts/pdfium-ios-simulator-x64/libembedpdf.a \
+            artifacts/pdfium-ios-simulator-arm64/libfalconpdf.a \
+            artifacts/pdfium-ios-simulator-x64/libfalconpdf.a \
             -output staging/ios-simulator/libfalconpdf.a
 
           # Remove existing xcframework and rebuild
